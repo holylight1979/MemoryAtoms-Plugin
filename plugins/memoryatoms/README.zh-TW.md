@@ -79,6 +79,7 @@ English: [README.md](README.md)
 ### 本機背景工作
 
 - hook 會起插件自己的腳本：重建索引、待辦追蹤檢查、補卡片建立日期、知識萃取 worker。
+- 收尾 worker：SessionEnd 時 hook 把 Claude Code 交來的事件（session id、逐字稿路徑、工作資料夾）寫到資料夾的 `workflow/se-worker/`，再脫離 Claude Code 起 `hooks/session_end_worker.py`，所以 session 關掉後它還會跑一下。worker 讀完就刪那個檔，做完收尾工作；它的輸出接在資料夾的 `Logs/session-end-worker.log` 後面。
 - 唯讀的 git／svn 查詢（status、log、ls-files、rev-parse、rev-list、check-ignore），只在專案與記憶資料夾是版控庫時：提醒卡片索引的合併衝突、還沒推出去的卡、補卡片日期。
 - 專案裡有 `.claude/hooks/project_hooks.py` 時，開場會跑它（`python <檔> session_start`，5 秒上限）並顯示它回的行。這會執行專案資料夾裡的程式。
 - 加入網域的 Windows 機器，開場會跑 `whoami /groups` 讀群組名，除非 `role.md` 已寫了你的職能。只有在設定裡填了群組對照表（`roles.ad_group_map`）才會把群組名對到職能（給組織層卡片用）；出廠是空表，所以預設指令會跑、但不會對到任何職能。群組名不出本機。
@@ -89,6 +90,8 @@ English: [README.md](README.md)
 ### 你自己跑的工具
 
 技能（`/memoryatoms:memory`、`conflict`、`vector`、`refile`、`org`、`heal-review`、`behavior-preservation` 等）背後的命令列工具，只在你、或 Claude 照你要求用到時才跑。值得知道的兩個：`tools/health-weekly.py` 會呼叫 `claude -p ... --model haiku`（用你的 Claude 帳號）；`behavior-preservation` 的 `preserve-check.py` 會執行你給它的 shell 指令。插件版不排程這些工具。
+
+還有一支你跑了會動到版控庫的：`tools/normalize-eol.py` 把 CRLF 換行改成 LF。對專案記憶資料夾（`--memory-dir`、`--all-projects`）會就地改寫 `.claude/memory` 底下的檔；加 `--write-gitattributes` 或 `--auto` 時還會跑 git（`rev-parse`、`check-ignore`、`check-attr`）並在該版控庫的 `.gitattributes` 寫一段帶標記的區塊，svn 工作副本則跑 `svn status`、`propget`，並對裡面已版控的檔下 `svn propset svn:eol-style LF`。`--root` 是對整個 git 版控庫（`git ls-files`、`status`）；不加 `--check` 時會改寫該版控庫的 CRLF 檔並加進暫存區（`git add`；加 `--include-dirty` 還會用 `git show`、`hash-object -w`、`update-index`）。它從不 commit、不 push、不連網。插件不會自己跑它（見下面的 `eol.auto_normalize_project`）；`tools/health-weekly.py` 會用 `--root --check` 呼叫它，那只讀不寫。
 
 ## 讀什麼
 

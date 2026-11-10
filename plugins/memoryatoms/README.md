@@ -79,6 +79,7 @@ To do the work the server starts the plugin's own Python modules on this machine
 ### Background work on this machine
 
 - Hooks start the plugin's own scripts: index rebuilds, a follow-up check, a card creation-date backfill, knowledge-extraction workers.
+- End-of-session worker: at SessionEnd the hook writes the event Claude Code handed it (session id, transcript path, working folder) to `workflow/se-worker/` in your data folder and starts `hooks/session_end_worker.py` detached from Claude Code, so it keeps running for a while after the session closes. The worker reads and deletes that file and does the end-of-session work; its output is appended to `Logs/session-end-worker.log` in your data folder.
 - Read-only git/svn queries (status, log, ls-files, rev-parse, rev-list, check-ignore) in your project and memory folders, only when they are repositories: warnings about index merge conflicts and unpushed cards, card dates.
 - If your project contains `.claude/hooks/project_hooks.py`, the session start runs it (`python <file> session_start`, 5 s limit) and shows the lines it returns. This runs code from your project folder.
 - On domain-joined Windows machines, the session start runs `whoami /groups` to read your group names, unless a `role.md` file sets your role. The names are mapped to a role (for organization-layer cards) only if you have filled in the group-to-role table (`roles.ad_group_map`) in the config; it ships empty, so by default the command runs but no role comes from it. The names stay on this machine.
@@ -89,6 +90,8 @@ To do the work the server starts the plugin's own Python modules on this machine
 ### Tools you run yourself
 
 The skills (`/memoryatoms:memory`, `conflict`, `vector`, `refile`, `org`, `heal-review`, `behavior-preservation` and others) run command-line tools from the plugin folder only when you, or Claude at your request, use them. Two worth knowing: `tools/health-weekly.py` calls `claude -p ... --model haiku` (uses your Claude account), and `behavior-preservation`'s `preserve-check.py` runs the shell command you give it. Nothing schedules these tools in the plugin edition.
+
+One more that touches your repository when you run it: `tools/normalize-eol.py` turns CRLF line endings into LF. On a project memory folder (`--memory-dir`, `--all-projects`) it rewrites the files under `.claude/memory` in place; with `--write-gitattributes` or `--auto` it also runs git (`rev-parse`, `check-ignore`, `check-attr`) and writes a marked block into the repository's `.gitattributes`, or in an svn working copy runs `svn status`, `propget` and `svn propset svn:eol-style LF` on the versioned files there. With `--root` it works on a whole git repository (`git ls-files`, `status`); without `--check` it rewrites that repository's CRLF files and stages them (`git add`; with `--include-dirty` also `git show`, `hash-object -w`, `update-index`). It never commits, pushes or uses the network. The plugin never runs it on its own (see `eol.auto_normalize_project` below); `tools/health-weekly.py` calls it with `--root --check`, which only reads.
 
 ## What it reads
 
