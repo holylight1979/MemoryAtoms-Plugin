@@ -1,0 +1,46 @@
+{
+  "name": "memoryatoms",
+  "displayName": "MemoryAtoms",
+  "version": "6.1.1",
+  "description": "Atomic memory for Claude Code: puts the memory cards that fit your prompt in front of Claude, writes and searches cards through an MCP server, and harvests what a session learned into new cards.",
+  "author": {
+    "name": "holylight"
+  },
+  "license": "GPL-3.0-only",
+  "userConfig": {
+    "data_dir": {
+      "type": "string",
+      "title": "Data folder",
+      "description": "Where your cards, indexes and logs are kept. Default ~/.memoryatoms. If you are moving from the git install, enter ~/.claude.",
+      "default": "~/.memoryatoms"
+    },
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "Language of hints and messages: en or zh-TW. Cards are never translated.",
+      "default": "en"
+    },
+    "python": {
+      "type": "file",
+      "title": "Python interpreter",
+      "description": "Path to Python 3.10 or newer. Leave empty to find it automatically."
+    },
+    "remote_llm_user": {
+      "type": "string",
+      "title": "Remote LLM user",
+      "description": "Login name for a remote LLM backend that needs one (vector_search.ollama_backends.<name>.auth in workflow/config.json). Leave empty when you use only the local Ollama.",
+      "default": ""
+    },
+    "remote_llm_password": {
+      "type": "string",
+      "title": "Remote LLM password",
+      "description": "Password for that remote LLM backend. Kept in your system's secure credential store, not in settings.json. Leave empty when you use only the local Ollama.",
+      "sensitive": true
+    }
+  },
+  "homepage": "https://github.com/holylight1979/MemoryAtoms-Plugin",
+  "repository": "https://github.com/holylight1979/MemoryAtoms-Plugin",
+  "documentationUrl": "https://github.com/holylight1979/MemoryAtoms-Plugin/blob/main/plugins/memoryatoms/README.md",
+  "supportUrl": "https://github.com/holylight1979/MemoryAtoms-Plugin/issues",
+  "privacyPolicyUrl": "https://github.com/holylight1979/MemoryAtoms-Plugin/blob/main/PRIVACY.md"
+}

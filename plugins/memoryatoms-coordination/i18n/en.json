@@ -1,0 +1,17 @@
+{
+ "ext.coordination.ask_peer_first": "ask them via SendMessage or ",
+ "ext.coordination.bash_check_failed": "[Guardian:Coord] Bash finishing-command check failed (fail-open): {error}",
+ "ext.coordination.claude_not_found": "claude executable not found (neither CLAUDE_CODE_EXECPATH nor PATH has it)",
+ "ext.coordination.conflict_warning": "⚠️ [Guardian:CoordWarn] Another active session ({who}) has also edited this file: {path} (last at {peer_at}, {peer_count} times). In a shared working tree the later write overwrites the earlier one with no automatic merge. Make sure you are not stepping on each other first ({hint}confirm the split with the user if needed), and when finishing, stage only your own files; do not git add -A.",
+ "ext.coordination.git_finalize_warning": "⚠️ [Guardian:CoordWarn] A repo-wide git finishing command was detected, and other active sessions in the same working tree have recorded edits: {listed} (they may or may not have committed already; state does not track VCS status, so {ask}verify with git status first). git add -A / reset --hard would sweep up or wipe out others' uncommitted changes. Use selective staging instead (git add <your own files>), and confirm with the user before reset/clean.",
+ "ext.coordination.late_collision": "⚠️ [Guardian:CoordWarn] Detected after writing: session {who} also wrote {path} within 60 seconds ({peer_at}). Both sides wrote it for the first time almost at once and could not see each other beforehand; check whether you overwrote their changes{hint}.",
+ "ext.coordination.late_collision_hint": " ({hint})",
+ "ext.coordination.list_separator": ", ",
+ "ext.coordination.log_write_failed": "[Guardian:Coord] Failed to write the observation log (features unaffected): {error}",
+ "ext.coordination.peer_files": "{who} ({count} files)",
+ "ext.coordination.peer_hint": "you can SendMessage `{name}` to coordinate; ",
+ "ext.coordination.peer_named": "`{name}`, {short_id}",
+ "ext.coordination.peer_names_unavailable": "[Guardian:Coord] Could not look up peer session names (claude agents --json failed); warnings show short ids only: {error}",
+ "ext.coordination.pre_tool_use_failed": "[Guardian:Coord] pre_tool_use check failed (fail-open): {error}",
+ "ext.coordination.scan_failed": "[Guardian:Coord] Conflict scan failed (fail-open): {error}"
+}

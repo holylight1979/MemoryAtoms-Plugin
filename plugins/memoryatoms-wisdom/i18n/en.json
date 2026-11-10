@@ -1,0 +1,6 @@
+{
+ "ext.wisdom.action_architecture": "Action: use Plan Mode first for architecture-level tasks",
+ "ext.wisdom.action_multi_file": "Action: when editing more than 2 files, list them first to confirm the scope",
+ "ext.wisdom.action_single_file": "Action: before editing, confirm you understood correctly; do not assume",
+ "ext.wisdom.blind_spot_line": "[Blind spot] {task_type} tasks: right on the first try {rate}. {action}"
+}

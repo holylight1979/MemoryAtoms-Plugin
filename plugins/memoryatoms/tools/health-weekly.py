@@ -1,0 +1,755 @@
+#!/usr/bin/env python3
+"""health-weekly.py — 每週記憶系統健檢（Windows 工作排程器驅動，無 CC session 依賴）。
+
+「靜默死 27 天」類問題的最後防線：管線可以壞，但壞了必須在一週內浮出。
+
+檢查面（全部唯讀，不自動修）：
+  1. memory-audit.py --json --global-only   → issues / duplicates（review 級）
+  2. atom-health-check.py --report --json   → broken_refs（紅）/ stale / shadow（黃）
+  3. sync-atom-index.py --check             → 索引一致性（紅）
+  4. skill-index.py --check                 → skill 計數 drift（紅）
+  5. vector 服務 GET /health                → 離線屬 INFO（服務隨 session 啟動）；
+     LanceDB 目錄缺失才是紅
+  6'. 官方健檢摘要：claude -p "/skill-doctor"、"/context"（skill 數與成本前五、固定成本）；
+     /doctor prompt-audit 太慢只留手動提示；CLI 不在或失敗 → 黃燈
+  6. 管線鮮度（死因偵測核心）：近 FRESH_DAYS 天內有 session（state-*.json mtime）
+     但 _promotion_audit.jsonl 無新增 → 紅（管線靜默停擺）；
+     無 session → INFO（停擺屬預期）
+
+產出：
+  - workflow/health-reports/health-YYYYMMDD.md（保留最近 KEEP_REPORTS 份）
+  - workflow/health-last-run.json {at, red, yellow, report} ——
+    SessionStart 死人開關讀此檔：缺檔或 at 逾 STALE_RUN_DAYS 天 → 排程器本身死了，
+    session 內浮出警示（fail-open 必告知）。
+
+手動執行：python tools/health-weekly.py [--json]
+排程註冊：見本檔尾 REGISTER 說明（schtasks 每週一 09:00 pythonw 靜默跑）。
+"""
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import subprocess
+import sys
+import time
+import urllib.request
+from datetime import datetime, timedelta
+from pathlib import Path
+
+# pythonw（Task Scheduler 靜默跑）下 sys.stdout/stderr 為 None——直接
+# reconfigure 會 AttributeError 秒死。None → devnull，有的才轉 UTF-8。
+for _name in ("stdout", "stderr"):
+    _s = getattr(sys, _name)
+    if _s is None:
+        setattr(sys, _name, open(os.devnull, "w", encoding="utf-8", newline="\n"))
+    else:
+        _s.reconfigure(encoding="utf-8")
+
+CODE_DIR = Path(__file__).resolve().parent.parent   # 程式碼根（本檔所在的樹）：tools、hooks、子行程 cwd
+if str(CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(CODE_DIR))
+from lib.atom_index_json import load_personal_rows  # noqa: E402
+from lib.edition import layered_config  # noqa: E402  插件版出廠設定墊底
+from lib.wg_platform import no_window_flags, find_claude  # noqa: E402
+from lib.sensitive_gate import is_secret_path, secret_value_found  # noqa: E402
+from lib.project_root import claude_data_dir, vector_service_port  # noqa: E402
+from lib.i18n import t  # noqa: E402
+CLAUDE_DIR = claude_data_dir()   # 使用者資料根（WG_CLAUDE_DIR 或 ~/.claude）：workflow、memory、Logs
+TOOLS = CODE_DIR / "tools"
+WORKFLOW = CLAUDE_DIR / "workflow"
+MEMORY = CLAUDE_DIR / "memory"
+REPORT_DIR = WORKFLOW / "health-reports"
+LAST_RUN = WORKFLOW / "health-last-run.json"
+RECALL_MISS_LOG = CLAUDE_DIR / "Logs" / "recall-miss.jsonl"
+
+FRESH_DAYS = 14        # 管線鮮度門檻：有 session 卻 N 天無管線輸出 = 停擺
+KEEP_REPORTS = 12      # 報告保留份數（~3 個月）
+RECALL_MISS_DAYS = 14  # 失念窗：近 N 天
+RECALL_MISS_MIN = 3    # 同一 atom 失念 ≥ N 次 → 黃燈
+PY = sys.executable
+
+
+def _run_json(args: list[str], timeout: int = 300) -> dict | None:
+    """跑子工具收 JSON；失敗回 None（呼叫端記紅——工具自身壞掉也是健檢發現）。"""
+    try:
+        r = subprocess.run(
+            [PY, *args], capture_output=True, text=True, encoding="utf-8",
+            timeout=timeout, cwd=str(CODE_DIR),
+            creationflags=no_window_flags(),
+        )
+        return json.loads(r.stdout)
+    except Exception:
+        return None
+
+
+def _load_config() -> dict:
+    try:
+        return layered_config(WORKFLOW / "config.json")
+    except (OSError, ValueError):
+        return {}
+
+
+def _provenance_anti_rot(now: datetime, days: int) -> tuple[int, int, str]:
+    """回 (補成功數, 候選數, 錯誤訊息)。候選＝Source 為 session:… 且日期距今 ≥days、無 Quote、該 session transcript 仍在。"""
+    import importlib.util
+    import re
+    tool = TOOLS / "atom-provenance-backfill.py"
+    if not tool.exists():
+        return 0, 0, t("cli.health_weekly.backfill_missing")
+    spec = importlib.util.spec_from_file_location("atom_provenance_backfill", tool)
+    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    sys.modules["atom_provenance_backfill"] = mod
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    from lib.provenance import find_transcript, parse_source
+    src_re = re.compile(r"^- Source:\s*(\S.*)$", re.M)
+    quote_re = re.compile(r"^- Quote:\s*\S", re.M)
+    cands: list[str] = []
+    for _layer, path in mod.collect_atoms("all"):
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except OSError:
+            continue
+        if quote_re.search(text):
+            continue
+        m = src_re.search(text)
+        if not m:
+            continue
+        ps = parse_source(m.group(1).strip())
+        if ps.get("kind") != "session" or not ps.get("date"):
+            continue
+        try:
+            age = (now.date() - datetime.strptime(ps["date"], "%Y-%m-%d").date()).days
+        except ValueError:
+            continue
+        if age < days or not find_transcript(ps["sid8"]):
+            continue
+        cands.append(str(path).replace("\\", "/"))
+    if not cands:
+        return 0, 0, ""
+    rep = mod.backfill(apply=True, only=cands)
+    fixed = sum(1 for r in rep["results"] if r.get("written"))
+    return fixed, len(cands), ""
+
+
+def _secret_leaks() -> list[str] | None:
+    """會進版控的記憶卡與索引裡，提到 secret 卡名或含密碼／token 真實值的檔（相對路徑）；None＝查不了。
+    只回路徑：報告與開場提示都不寫出卡名。還沒提交的新卡也算，提交了就留在歷史裡。"""
+    names = [a["name"] for a in load_personal_rows(MEMORY)
+             if isinstance(a, dict) and a.get("name") and is_secret_path(a.get("path", ""))]
+    try:
+        r = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "memory", "_AIDocs/_atoms"],
+                           capture_output=True, timeout=60, cwd=str(CLAUDE_DIR),
+                           creationflags=no_window_flags())
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    hits = []
+    for rel in r.stdout.decode("utf-8", errors="replace").split("\0"):
+        if not rel.endswith((".md", ".json")):
+            continue
+        try:
+            text = (CLAUDE_DIR / rel).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if secret_value_found(text) or any(name in text for name in names):
+            hits.append(rel)
+    return hits
+
+
+def _secret_misfiled() -> tuple[int, int]:
+    """secret 卡逐張體檢：(整張沒命中隱私字眼的張數, 知識段只有部分行命中的張數)。只回數字，不寫卡名。"""
+    from lib.sensitive_gate import secret_lines_report
+    none = mixed = 0
+    for a in load_personal_rows(MEMORY):
+        if not (isinstance(a, dict) and is_secret_path(a.get("path", ""))):
+            continue
+        try:
+            text = (CLAUDE_DIR / str(a["path"])).read_text(encoding="utf-8", errors="ignore")
+        except (OSError, KeyError):
+            continue
+        body = text.split("## 知識", 1)[1].split("## 行動", 1)[0] if "## 知識" in text else ""
+        lines = [ln[2:] if ln.startswith("- ") else ln for ln in body.splitlines() if ln.strip()]
+        rep = secret_lines_report({"title": a.get("name", ""), "triggers": a.get("triggers"), "knowledge": lines})
+        if not rep["hit"] and not rep["other_hit"]:
+            none += 1
+        elif rep["hit"] and rep["miss"]:
+            mixed += 1
+    return none, mixed
+
+
+def _run_check(args: list[str], timeout: int = 120) -> tuple[bool, str]:
+    """跑 --check 型工具；回 (通過, 摘要輸出)。"""
+    try:
+        r = subprocess.run(
+            [PY, "-X", "utf8", *args], capture_output=True, text=True, encoding="utf-8",
+            timeout=timeout, cwd=str(CODE_DIR),
+            creationflags=no_window_flags(),
+        )
+        return r.returncode == 0, _check_summary(((r.stdout or "") + (r.stderr or "")).strip())
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def _check_summary(out: str) -> str:
+    """輸出是 JSON（sync-atom-index --check）就摘成「哪類 幾筆（前兩個名字）」；最後一行只會是 `}`，報告看不出哪張卡。其餘取最後一行。"""
+    try:
+        d = json.loads(out)
+    except ValueError:
+        lines = out.splitlines()
+        return lines[-1] if lines else ""
+    if not isinstance(d, dict):
+        return out[-300:]
+    parts = []
+    for kind, items in d.items():
+        if not isinstance(items, list) or not items:
+            continue
+        names = [str(i.get("atom") or i.get("path") or i) if isinstance(i, dict) else str(i) for i in items[:2]]
+        parts.append(t("cli.health_weekly.kind_items", kind=kind, count=len(items), names="、".join(names)))
+    return "；".join(parts) or out[-300:]
+
+
+def _newest_mtime(pattern_dir: Path, glob: str) -> datetime | None:
+    try:
+        files = list(pattern_dir.glob(glob))
+        if not files:
+            return None
+        return datetime.fromtimestamp(max(f.stat().st_mtime for f in files))
+    except OSError:
+        return None
+
+
+def _promotion_last_ts() -> datetime | None:
+    """_promotion_audit.jsonl 最後一筆 ts（append-only，讀尾 4KB 即可）。"""
+    p = MEMORY / "_promotion_audit.jsonl"
+    try:
+        with open(p, "rb") as f:
+            f.seek(max(0, p.stat().st_size - 4096))
+            lines = f.read().decode("utf-8", errors="replace").strip().splitlines()
+        for line in reversed(lines):
+            try:
+                return datetime.fromisoformat(json.loads(line)["ts"])
+            except (ValueError, KeyError):
+                continue
+    except OSError:
+        pass
+    return None
+
+
+def _recall_miss_counts(days: int) -> dict[str, int]:
+    """Logs/recall-miss.jsonl 近 N 天 atom → 失念次數（缺檔/壞行計為零）。"""
+    counts: dict[str, int] = {}
+    cut = datetime.now().astimezone() - timedelta(days=days)
+    try:
+        for line in RECALL_MISS_LOG.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+                at = datetime.fromisoformat(str(rec.get("at", "")))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                continue
+            if at.tzinfo is None:
+                at = at.astimezone()
+            if at >= cut and rec.get("atom"):
+                counts[str(rec["atom"])] = counts.get(str(rec["atom"]), 0) + 1
+    except OSError:
+        pass
+    return counts
+
+
+def _hooks_on_path() -> None:
+    hooks_dir = str(CODE_DIR / "hooks")
+    if hooks_dir not in sys.path:
+        sys.path.insert(0, hooks_dir)
+
+
+def _run_selftest(st: dict, cwd: Path) -> dict:
+    """跑一筆 tool_selftests {name, cmd, expected(PASS|FAIL|DONE), sentinel?, runtime_gate, timeout_s}。
+    runtime_gate 非 0 → skipped（環境未就緒屬預期，不算紅）。判定：取 stdout 的**最後一個非空行**當哨兵行
+    （規矩：哨兵是尾行；先 PASS 後 traceback／雜訊就不是尾行），有給 sentinel 名就連名字一起比；
+    stderr 非空視為可疑：expected PASS／DONE 時紅。exit 非零：expected PASS／DONE 一律紅，expected FAIL 可綠。
+    subprocess 的 stdout／stderr 是分開收的（沒有時間順序），所以用「stdout 尾行＋stderr 非空」這個近似。"""
+    _hooks_on_path()
+    from wg_verify_ledger import parse_sentinels  # noqa: WPS433
+    name = str(st.get("name") or st.get("cmd") or "?")
+    expected = str(st.get("expected") or "PASS").upper()
+    timeout = float(st.get("timeout_s") or 60)
+    res = {"name": name, "expected": expected, "got": [], "ok": False, "status": "ran", "ms": 0, "detail": ""}
+    gate = str(st.get("runtime_gate") or "").strip()
+    try:
+        if gate:
+            g = subprocess.run(shlex.split(gate.replace("\\", "/")), capture_output=True, text=True,
+                               timeout=timeout, cwd=str(cwd),
+                               creationflags=no_window_flags())
+            if g.returncode != 0:
+                res.update(status="skipped", detail=f"runtime_gate exit {g.returncode}")
+                return res
+        t0 = time.monotonic()
+        r = subprocess.run(shlex.split(str(st.get("cmd") or "").replace("\\", "/")), capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=str(cwd),
+                           creationflags=no_window_flags())
+        res["ms"] = int((time.monotonic() - t0) * 1000)
+        out_lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
+        last_line = out_lines[-1] if out_lines else ""
+        sent = parse_sentinels(last_line)
+        res["got"] = [f"{s['name']} {s['verdict']}" for s in parse_sentinels((r.stdout or "") + "\n" + (r.stderr or ""))]
+        res["exit_code"] = r.returncode
+        res["last_line"] = last_line[:160]
+        want_name = str(st.get("sentinel") or "").strip()
+        last = sent[-1] if sent else None
+        ok = bool(last) and last["verdict"] == expected and (not want_name or last["name"] == want_name)
+        stderr_text = (r.stderr or "").strip()
+        if expected in ("PASS", "DONE"):
+            if r.returncode != 0:
+                ok = False
+                err_tail = stderr_text.splitlines()[-1][:120] if stderr_text else ""
+                res["detail"] = t("cli.health_weekly.nonzero_exit", code=r.returncode, expected=expected, tail=(t("cli.health_weekly.colon") + err_tail) if err_tail else '')
+            elif stderr_text:
+                ok = False
+                res["detail"] = t("cli.health_weekly.stderr_output", line=stderr_text.splitlines()[-1][:120])
+        if not ok and not res["detail"]:
+            res["detail"] = (t("cli.health_weekly.bad_last_line", line=last_line[:100], expected=expected) if out_lines else t("cli.health_weekly.no_output"))
+            if stderr_text and not out_lines:
+                res["detail"] = stderr_text.splitlines()[-1][:160]
+        res["ok"] = ok
+    except subprocess.TimeoutExpired:
+        res.update(status="timeout", detail=t("cli.health_weekly.timeout", seconds=timeout))
+    except (OSError, ValueError) as e:
+        res.update(status="error", detail=f"{type(e).__name__}: {e}"[:160])
+    return res
+
+
+def _selftests_block(selftests: list, cwd: Path) -> tuple[list[str], list[str], list[dict]]:
+    """H7：登記的工具自測逐筆跑；哨兵不符 expected（含壞依賴沒輸出、壞接線印別的名、壞哨兵小寫）→ 紅。
+    回 (red, info, results)。"""
+    red: list[str] = []
+    info: list[str] = []
+    results: list[dict] = []
+    for st in selftests or []:
+        if not isinstance(st, dict) or not st.get("cmd"):
+            continue
+        r = _run_selftest(st, cwd)
+        results.append(r)
+        if r["status"] == "skipped":
+            info.append(t("cli.health_weekly.selftest_skipped", name=r['name'], detail=r['detail']))
+        elif r["ok"]:
+            info.append(t("cli.health_weekly.selftest_ok", name=r['name'], expected=r['expected'], ms=r['ms']))
+        else:
+            got = "、".join(r["got"]) if r["got"] else t("cli.health_weekly.no_sentinel")
+            red.append(t("cli.health_weekly.selftest_red", name=r['name'], expected=r['expected'], got=got, status=r['status'], detail=r['detail']))
+    return red, info, results
+
+
+def _depends_block(hc: dict, coverage_min: float) -> tuple[list[str], list[str]]:
+    """H7：Depends 壞滅緣（路徑消失）黃、依賴比卡新黃、覆蓋率 info（低於 depends_coverage_min 黃）。回 (yellow, info)。"""
+    yellow: list[str] = []
+    info: list[str] = []
+    n_stale = len(hc.get("stale_deps") or [])
+    if n_stale:
+        yellow.append(t("cli.health_weekly.stale_deps", count=n_stale))
+    n_foreign = len(hc.get("foreign_deps") or [])
+    if n_foreign:
+        info.append(t("cli.health_weekly.foreign_deps", count=n_foreign))
+    mt = hc.get("stale_mtime_deps") or []
+    if mt:
+        names = ", ".join(f"{d.get('atom')}←{Path(str(d.get('dep', ''))).name}" for d in mt[:5])
+        yellow.append(t("cli.health_weekly.deps_newer", count=len(mt), names=names))
+    cov = hc.get("depends_coverage") or {}
+    if cov:
+        ratio = float(cov.get("ratio") or 0.0)
+        info.append(t("cli.health_weekly.coverage", with_depends=cov.get('with_depends', 0), total=cov.get('total', 0), ratio=f"{ratio:.1%}"))
+        if ratio < float(coverage_min or 0):
+            yellow.append(t("cli.health_weekly.coverage_low", ratio=f"{ratio:.1%}", min=f"{float(coverage_min):.1%}"))
+    return yellow, info
+
+
+# config verify_ledger.sentinel_regex 兩條內建 pytest 規則的現行值（版控庫 workflow/config.json 的那兩筆）。install 只做頂層合併，
+# 使用者保留的舊 config 不會跟著更新；hook 端（wg_verify_ledger._builtin_pytest_rule）只自動補 pytest_summary 旗標，regex 不補：
+# 停在最早版 regex 的機器把「1 passed, 1 error」判成 PASS。這裡只浮訊號，修法在 Install-forAI §3 升級段。
+_CURRENT_PYTEST_REGEX = (r"^(?:=+ )?(?P<verdict>\d+ (?:passed|failed|errors?|skipped|xfailed|xpassed|warnings?|deselected|rerun)"
+                         r"(?:, \d+ [a-z]+)*) in \d")
+_CURRENT_PYTEST_VERDICT_MAP = {
+    "PYTEST": {"failed": "FAIL", "error": "FAIL", "passed": "PASS", "xpassed": "PASS"},
+    "PYTEST_MEASURE": {"failed": "FAIL", "error": "FAIL", "passed": "DONE", "xpassed": "DONE"},
+}
+
+
+def _pytest_regex_block(cfg: dict) -> list[str]:
+    """config 內建 PYTEST／PYTEST_MEASURE 規則（verify_ledger.sentinel_regex）不是現行版 → 黃（WARN）。
+    regex、verdict_map、pytest_summary 三樣任一與現行值不同就報；兩條缺一條也報。自訂名稱的規則不管。
+    verdict_map 的值只比大小寫無關的結論（hook 端 compile_sentinel_rules 一樣 upper()，`pass` 與 `PASS` 執行期同義，不算舊版）。"""
+    vl = cfg.get("verify_ledger") if isinstance(cfg.get("verify_ledger"), dict) else {}
+    rules = vl.get("sentinel_regex") if isinstance(vl.get("sentinel_regex"), list) else []
+    yellow: list[str] = []
+    seen: set[str] = set()
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        name = str(r.get("name") or "").strip()
+        want = _CURRENT_PYTEST_VERDICT_MAP.get(name)
+        if not want:
+            continue
+        seen.add(name)
+        vm = r.get("verdict_map") if isinstance(r.get("verdict_map"), dict) else {}
+        wrong = [label for label, bad in (
+            ("regex", r.get("regex") != _CURRENT_PYTEST_REGEX),
+            ("verdict_map", {str(k): str(v).upper() for k, v in vm.items()} != want),
+            ("pytest_summary", r.get("pytest_summary") is not True),
+        ) if bad]
+        if wrong:
+            yellow.append(t("cli.health_weekly.regex_outdated", name=name, wrong="、".join(wrong), verdict=want['passed']))
+    for name in _CURRENT_PYTEST_VERDICT_MAP:
+        if name not in seen:
+            yellow.append(t("cli.health_weekly.regex_missing", name=name))
+    return yellow
+
+
+def _reconcile_overflow_block(days: int) -> list[str]:
+    """對帳閘預算用完放行（guard-reconcile_overflow.jsonl）近 N 天有事件 → 紅（放行要可見）。"""
+    p = CLAUDE_DIR / "Logs" / "guard-reconcile_overflow.jsonl"
+    cut = datetime.now().astimezone() - timedelta(days=days)
+    n = 0
+    try:
+        for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                at = datetime.fromisoformat(str(json.loads(line).get("at", "")))
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
+            if at.tzinfo is None:
+                at = at.astimezone()
+            if at >= cut:
+                n += 1
+    except OSError:
+        return []
+    return [t("cli.health_weekly.reconcile_overflow", count=n, days=days)] if n else []
+
+
+def _user_release_block(days: int) -> list[str]:
+    """閘擋滿後使用者放行（Logs/guard-*.jsonl 的 event=user_release）近 N 天有事件 → 紅（放行要可見，按閘分計）。"""
+    cut = datetime.now().astimezone() - timedelta(days=days)
+    per: dict[str, int] = {}
+    for p in sorted((CLAUDE_DIR / "Logs").glob("guard-*.jsonl")):
+        try:
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if '"user_release"' not in line:
+                continue
+            try:
+                rec = json.loads(line)
+                at = datetime.fromisoformat(str(rec.get("at", "")))
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
+            if rec.get("event") != "user_release":
+                continue
+            if at.tzinfo is None:
+                at = at.astimezone()
+            if at >= cut:
+                gate = p.stem[len("guard-"):]
+                per[gate] = per.get(gate, 0) + 1
+    if not per:
+        return []
+    detail = "、".join(t("cli.health_weekly.gate_times", gate=g, count=n) for g, n in sorted(per.items()))
+    return [t("cli.health_weekly.user_release", days=days, detail=detail)]
+
+
+def _instructions_loaded_block(days: int = 7) -> list[str]:
+    """Logs/instructions-loaded.jsonl（InstructionsLoaded hook 的帳）近 N 天 → 一行：各載入原因次數、壓縮後有沒有重載 CLAUDE.md 與 MEMORY.md。
+    沒有帳（hook 還沒掛或這週沒開 session）回空；壓縮過的 session 有缺重載另給一行。"""
+    p = CLAUDE_DIR / "Logs" / "instructions-loaded.jsonl"
+    if not p.exists():
+        return []
+    cut = datetime.now().astimezone() - timedelta(days=days)
+    reasons: dict[str, int] = {}
+    compacted: dict[str, set[str]] = {}   # session → 壓縮後重載過的檔名
+    try:
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            rec = json.loads(line)
+            at = datetime.fromisoformat(str(rec.get("at", "")))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            continue
+        if at.tzinfo is None:
+            at = at.astimezone()
+        if at < cut:
+            continue
+        why = str(rec.get("load_reason", "?"))
+        reasons[why] = reasons.get(why, 0) + 1
+        if why == "compact":
+            compacted.setdefault(str(rec.get("session_id", "")), set()).add(Path(str(rec.get("file_path", ""))).name)
+    if not reasons:
+        return []
+    out = [t("cli.health_weekly.instructions_loaded", days=days) + "、".join(f"{k} {v}" for k, v in sorted(reasons.items()))]
+    if compacted:
+        n = len(compacted)
+        out.append(t("cli.health_weekly.reload_after_compact", sessions=n, claude_md=sum('CLAUDE.md' in f for f in compacted.values()), memory_md=sum('MEMORY.md' in f for f in compacted.values())))
+    return out
+
+
+def _claude_p(cli: str, prompt: str, timeout: int = 60) -> str:
+    """無頭跑一個斜線命令回 result 文字；失敗丟例外（呼叫端轉成黃燈）。"""
+    r = subprocess.run(
+        [cli, "-p", prompt, "--model", "haiku", "--output-format", "json"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+        stdin=subprocess.DEVNULL, cwd=str(CODE_DIR),
+        creationflags=no_window_flags(),
+    )
+    d = json.loads(r.stdout)
+    if d.get("is_error"):
+        raise RuntimeError(str(d.get("result"))[:100])
+    return d.get("result") or ""
+
+
+def _skill_doctor_summary(text: str) -> list[str]:
+    """/skill-doctor 表格 → skill 數、context 成本前五、從沒叫過的提示行。"""
+    import re
+    rows = []
+    for m in re.finditer(r"^  (\S+)\s{2,}(.+?)\s{2,}(~\d+|<\s*\d+|-)\s{2,}", text, re.M):
+        cost = int(re.sub(r"\D", "", m.group(3)) or 0) if m.group(3) != "-" else 0
+        rows.append((m.group(1), cost))
+    if not rows:
+        return [t("cli.health_weekly.skill_table_missing")]
+    top = sorted(rows, key=lambda x: -x[1])[:5]
+    out = [t("cli.health_weekly.skill_top", count=len(rows)) + "、".join(f"{n}(~{c})" for n, c in top)]
+    out += [m.group(0).strip()[:120] for m in re.finditer(r"^\d+ skills?.*never invoked.*$", text, re.M)]
+    return out
+
+
+def _context_summary(text: str) -> list[str]:
+    """/context 類別表 → 固定成本（不含 deferred／Messages／Free／Autocompact）。"""
+    import re
+    fixed = ("System prompt", "System tools", "MCP tools", "MCP server instructions", "Memory files", "Skills")
+    cells = dict(re.findall(r"^\| ([^|]+?) \| ([^|]+?) \|", text, re.M))
+    parts = [f"{k} {cells[k]}" for k in fixed if k in cells]
+    total = re.search(r"\*\*Tokens:\*\* (\S+)", text)
+    if not parts:
+        return [t("cli.health_weekly.context_table_missing")]
+    return [t("cli.health_weekly.context_fixed") + "、".join(parts) + (t("cli.health_weekly.context_total", total=total.group(1)) if total else "")]
+
+
+def _official_block(cli: str | None, run=_claude_p) -> tuple[list[str], list[str]]:
+    """官方健檢摘要 → (official 行, 黃燈)。/skill-doctor 與 /context 無頭可跑（不呼叫模型、各約 20 秒，並行跑）；
+    /doctor prompt-audit 會呼叫模型審查，無頭實測 170 秒未完成，只留手動提示。CLI 不在或失敗 → 黃燈。"""
+    manual = t("cli.health_weekly.manual_prompt_audit")
+    if not cli:
+        return [manual], [t("cli.health_weekly.no_claude_cli")]
+    from concurrent.futures import ThreadPoolExecutor
+    jobs = (("/skill-doctor", _skill_doctor_summary), ("/context", _context_summary))
+    lines: list[str] = []
+    yellow: list[str] = []
+
+    def one(job):
+        cmd, summarize = job
+        try:
+            return summarize(run(cli, cmd))
+        except Exception as e:
+            yellow.append(t("cli.health_weekly.official_failed", cmd=cmd, error=f"{type(e).__name__}: {str(e)[:80]}"))
+            return [t("cli.health_weekly.official_failed_short", cmd=cmd)]
+
+    with ThreadPoolExecutor(len(jobs)) as ex:
+        for part in ex.map(one, jobs):
+            lines.extend(part)
+    lines.append(manual)
+    return lines, yellow
+
+
+def collect() -> dict:
+    now = datetime.now()
+    red: list[str] = []      # 需處理
+    yellow: list[str] = []   # 需留意
+    info: list[str] = []     # 純資訊
+    selftests: list[dict] = []
+
+    # 1. memory-audit
+    ma = _run_json([str(TOOLS / "memory-audit.py"), "--json", "--global-only"])
+    if ma is None:
+        red.append(t("cli.health_weekly.tool_failed", tool="memory-audit.py"))
+    else:
+        n_iss, n_dup = len(ma.get("issues") or []), len(ma.get("duplicates") or [])
+        if n_iss or n_dup:
+            yellow.append(t("cli.health_weekly.audit_issues", issues=n_iss, duplicates=n_dup))
+
+    # 2. atom-health-check
+    hc = _run_json([str(TOOLS / "atom-health-check.py"), "--report", "--json"])
+    if hc is None:
+        red.append(t("cli.health_weekly.tool_failed", tool="atom-health-check.py"))
+    else:
+        br = len(hc.get("broken_refs") or [])
+        if br:
+            red.append(t("cli.health_weekly.broken_refs", count=br))
+        for k in ("stale_atoms", "shadow_atoms", "missing_reverse_refs"):
+            n = len(hc.get(k) or [])
+            if n:
+                yellow.append(t("cli.health_weekly.key_count", key=k, count=n))
+        # 2b. Depends：壞滅緣（路徑消失）、依賴比卡新、覆蓋率
+        dy, di = _depends_block(hc, float(_load_config().get("depends_coverage_min", 0) or 0))
+        yellow.extend(dy)
+        info.extend(di)
+
+    # 2c. 工具自測（config tool_selftests[]）：壞依賴／壞接線／壞哨兵都要在一週內浮出
+    sr, si, selftests = _selftests_block(_load_config().get("tool_selftests") or [], CODE_DIR)
+    red.extend(sr)
+    info.extend(si)
+    # 2d. 對帳閘預算用完放行（舊 overflow 紀錄）＋擋滿後使用者放行
+    red.extend(_reconcile_overflow_block(FRESH_DAYS))
+    red.extend(_user_release_block(FRESH_DAYS))
+    info.extend(_instructions_loaded_block())
+    # 2d'. config 內建 PYTEST／PYTEST_MEASURE regex 停在舊版（只更新 hooks、沒對 config 的機器）
+    yellow.extend(_pytest_regex_block(_load_config()))
+
+    # 3/4. 索引一致性
+    for name, args in (
+        ("atom index", [str(TOOLS / "sync-atom-index.py"), "--check"]),
+        ("skill index", [str(TOOLS / "skill-index.py"), "--check"]),
+    ):
+        ok, msg = _run_check(args)
+        if not ok:
+            red.append(f"{name} drift：{msg}")
+    leaks = _secret_leaks()
+    if leaks is None:
+        yellow.append(t("cli.health_weekly.leak_check_failed"))
+    elif leaks:
+        red.append(t("cli.health_weekly.leaks", count=len(leaks), files="、".join(leaks[:5])))
+    none_hit, mixed = _secret_misfiled()
+    if none_hit or mixed:
+        yellow.append(t("cli.health_weekly.secret_misfiled", none_hit=none_hit, mixed=mixed))
+    # 換行殘留（repo 全部 LF；有 CRLF/mixed 就黃燈，修法：python tools/normalize-eol.py --root --include-dirty）
+    ok, msg = _run_check([str(TOOLS / "normalize-eol.py"), "--root", "--check"])
+    if not ok:
+        yellow.append(t("cli.health_weekly.eol_residue", msg=msg[:300]))
+    # 專案層索引（全部登記專案，從 ~/.claude 一鍵掃；黃燈：不必逐專案開 session 整理，
+    # 修法同一支：sync-atom-index.py --all-projects --fix-scope-from-path）
+    ok, msg = _run_check([str(TOOLS / "sync-atom-index.py"), "--all-projects", "--check"], timeout=300)
+    if not ok:
+        yellow.append(t("cli.health_weekly.index_drift", msg=msg[:300]))
+
+    # 5. vector
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{vector_service_port()}/health", timeout=3
+        ) as resp:
+            info.append(t("cli.health_weekly.vector_online", status=resp.status))
+    except Exception:
+        info.append(t("cli.health_weekly.vector_offline"))
+    if not (MEMORY / "_vectordb").exists():
+        red.append(t("cli.health_weekly.vectordb_missing"))
+
+    # 5b. 注入效果報表（token 稅 / 死重 / 使用證據——效果面，非結構面）
+    er = _run_json([str(TOOLS / "memory-effect-report.py"), "--json"])
+    if er is None:
+        red.append(t("cli.health_weekly.tool_failed", tool="memory-effect-report.py"))
+    else:
+        n_tax = len(er.get("exposure_tax") or [])
+        n_dead = len(er.get("dead_candidates") or [])
+        n_useful = len(er.get("top_useful") or [])
+        if n_tax:
+            names = ", ".join(r["name"] for r in er["exposure_tax"][:5])
+            yellow.append(t("cli.health_weekly.exposure_tax", count=n_tax, names=names))
+        if n_useful == 0:
+            yellow.append(t("cli.health_weekly.no_utility_evidence"))
+        info.append(t("cli.health_weekly.injection_effect", useful=n_useful, tax=n_tax, dead=n_dead))
+
+    # 5c. 失念（recall-miss）：近 14 天同一 atom 反覆「該想起而未想起」→ 黃燈
+    rm = _recall_miss_counts(RECALL_MISS_DAYS)
+    flagged = {a: c for a, c in rm.items() if c >= RECALL_MISS_MIN}
+    if flagged:
+        tops = ", ".join(
+            f"{a}×{c}" for a, c in
+            sorted(flagged.items(), key=lambda x: (-x[1], x[0]))[:5]
+        )
+        yellow.append(t("cli.health_weekly.recall_miss", count=len(flagged), tops=tops, days=RECALL_MISS_DAYS, min=RECALL_MISS_MIN))
+
+    # 6. 管線鮮度（死人偵測核心）
+    fresh_cut = now - timedelta(days=FRESH_DAYS)
+    last_session = _newest_mtime(WORKFLOW, "state-*.json")
+    sessions_active = last_session is not None and last_session > fresh_cut
+    checks = {
+        t("cli.health_weekly.promotion_audit"): _promotion_last_ts(),
+    }
+    for label, ts in checks.items():
+        if ts is None or ts < fresh_cut:
+            age = t("cli.health_weekly.no_data") if ts is None else t("cli.health_weekly.last_at", date=f"{ts:%Y-%m-%d}")
+            if sessions_active:
+                red.append(t("cli.health_weekly.stalled", label=label, age=age, days=FRESH_DAYS))
+            else:
+                info.append(t("cli.health_weekly.idle_expected", label=label, age=age, days=FRESH_DAYS))
+
+    # 7. 來源防腐：Source 指到 session、transcript 還在、距今 ≥ anti_rot_days、尚無 Quote → 搶在 transcript 清掉前補原句
+    try:
+        prov_cfg = (_load_config().get("provenance") or {})
+        if prov_cfg.get("enabled", True):
+            n_fixed, n_cand, err = _provenance_anti_rot(now, int(prov_cfg.get("anti_rot_days", 25)))
+            if err:
+                yellow.append(t("cli.health_weekly.anti_rot_failed", error=err[:200]))
+            elif n_cand:
+                info.append(t("cli.health_weekly.anti_rot_done", candidates=n_cand, fixed=n_fixed))
+    except Exception as e:
+        yellow.append(t("cli.health_weekly.anti_rot_exception", error=f"{type(e).__name__}: {e}"))
+
+    # 8. 官方健檢摘要（放最後：claude -p 會起一場 session，不能干擾上面的管線鮮度判斷）
+    official, off_yellow = _official_block(find_claude())
+    yellow.extend(off_yellow)
+
+    return {"at": now.isoformat(timespec="seconds"), "red": red,
+            "yellow": yellow, "info": info, "official": official, "selftests": selftests,
+            "last_session": last_session.isoformat(timespec="seconds") if last_session else None}
+
+
+def write_report(result: dict) -> Path:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    day = result["at"][:10].replace("-", "")
+    path = REPORT_DIR / f"health-{day}.md"
+    lines = [t("cli.health_weekly.report_title", at=result['at']), ""]
+    for title, key, mark in ((t("cli.health_weekly.section_red"), "red", "🔴"), (t("cli.health_weekly.section_yellow"), "yellow", "🟡"),
+                             (t("cli.health_weekly.section_info"), "info", "·")):
+        items = result[key]
+        lines.append(f"## {title}（{len(items)}）")
+        lines.extend(f"- {mark} {x}" for x in items)
+        if not items:
+            lines.append(t("cli.health_weekly.none_item"))
+        lines.append("")
+    if result.get("official"):
+        lines.append(t("cli.health_weekly.official_section", count=len(result['official'])))
+        lines.extend(f"- {x}" for x in result["official"])
+        lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+    # 輪替：保留最近 KEEP_REPORTS 份
+    reports = sorted(REPORT_DIR.glob("health-*.md"))
+    for old in reports[:-KEEP_REPORTS]:
+        old.unlink(missing_ok=True)
+    return path
+
+
+def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description="Weekly memory health check: writes the report and workflow/health-last-run.json.")
+    ap.add_argument("--json", action="store_true", help="print the full result as JSON instead of one summary line")
+    ap.parse_args()                     # --help 只印說明就結束，不會落下面的報告與 health-last-run.json
+    result = collect()
+    report = write_report(result)
+    LAST_RUN.write_text(json.dumps({
+        "at": result["at"], "red": len(result["red"]),
+        "yellow": len(result["yellow"]),
+        "selftests_failed": sum(1 for s in result.get("selftests") or [] if s.get("status") != "skipped" and not s.get("ok")),
+        "report": str(report),
+    }, ensure_ascii=False), encoding="utf-8", newline="\n")
+    if "--json" in sys.argv[1:]:
+        print(json.dumps(result, ensure_ascii=False, indent=1))
+    else:
+        print(t("cli.health_weekly.summary", red=len(result['red']), yellow=len(result['yellow']), info=len(result['info']), report=report))
+    return 1 if result["red"] else 0
+
+
+# REGISTER（安裝流程不會自動註冊；要每週自動跑就照下面自己註冊一次）：
+#   schtasks /Create /TN "Claude-Memory-WeeklyHealth" /SC WEEKLY /D MON /ST 09:00
+#     /TR "%USERPROFILE%/AppData/Local/Python/bin/pythonw.exe
+#          <memory system folder>/tools/health-weekly.py"
+# 錯過排程（關機）→ 下次開機由 Task Scheduler 設定補跑；SessionStart 死人開關兜底。
+if __name__ == "__main__":
+    sys.exit(main())

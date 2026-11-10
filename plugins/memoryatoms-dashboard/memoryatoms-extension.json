@@ -1,0 +1,34 @@
+{
+  "name": "dashboard",
+  "description": "Web dashboard: a local HTTP service inside the MCP process (dashboard, brain-world chat, wrap-up report HUD); port takeover and the release handshake live here too",
+  "python": {
+    "path": [
+      "hooks"
+    ],
+    "on": {
+      "AecReport.saved": "dashboard_plugin:on_report_saved",
+      "AecReport.unseen": "dashboard_plugin:on_report_unseen"
+    }
+  },
+  "mcp": "mcp/index.js",
+  "config": {
+    "dashboard_port": 3848
+  },
+  "pages": {
+    "dashboard": {
+      "url": "http://127.0.0.1:3848/",
+      "what": "Memory system dashboard (atoms / conversation monitor / health check / tests)",
+      "how": "Served inside the MCP process; available once Claude Code has started. Port: WG_DASHBOARD_PORT env var → dashboard_port in workflow/config.json → 3848"
+    },
+    "anti_evasion_hud": {
+      "url": "http://127.0.0.1:3848/aec/hud",
+      "what": "Anti-Evasion HUD (wrap-up check report: gap fixes / evasion reports / token warnings / derived temp files)",
+      "how": "Same as above, route /aec/hud"
+    },
+    "brain_world": {
+      "file": "mcp/world.html",
+      "what": "Brain world (memory cards shown as a living ecosystem)",
+      "how": "Static file with no route; open it directly in a browser (file://). The page polls http://127.0.0.1:3848/api/* by itself, so the dashboard must be running"
+    }
+  }
+}

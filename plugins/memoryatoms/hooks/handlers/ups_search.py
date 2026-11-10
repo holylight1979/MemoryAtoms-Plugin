@@ -1,0 +1,512 @@
+"""
+handlers/ups_search.py — UserPromptSubmit search pipeline 段
+
+從 user_prompt_submit.py 拆出。
+職責：本輪 prompt 的 atom 候選收集與排序：
+- atom index 組裝（global + project 層，_AIAtoms/ 基底解析）；候選池在 SessionStart
+  已依 scope 可見性收窄（SPEC §8.1），他專案 atom 從不進池
+- 跨專案 alias 掃描（mtime 排序上限 20 專案）：prompt 命中他專案別名 → 只帶入該專案
+  MEMORY.md 目錄（去 personal/roles 行），不撈 atom
+- trigger keyword match
+- BM25 over global layer（trigger 命中 ≤2 才跑；向量這次沒結果時連專案層）
+- vector fallback（_semantic_search，layers 白名單＝候選池同一套可見性）+ section hints
+- supersedes filtering
+- ACT-R activation sort
+
+公開函式 collect_matched_atoms() 回傳排序後的候選與來源歸因。
+"""
+
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from wg_core import (
+    MEMORY_DIR, MEMORY_INDEX, WORKFLOW_DIR,
+    discover_all_project_memory_dirs, _is_under_claude_dir,
+    _atom_debug_log, _atom_debug_error, append_guard_log, cwd_to_project_slug, resolve_staging_dir,
+)
+import i18n  # lib/（wg_core 已放進 sys.path）：給人看的提示走語言表
+import math
+
+from wg_atoms import (
+    AtomEntry,
+    parse_project_aliases, visible_vector_layers,
+    any_trigger_hit, count_trigger_hits, compute_activation, compute_injection_rank,
+    classify_intent,
+    _semantic_search,
+    bm25_match, BM25_MIN_SCORE_DEFAULT, _bm25_tokenize,
+    read_atom_text, rrf_fuse, RRF_ACTIVATION_GAIN,
+)
+import re
+
+from handlers._shared import _SUPERSEDES_RE
+from wg_atoms import SUPERSEDES_MEMO, collect_superseded_names
+
+# 歷史查詢：使用者「明確要查閱／比較舊做法」→ Supersedes 過濾放行，讓舊卡可被查到。
+# 只有「舊版」兩個字不算（Codex #8 反例：「不要用以前的部署流程」「舊版已被取代，只要現行做法」
+# 都在否定舊版，放行反而把舊卡送回去）。要同時滿足：有歷史詞、有查閱／比較動詞、且歷史詞前面沒有否定。
+_HISTORY_TERM = r"(?:以前|舊版|舊的|舊做法|歷史上|之前|原本|當初|被取代前|取代前|supersed\w*)"
+_HISTORY_ASK = r"(?:怎麼做|是怎樣|是什麼|是如何|做法|為什麼|比較|差在哪|差異|對照|查一下|看一下|看看|列出|回顧|翻一下|show|compare|what was|how did)"
+_HISTORY_QUERY_RE = re.compile(_HISTORY_TERM + r"[^。；;\n]{0,20}?" + _HISTORY_ASK, re.IGNORECASE)
+_HISTORY_NEG_RE = re.compile(r"(?:不要|別|不用|不採用|不再|勿|避免|不照|不依|不是要)\s*(?:用|照|依|按|沿用|參考)?\s*" + _HISTORY_TERM, re.IGNORECASE)
+
+
+def _is_history_query(prompt: str) -> bool:
+    """明確要看舊做法才 True；「不要用舊的」「舊版已被取代」這類否定舊版的句子 False。"""
+    if not prompt:
+        return False
+    if _HISTORY_NEG_RE.search(prompt):
+        return False
+    return _HISTORY_QUERY_RE.search(prompt) is not None
+
+
+# ─── 這則拿什麼文字去檢索 ─────────────────────────────────────────────────────
+# UserPromptSubmit 在 skill 展開前跑，/continue 回合收到的只有使用者打的那一行；真正的任務寫在交接單裡。
+# 規則 CONTINUE_QUERY_FROM_HANDOFF：/continue 回合把交接單前段接在使用者打的字後面當查詢。
+CONTINUE_COMMAND_RE = re.compile(r"^/continue(?=\s|$)", re.IGNORECASE)
+HANDOFF_QUERY_MAX_LINES = 30
+HANDOFF_QUERY_MAX_CHARS = 1500
+_MD_PATH_RE = re.compile(r"[^\s`'\"「」『』（）()<>]+\.md(?![\w.])", re.IGNORECASE)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+INJECT_GUARD_LOG = "ups_inject"     # Logs/guard-ups_inject.jsonl：這則不注入、/continue 查詢接了哪份交接單
+
+
+def continue_handoff_path(typed: str, cwd: str) -> Optional[Path]:
+    """/continue 要接的交接單：參數裡點名、存在的 .md 優先（相對路徑先照 cwd、再照 ~/.claude 解）；沒點名就取
+    staging 區（專案層 _staging，再加根層 memory/_staging）最新的 next-phase*.md（/continue skill 掃的同一組檔）。找不到 → None。"""
+    bases = [Path(cwd)] if cwd else []
+    bases.append(MEMORY_DIR.parent)
+    for m in _MD_PATH_RE.finditer(typed):
+        raw = Path(m.group(0)).expanduser()
+        for cand in [raw] if raw.is_absolute() else [b / raw for b in bases]:
+            if cand.is_file():
+                return cand
+    dirs = [MEMORY_DIR / "_staging"]
+    if cwd:
+        try:
+            dirs.insert(0, resolve_staging_dir(cwd))
+        except Exception as e:  # noqa: BLE001 — 專案層找不到就只看根層
+            _atom_debug_error("ups:continue_staging", e)
+    cands: List[Path] = []
+    for d in dirs:
+        if d.is_dir():
+            cands.extend(p for p in d.glob("next-phase*.md") if p.is_file())
+    return max(cands, key=lambda p: p.stat().st_mtime) if cands else None
+
+
+def handoff_head(path: Path) -> str:
+    """交接單前段：去掉 HTML 註解（待補的 TODO 格）與空行，取前 HANDOFF_QUERY_MAX_LINES 行、最多 HANDOFF_QUERY_MAX_CHARS 字。"""
+    text = _HTML_COMMENT_RE.sub(" ", path.read_text(encoding="utf-8-sig", errors="replace"))
+    kept = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return "\n".join(kept[:HANDOFF_QUERY_MAX_LINES])[:HANDOFF_QUERY_MAX_CHARS]
+
+
+def retrieval_query(session_id: str, typed: str, clean_prompt: str, cwd: str) -> str:
+    """這則拿來檢索、算注入預算的文字：使用者本人打的字（背景通知、同伴訊息等區塊不算）；沒有（例：殘留標籤字樣整則不認）
+    退回入口清理後的原文。/continue 回合後面接交接單前段，留帳 event=continue_query；找不到或讀不了交接單 → 只用打的字，
+    留帳 event=continue_query_missing。"""
+    base = typed or clean_prompt
+    if not CONTINUE_COMMAND_RE.match(typed):
+        return base
+    path = continue_handoff_path(typed, cwd)
+    head = ""
+    if path:
+        try:
+            head = handoff_head(path)
+        except OSError as e:
+            _atom_debug_error("ups:continue_handoff_read", e)
+    append_guard_log(INJECT_GUARD_LOG, {
+        "session_id": session_id, "event": "continue_query" if head else "continue_query_missing",
+        "path": str(path or ""), "chars": len(head),
+    })
+    return f"{base}\n{head}" if head else base
+
+# 跨專案 alias 快取：每 prompt 都是新進程，免每次重讀最多 20 個專案的 MEMORY.md
+# alias 行。以該檔 mtime_ns 為鍵；變動即重讀。fail-open：快取壞掉就照舊逐檔讀。
+# 只快取 alias——他專案的 atom 索引不再讀（他專案 atom 不進候選池）。
+_CROSS_CACHE_NAME = "cross-project-index-cache.json"
+
+
+def _cross_cache_key(mem: Path) -> str:
+    try:
+        return str((mem / MEMORY_INDEX).stat().st_mtime_ns)
+    except OSError:
+        return "0"
+
+
+def _load_cross_project_cache(cross: List[Tuple[str, Path]]) -> Dict[str, Dict[str, Any]]:
+    """回 {str(mem_dir): {"aliases": [...]}}，只含鍵仍有效者；失效／缺席者逐檔重讀後回寫。"""
+    import json as _json
+    from wg_core import WORKFLOW_DIR
+    path = WORKFLOW_DIR / _CROSS_CACHE_NAME
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        data = {}
+    out: Dict[str, Dict[str, Any]] = {}
+    stale: List[Tuple[str, Path]] = []
+    for _slug, mem in cross:
+        ent = data.get(str(mem))
+        if ent and ent.get("key") == _cross_cache_key(mem):
+            out[str(mem)] = ent
+        else:
+            stale.append((_slug, mem))
+    if stale:
+        for _slug, mem in stale:
+            try:
+                ent = {
+                    "key": _cross_cache_key(mem),
+                    "aliases": parse_project_aliases(mem),
+                }
+            except Exception:  # noqa: BLE001 — 單一專案讀壞不影響其餘
+                continue
+            data[str(mem)] = ent
+            out[str(mem)] = ent
+        try:
+            keep = {str(m) for _s, m in cross}
+            data = {k: v for k, v in data.items() if k in keep}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(_json.dumps(data, ensure_ascii=False), encoding="utf-8", newline="\n")
+            tmp.replace(path)
+        except OSError:
+            pass
+    return out
+
+_MAX_CROSS_PROJECT_SCAN = 20
+
+_ALIAS_HIDDEN_SEGMENTS = ("personal/", "roles/", "_pending_review")
+
+
+def _alias_memory_text(mem_text: str) -> str:
+    """alias 帶入他專案 MEMORY.md 時只留目錄性文字：去表格列、去空行、
+    去提到 personal/ roles/ 待審區的行（他人與個人層連名字都不外露）。"""
+    out: List[str] = []
+    for line in mem_text.split("\n"):
+        if not line.strip():
+            continue
+        if line.startswith("|") and "|" in line[1:]:
+            continue
+        low = line.lower()
+        if any(seg in low for seg in _ALIAS_HIDDEN_SEGMENTS):
+            continue
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+# 專案層的 BM25 退路入選規則（沒向量時）：專案層只有幾張到幾十張卡，為幾百張全域卡調的 7.0 分數門檻不適用——
+# 同一個語料裡分數看卡名長短（實測真機卡 7.57 剛好過，換個卡名就不過），而且一個詞巧合就能過
+# （「Why does my build fail…」只靠 build 也中）。改看「這句和這張卡共有幾個不同的實詞」：
+# 卡的文字＝卡名＋Trigger＋知識／行動段（模型寫的卡常只在內文講到 run、pushing），至少 PROJECT_LAYER_MIN_TERMS 個才算；
+# 指稱專案本身的詞不算（每張專案卡都在講這個專案）。英文虛詞已由 _bm25_tokenize 剔除。
+PROJECT_LAYER_MIN_TERMS = 2
+_PROJECT_SELF_WORDS = frozenset({"project", "projects", "repo", "repository", "codebase", "專案"})
+
+
+def _card_sections(text: str) -> str:
+    """卡的知識／行動段（第一個 `## ` 標題之後）；表頭的 Quote／Source 等中繼資料不算。"""
+    parts = text.split("\n## ", 1)
+    return parts[1] if len(parts) == 2 else ""
+
+
+def project_layer_hits(
+    prompt: str, project_atoms: List[Tuple[AtomEntry, Path]], content_cache: Dict[str, Optional[str]], top_k: int,
+) -> List[AtomEntry]:
+    """專案層卡依「和這句共有幾個不同實詞」排序，取達 PROJECT_LAYER_MIN_TERMS 的前 top_k 張。"""
+    query = set(_bm25_tokenize(prompt)) - _PROJECT_SELF_WORDS
+    scored: List[Tuple[int, int, AtomEntry]] = []
+    for order, ((name, rel_path, triggers), base_dir) in enumerate(project_atoms):
+        atom_path = (base_dir / rel_path) if rel_path else (base_dir / "memory" / f"{name}.md")
+        text = read_atom_text(atom_path, content_cache) if atom_path.exists() else None
+        words = set(_bm25_tokenize(" ".join(triggers) + " " + name.replace("-", " ") + " " + _card_sections(text or "")))
+        shared = len(query & words)
+        if shared >= PROJECT_LAYER_MIN_TERMS:
+            scored.append((-shared, order, (name, rel_path, triggers)))
+    scored.sort()
+    return [entry for _neg, _order, entry in scored[:top_k]]
+
+
+def _merge_hit(
+    name: str,
+    pool: List[Tuple[AtomEntry, Path]],
+    source_tag: str,
+    matched_with_dir: List[Tuple[AtomEntry, Path]],
+    atom_source: Dict[str, str],
+    kw_matched_names: set,
+    already_injected: List[str],
+) -> None:
+    """把 BM25/vector 命中的 atom 名依 pool 解析後合併進候選（去重 + 來源歸因）。"""
+    if name in kw_matched_names or name in already_injected:
+        return
+    for tup in pool:
+        if tup[0][0] == name:
+            matched_with_dir.append(tup)
+            atom_source.setdefault(name, source_tag)
+            kw_matched_names.add(name)
+            break
+
+
+def collect_matched_atoms(
+    session_id: str,
+    state: Dict[str, Any],
+    config: Dict[str, Any],
+    prompt: str,
+    prompt_lower: str,
+    lines: List[str],
+) -> Tuple[
+    List[Tuple[AtomEntry, Path]],  # matched_with_dir（已排序：RRF×activation 或 legacy ACT-R）
+    Dict[str, str],                # atom_source（name → trigger/bm25/vector）
+    List[Tuple[AtomEntry, Path]],  # all_atoms（含跨專案補入）
+    list,                          # sem_atoms（vector 原始結果，供 blind-spot 統計）
+    Dict[str, List[Dict]],         # section_hints（vector section 提示）
+    set,                           # alias_injected_projects
+    str,                           # intent
+    Dict[str, Dict],               # caches：{"content": path→text, "access": md path→access dict}
+]:
+    """收集並排序本輪可注入的 atom 候選。append lines（alias 注入）。
+
+    caches 隨管線下傳（assemble_injection 續用）——同 atom 本 prompt 只實讀一次。
+    """
+    atom_index = state.get("atom_index", {})
+    already_injected = state.get("injected_atoms", [])
+    content_cache: Dict[str, str] = {}
+    access_cache: Dict[str, Dict] = {}
+    caches: Dict[str, Dict] = {"content": content_cache, "access": access_cache}
+
+    all_atoms: List[Tuple[AtomEntry, Path]] = []
+    for entry in atom_index.get("global", []):
+        name, rel_path, triggers = entry
+        all_atoms.append(((name, rel_path, triggers), MEMORY_DIR.parent))
+    proj_dir_str = atom_index.get("project_memory_dir", "")
+    proj_root_str = atom_index.get("project_root", "")
+    if proj_dir_str:
+        proj_parent = Path(proj_dir_str).parent
+        proj_root = Path(proj_root_str) if proj_root_str else None
+        for entry in atom_index.get("project", []):
+            name, rel_path, triggers = entry
+            if rel_path.startswith("_AIAtoms/") and proj_root:
+                base = proj_root
+            else:
+                base = proj_parent
+            all_atoms.append(((name, rel_path, triggers), base))
+    # 組織層（SessionStart 由 config org_memory 建池）：rel_path 相對 `<org_root>/.claude`
+    org_base_str = atom_index.get("org_base") or ""
+    if org_base_str:
+        org_base = Path(org_base_str)
+        for entry in atom_index.get("org", []):
+            name, rel_path, triggers = entry
+            all_atoms.append(((name, rel_path, triggers), org_base))
+
+    # Supersedes 全路徑有效性：候選池先去掉被取代的舊卡（trigger/BM25/vector/Related/裁切共用同一池）。
+    # 集合每 session 算一次 stash 在 atom_index（SessionStart 建；舊 state 沒有就在這裡補算一次）。
+    # 使用者明說要看舊的（歷史查詢）→ 不過濾，讓舊卡可被查到。
+    history_mode = _is_history_query(prompt or "")
+    superseded: set = set(atom_index.get("superseded") or [])
+    if "superseded" not in atom_index:   # 開場被取消、state 由這裡重建時：共用開場那份備忘，只讀改過的卡
+        superseded = collect_superseded_names(all_atoms, content_cache, memo_path=WORKFLOW_DIR / SUPERSEDES_MEMO)
+        atom_index["superseded"] = sorted(superseded)
+    if superseded and not history_mode:
+        all_atoms = [e for e in all_atoms if e[0][0] not in superseded]
+    elif superseded and history_mode:
+        _atom_debug_log("SUPERSEDES", f"history query → keep {len(superseded)} superseded atoms in pool", config)
+
+    matched_with_dir: List[Tuple[AtomEntry, Path]] = []
+    atom_source: Dict[str, str] = {}
+    alias_injected_projects: set = set()
+
+    loaded_proj_names = set()
+    if proj_dir_str:
+        loaded_proj_names.add(Path(proj_dir_str).parent.name)
+    _all_cross = [
+        (s, m) for s, m in discover_all_project_memory_dirs()
+        if s not in loaded_proj_names
+    ]
+    if len(_all_cross) > _MAX_CROSS_PROJECT_SCAN:
+        def _mem_mtime(item: Tuple[str, Path]) -> float:
+            try:
+                return item[1].stat().st_mtime
+            except OSError:
+                return 0.0
+        _all_cross = sorted(_all_cross, key=_mem_mtime, reverse=True)[:_MAX_CROSS_PROJECT_SCAN]
+    _cross_cache = _load_cross_project_cache(_all_cross)
+    for _cross_slug, cross_mem in _all_cross:
+        _cached = _cross_cache.get(str(cross_mem))
+        aliases = _cached["aliases"] if _cached else parse_project_aliases(cross_mem)
+        if aliases and any(alias in prompt_lower for alias in aliases):
+            try:
+                mem_text = (cross_mem / MEMORY_INDEX).read_text(encoding="utf-8-sig")
+                mem_text = _alias_memory_text(mem_text)
+                lines.append(f"[Guardian:AliasMatch] {_cross_slug} matched via alias")
+                if mem_text:
+                    lines.append(f"[ProjectMemory:{_cross_slug}]\n{mem_text}")
+                alias_injected_projects.add(_cross_slug)
+                _atom_debug_log("CrossProject", i18n.t("hook.ups_search.alias_memory_md_directory", _cross_slug=_cross_slug), config)
+            except (OSError, UnicodeDecodeError):
+                pass
+    trigger_hits: Dict[str, int] = {}  # RRF trigger 路排序依據（命中數降冪）
+    for (name, rel_path, triggers), base_dir in all_atoms:
+        if name in atom_source:
+            continue  # 同名去重：all_atoms 多層（global/project/cross）混入同名時只取首見
+        if name not in already_injected and any_trigger_hit(triggers, prompt_lower):
+            matched_with_dir.append(((name, rel_path, triggers), base_dir))
+            atom_source[name] = "trigger"
+            trigger_hits[name] = count_trigger_hits(triggers, prompt_lower)
+
+    # 意圖前移（A0.1）：UPS 在檢索前已算好存 state["turn_intent"]；直接呼叫本函式（verify）沒有 state 值時自己算
+    intent = state.get("turn_intent") or classify_intent(prompt)
+
+    kw_matched_names = {e[0][0] for e in matched_with_dir}
+    trigger_hit_count = len(matched_with_dir)  # 純 trigger 命中數（BM25 合併前快照）
+
+    # 全域層的 BM25 路：global_layer=bm25 時在這裡先跑；其他值（出廠 vector）等向量問過、這次沒結果才跑。
+    vs_cfg = config.get("vector_search", {})
+    bm25_route: List[str] = []  # RRF bm25 路（bm25_match 已依分數排序、min_score 已過濾）
+    # BM25 只在 trigger 命中 ≤N 顆時補位（預設 2）。config vector_search.bm25_gate_max_trigger_hits
+    # 可調：設很大＝每輪都跑（≈10ms），讓 BM25 當獨立排序證據進 RRF 而非只補位——
+    # 對齊評估器分開量它的收益後再決定預設值。
+    bm25_gate = int(vs_cfg.get("bm25_gate_max_trigger_hits", 2))
+    bm25_min_score = vs_cfg.get("bm25_min_score", BM25_MIN_SCORE_DEFAULT)
+    bm25_top_k = int(vs_cfg.get("bm25_top_k", 3))
+    # 全域層要幾個不同的詞命中才算：出廠卡幾百張，一個詞巧合（project、build、memory）就過門檻的雜訊多。
+    # 量測（作者機查詢集 231 句、出廠卡 486 張）：2 → 正例 R@3 57/74 不變、負例誤中 7/22 → 1/22。
+    bm25_global_min_terms = int(vs_cfg.get("bm25_global_min_terms", 2))
+    project_atoms = [e for e in all_atoms if e[1] != MEMORY_DIR.parent]
+
+    def bm25_over_layers(with_project: bool, with_global: bool = True) -> List[str]:
+        """全域層（with_project 時連專案層；with_global=False 只取專案層）跑 BM25，命中併進候選，回 RRF 用的排序。
+        專案層走 project_layer_hits 的入選規則（共有實詞數，不看分數門檻）；入選的先佔位（使用者為這個專案寫的），
+        剩下名額給全域層，總數仍是 top_k。"""
+        global_atoms = [e for e in all_atoms if e[1] == MEMORY_DIR.parent]
+        layer_atoms = global_atoms + (project_atoms if with_project else [])
+        picked: List[AtomEntry] = []
+        if with_project and project_atoms:
+            picked = project_layer_hits(prompt, project_atoms, content_cache, bm25_top_k)
+        if with_global and global_atoms and len(picked) < bm25_top_k:
+            picked += bm25_match(
+                prompt, [e[0] for e in global_atoms],
+                min_score=bm25_min_score, top_k=bm25_top_k - len(picked), min_terms=bm25_global_min_terms,
+            )
+        for entry in picked:
+            _merge_hit(
+                entry[0], layer_atoms, "bm25",
+                matched_with_dir, atom_source, kw_matched_names, already_injected,
+            )
+        return [entry[0] for entry in picked]
+
+    global_layer_uses_bm25 = vs_cfg.get("global_layer", "bm25") == "bm25"
+    if global_layer_uses_bm25 and len(matched_with_dir) <= bm25_gate:
+        bm25_route = bm25_over_layers(with_project=False)
+
+    # 向量路可見性：layers 白名單＝候選池同一套（global + 本專案 shared + 本人 role/personal）。
+    # 管理職不豁免——管理職多的是待審清單，不是別人的 personal（SPEC §8.2）。
+    _v4_id = state.get("user_identity", {})
+    _v4_user = _v4_id.get("user") or None
+    _v4_roles = _v4_id.get("roles") or None
+    _sess_cwd = str((state.get("session") or {}).get("cwd") or "")
+    # 組織層向量標籤 shared:<org slug>（indexer 經 registry 以 org 根 slug 建層）
+    _org_layers = [f"shared:{cwd_to_project_slug(str(Path(org_base_str).parent))}"] if org_base_str else None
+    _vis_layers = visible_vector_layers(
+        atom_index.get("project_slug", ""), _v4_user, _v4_roles,
+        include_local=bool(_sess_cwd) and _is_under_claude_dir(_sess_cwd),
+        extra_layers=_org_layers,
+    )
+    # 向量什麼時候問：global_layer 不是 bm25（出廠 vector）→ 每句都問，涵蓋全域層與專案層。
+    # global_layer=bm25 → 兩種情況才問：trigger＋BM25 全空（全層 fallback）；
+    # 有專案層卡且 trigger 命中 <3（只補專案層；trigger/BM25 只擅長全域層關鍵詞）。
+    # 結果仍受 assemble 端 TURN_BUDGET_LIMIT 硬頂與服務端 min_score 約束。
+    full_fallback = (
+        len(matched_with_dir) == 0 or vs_cfg.get("global_layer") != "bm25"
+    )
+    if full_fallback or (project_atoms and trigger_hit_count < 3):
+        sem_atoms = _semantic_search(
+            prompt, config, intent=intent,
+            user=_v4_user, roles=_v4_roles,
+            session_id=session_id, layers=_vis_layers,
+        )
+    else:
+        sem_atoms = []
+    # 向量這次沒結果（沒裝、服務沒起來、逾時、沒命中）：退回 BM25，連專案層一起（專案層平常只靠向量補）。
+    # global_layer=vector：全域＋專案一起跑；global_layer=bm25：全域層上面已跑過，問過向量（專案層補位）沒結果才補跑專案層，排在全域命中前面。
+    if not global_layer_uses_bm25 and not sem_atoms and len(matched_with_dir) <= bm25_gate:
+        bm25_route = bm25_over_layers(with_project=True)
+    elif global_layer_uses_bm25 and not sem_atoms and project_atoms and trigger_hit_count < 3:
+        bm25_route = bm25_over_layers(with_project=True, with_global=False) + bm25_route
+    if not full_fallback and sem_atoms:
+        # enrichment 模式：只取專案層命中，全域層交給 trigger/BM25
+        project_names = {e[0][0] for e in project_atoms}
+        sem_atoms = [s for s in sem_atoms if s[0] in project_names]
+        if sem_atoms:
+            _atom_debug_log(
+                "ENRICH",
+                f"project-layer vector enrichment: +{len(sem_atoms)} "
+                f"({', '.join(s[0] for s in sem_atoms)})",
+                config,
+            )
+    section_hints: Dict[str, List[Dict]] = {}
+    for sem_entry in sem_atoms:
+        sem_name = sem_entry[0]
+        sem_sections = sem_entry[3] if len(sem_entry) > 3 else []
+        if sem_sections:
+            section_hints[sem_name] = sem_sections
+        _merge_hit(
+            sem_name, all_atoms, "vector",
+            matched_with_dir, atom_source, kw_matched_names, already_injected,
+        )
+
+    # Supersedes filtering（讀過的內文入 content_cache，assemble 段免重讀）
+    superseded_names: set = set()
+    for (name, rel_path, triggers), base_dir in matched_with_dir:
+        atom_path = (base_dir / rel_path) if rel_path else (base_dir / "memory" / f"{name}.md")
+        if not atom_path.exists():
+            continue
+        text = read_atom_text(atom_path, content_cache)
+        if text is None:
+            continue
+        sm = _SUPERSEDES_RE.search(text)
+        if sm:
+            for old in sm.group(1).split(","):
+                old = old.strip()
+                if old:
+                    superseded_names.add(old)
+    # 候選層第二道（補池過濾之後才寫進來的取代聲明；歷史查詢不濾）
+    if superseded_names and not history_mode:
+        matched_with_dir = [
+            entry for entry in matched_with_dir
+            if entry[0][0] not in superseded_names
+        ]
+
+    def _rank_of(entry) -> float:
+        """ACT-R 注入 rank（activation − 分心懲罰，憲法 Distraction 對策）。"""
+        (name, rel_path, _triggers), base_dir = entry
+        atom_dir = (base_dir / rel_path).parent if rel_path else (base_dir / "memory")
+        return compute_injection_rank(name, atom_dir, config, access_cache)
+
+    # 排序：RRF 融合（相關性路 rank 融合 × activation 乘性調節）；
+    # fusion="legacy" 回退純 ACT-R rank 排序。入場過濾（各路 min_score）不變。
+    fusion = vs_cfg.get("fusion", "rrf")
+    if fusion == "rrf" and matched_with_dir:
+        trigger_route = sorted(trigger_hits, key=trigger_hits.get, reverse=True)
+        vector_route = [s[0] for s in sem_atoms]
+        rrf_scores = rrf_fuse({
+            "trigger": trigger_route,
+            "bm25": bm25_route,
+            "vector": vector_route,
+        })
+
+        # activation 乘數增益可由 config（vector_search.rrf_activation_gain）覆寫：
+        # 離線重播顯示 0.25 時 activation 差 0.065 就能翻轉相鄰名次（k=60 的 RRF 相鄰比僅 1.016），
+        # 對齊評估器要能分開測 0.25／0／限幅，所以先把旋鈕拉出來，預設值不變。
+        gain = float(vs_cfg.get("rrf_activation_gain", RRF_ACTIVATION_GAIN))
+
+        def _fused_key(entry) -> float:
+            name = entry[0][0]
+            return rrf_scores.get(name, 0.0) * math.exp(gain * _rank_of(entry))
+
+        matched_with_dir.sort(key=_fused_key, reverse=True)
+    else:
+        matched_with_dir.sort(key=_rank_of, reverse=True)
+
+    return (
+        matched_with_dir, atom_source, all_atoms,
+        sem_atoms, section_hints, alias_injected_projects, intent,
+        caches,
+    )

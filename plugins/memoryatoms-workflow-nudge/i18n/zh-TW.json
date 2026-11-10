@@ -1,0 +1,16 @@
+{
+ "ext.workflow-nudge.parallel_batch_words": "批量詞",
+ "ext.workflow-nudge.parallel_connectors": "連接詞×{count}",
+ "ext.workflow-nudge.parallel_cross_target_verbs": "跨目標動詞",
+ "ext.workflow-nudge.parallel_multiple_files": "多檔×{count}",
+ "ext.workflow-nudge.parallel_multiple_targets": "多目標",
+ "ext.workflow-nudge.parallel_plural_quantifiers": "複數量詞",
+ "ext.workflow-nudge.parallel_single_file": "單檔-2",
+ "ext.workflow-nudge.parallel_suggest": "[Parallel:Suggest] 此 prompt 含並行訊號 ({hints}, score={score})。建議評估拆 ≥2 sub-agent 於同 message 一次 dispatch 加速。不適合拆請在回應裡說明原因。",
+ "ext.workflow-nudge.research_codebase_line": "[Research:Fanout] 偵測本地程式碼檢索請求 ({hints})。同 message dispatch ≥2 個 `Explore` agent 分頭找（各給不同命名慣例/目錄切面），不需 WebSearch，不需關鍵字擴充階段。",
+ "ext.workflow-nudge.research_knowledge_domain": "知識域×{count}",
+ "ext.workflow-nudge.research_knowledge_line": "[Research:Fanout] 偵測知識檢索型請求 ({hints})。走兩階段 fan-out，不要單線直答：\n  Stage A 關鍵字擴充（1-2 agent，回報限純關鍵字清單）：術語同義詞 + 中文↔英文對應 + 上下位概念 + 常見誤稱；一路查網路確認業界實際用語。\n  Stage B 併搜（用 Stage A 全部關鍵字，同 message dispatch ≥2 agent）：一路掃原子記憶庫/_AIDocs（既有結論優先，命中就別重查），一路 WebSearch/WebFetch 補外部最新知識。\n  Stage A→B 是真序列依賴（B 要 A 的關鍵字），故 A 必須輕；B 內部才是並行主力。不適合 fan-out 請說明原因。",
+ "ext.workflow-nudge.research_local_locators": "本地定位×{count}",
+ "ext.workflow-nudge.research_lookup_verbs": "檢索動詞×{count}",
+ "ext.workflow-nudge.research_named_files": "明示檔×{count}"
+}

@@ -1,0 +1,9 @@
+{
+ "ext.handoff.cannot_read_stub": "[auto-handoff] cannot read the handoff stub, sending the full-version completion prompt: {error}",
+ "ext.handoff.compaction_summary_failed": "[auto-handoff] compaction summary was not written into the handoff stub (the stub still has only the objective blocks): {etype}: {error}",
+ "ext.handoff.compaction_summary_written": "[auto-handoff] compaction summary written into the handoff stub: {written}",
+ "ext.handoff.context_nearly_full": "\n[Auto-Handoff] Context is at about {pct}% (from actual API token usage), close to the auto-compaction point. Consider running `/memoryatoms-handoff:handoff` now to prepare the six-section handoff, or save your work before starting a new session (if compaction does happen, the system writes a fallback stub automatically). Whether the risk of losing context has already been handled is your call.",
+ "ext.handoff.intent_detected": "[Guardian:Handoff] Handoff intent detected. The Claude in the receiving session will not see this conversation. Run /memoryatoms-handoff:handoff to fill in the mandatory 6-section template; do not write the prompt by hand.",
+ "ext.handoff.stub_prepared": "[Auto-Handoff] A compaction just happened. A handoff stub has been prepared at `{stub_path}` (objective blocks filled). Please **fill in the three `{todo}` blocks** (why / approach / decision basis) so it is self-sufficient across all six blocks, so the session that takes over can continue losslessly with `/continue`.",
+ "ext.handoff.summary_filled": "[Auto-Handoff] A compaction just happened. The compaction summary has been filled into handoff stub `{stub_path}`; just confirm the next step and fill in `{todo}`, so the session that takes over can continue losslessly with `/continue`."
+}

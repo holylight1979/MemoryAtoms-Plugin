@@ -1,0 +1,868 @@
+#!/usr/bin/env python3
+"""
+user-extract-worker.py — Stop hook detached worker
+
+Spawned by workflow-guardian.py (Stop/SessionEnd) as a detached subprocess.
+Reads pending_user_extract[] from state, runs L1+L2 LLM pipeline,
+writes confirmed atoms via MCP atom_write.
+
+Flow:
+  state-{sid}.json/pending_user_extract[]
+  → 來源重驗（user_typed_text 為空＝不是使用者打的字 → skip）
+  → session-directive filter（一次性 session 指示不送 LLM；兩種 skip 都在 _merge_history.log 記原因）
+  → mixed-sentence filter
+  → emotional-commitment filter
+  → session budget tracker
+  → L1 backend 預設模型 binary yes/no（remote gemma4:e4b；local 備援 qwen3:1.7b）
+  → L2 gemma4:e4b structured extraction
+  → conf-based routing (≥0.92 confirm / 0.70-0.92 pending / <0.70 skip)
+  → ack-then-clear
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+# ─── Path setup ───────────────────────────────────────────────────────────────
+_HOOKS_DIR = str(Path(__file__).resolve().parent)   # 本檔所在的 hooks/（不用 Path.home()）
+if _HOOKS_DIR not in sys.path:
+    sys.path.insert(0, _HOOKS_DIR)
+
+from wg_core import (
+    CLAUDE_DIR, WORKFLOW_DIR,
+    cwd_to_project_slug, get_transcript_path, find_project_root,
+    _is_under_claude_dir, user_typed_text, append_guard_log,
+)
+from wg_roles import get_current_user
+import i18n  # lib/：給人看的提示走語言表
+
+_CLAUDE_ROOT = str(Path(__file__).resolve().parents[1])   # 程式碼用本檔位置，CLAUDE_DIR 只定位資料
+if _CLAUDE_ROOT not in sys.path:
+    sys.path.insert(0, _CLAUDE_ROOT)
+
+from lib.state_rmw import update_state_locked
+from lib.ollama_extract_core import (
+    _atom_debug_log, _atom_debug_error,
+    _parse_llm_response,
+    _estimate_tokens,
+    ack_then_clear,
+    SessionBudgetTracker,
+)
+from lib.atom_io import write_atom
+from lib.transcript import last_assistant_text
+from wg_evasion import evaluate_session
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from ollama_client import get_client
+
+# Windows cp950 → UTF-8
+if sys.platform == "win32":
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+# ─── Emotion / mixed-sentence patterns ────────────────────────────────────────
+
+_EMOTION_WORDS = re.compile(
+    r"爛|煩|累|氣|怒|恨|靠|幹|媽的|操|哭|崩潰|受不了|厭|無奈|沮喪|焦慮|"
+    r"frustrated|angry|annoyed|hate|sick of|tired of|ugh|damn|shit|fuck",
+    re.IGNORECASE,
+)
+
+_DECISION_SIGNAL_WORDS = re.compile(
+    r"記住|永遠|從此|以後都要|禁止|一律|統一|決定|規定|約定|改用|不要再|固定|"
+    r"remember|always|never|from now on|must|prefer|switch to|stop using",
+    re.IGNORECASE,
+)
+
+_EMOTIONAL_COMMITMENT = re.compile(
+    r"絕不|再也不|一律不|永遠不|never again|absolutely never",
+    re.IGNORECASE,
+)
+
+
+def _is_mixed_sentence(prompt: str) -> bool:
+    """Detect emotion + decision signal co-existing."""
+    return bool(_EMOTION_WORDS.search(prompt) and _DECISION_SIGNAL_WORDS.search(prompt))
+
+
+def _is_emotional_commitment(prompt: str) -> bool:
+    """Detect emotional commitment patterns (「絕不/再也不」+ emotion)."""
+    return bool(_EMOTIONAL_COMMITMENT.search(prompt) and _EMOTION_WORDS.search(prompt))
+
+
+# ─── 一次性 session 指示 ──────────────────────────────────────────────────────
+# 派給「這個 session」的角色、工作步驟、派工單路徑只在這次有效。它們常帶「一律／必須」而被偵測閘當成決策，
+# 但不是跨專案知識；寫成根層 atom 會在之後每個 session 被注入（不相關卻佔 token）。
+# 是不是決策交 LLM 判（L1／L2 prompt 有同一條準則）；這裡只攔「整則每個子句都對上一次性派工樣板」的情況，
+# 省一次 LLM、也不讓它有機會誤寫。樣板與判定在 lib/harness_text（Quote 自動填共用同一套），規則說明見該處。
+from lib.harness_text import (  # noqa: E402
+    KICKOFF_CLAUSES as _KICKOFF_CLAUSES,
+    kickoff_clause_kind as _kickoff_clause_kind,
+    kickoff_clauses as _kickoff_clauses,
+    session_directive_reason as _session_directive_reason,
+)
+
+
+# ─── Prompt template loading ──────────────────────────────────────────────────
+
+_PROMPTS_DIR = Path(_CLAUDE_ROOT) / "prompts"   # 程式碼樹的樣板（worktree 裡跑就用 worktree 的）
+
+
+def _extract_prompt_block(raw: str) -> str:
+    """Extract the LAST fenced code block (the actual prompt).
+
+    L2 prompt file contains an Output Schema ```json block before the real
+    prompt block — taking the last match guarantees we get the prompt.
+    """
+    matches = re.findall(r"```(?:\w+)?\n(.*?)```", raw, re.DOTALL)
+    return matches[-1] if matches else raw
+
+
+def _load_l1_prompt(user_prompt: str) -> str:
+    """Load L1 prompt template and fill {{user_prompt}}."""
+    template_path = _PROMPTS_DIR / "user-decision-l1.md"
+    try:
+        raw = template_path.read_text(encoding="utf-8")
+        template = _extract_prompt_block(raw)
+        return template.replace("{{user_prompt}}", user_prompt)
+    except (OSError, UnicodeDecodeError) as e:
+        _atom_debug_error("user-extract:load_l1_prompt", e)
+        return ""
+
+
+def _load_l2_prompt(user_prompt: str, assistant_last: str) -> str:
+    """Load L2 prompt template and fill placeholders."""
+    template_path = _PROMPTS_DIR / "user-decision-l2.md"
+    try:
+        raw = template_path.read_text(encoding="utf-8")
+        template = _extract_prompt_block(raw)
+        template = template.replace("{{user_prompt}}", user_prompt)
+        template = template.replace("{{assistant_last_600_chars}}", assistant_last or "（無）")
+        return template
+    except (OSError, UnicodeDecodeError) as e:
+        _atom_debug_error("user-extract:load_l2_prompt", e)
+        return ""
+
+
+# ─── Transcript helper: get assistant last 600 chars ─────────────────────────
+
+def _get_assistant_last_600(session_id: str, cwd: str) -> str:
+    """Read last assistant block from transcript, return last 600 chars."""
+    transcript = get_transcript_path(session_id, cwd)
+    if not transcript:
+        return ""
+    last_text = last_assistant_text(transcript)
+    return last_text[-600:] if last_text else ""
+
+
+# ─── LLM calls ───────────────────────────────────────────────────────────────
+
+def _parse_l1_response(raw: str) -> Optional[bool]:
+    """Parse L1 response robustly. Handles truncated JSON, variant keys."""
+    if not raw:
+        return None
+    raw = raw.strip()
+
+    # Try full JSON parse
+    try:
+        match = re.search(r'\{[^}]*\}', raw)
+        if match:
+            data = json.loads(match.group(0))
+            # Accept variant keys: is_decision, decision, is_long_term_rule
+            for key in ("is_decision", "decision", "is_long_term_rule"):
+                if key in data:
+                    return bool(data[key])
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Fallback: search for boolean value after any key containing "decision"/"rule"
+    lower = raw.lower()
+    if re.search(r'"(?:is_decision|decision|is_long_term_rule)"\s*:\s*true', lower):
+        return True
+    if re.search(r'"(?:is_decision|decision|is_long_term_rule)"\s*:\s*false', lower):
+        return False
+
+    # Last resort: truncated JSON — look for `: true` pattern
+    if ": true" in lower and "false" not in lower:
+        return True
+    if ": false" in lower:
+        return False
+
+    return None
+
+
+def _call_l1(prompt_text: str) -> Optional[bool]:
+    """L1: binary yes/no，用 backend 預設模型（remote gemma4:e4b 優先，掛了自動換 local qwen3:1.7b）。
+
+    不指定 model：指定了就只送設定模型名相符的 backend，會跳過 remote 先等 local CPU 冷載入逾時。
+    """
+    try:
+        client = get_client()
+        raw = client.generate(
+            prompt_text,
+            timeout=15,
+            think=False,
+            temperature=0,
+            num_predict=30,
+        )
+        return _parse_l1_response(raw)
+    except Exception as e:
+        _atom_debug_error("user-extract:_call_l1", e)
+        return None
+
+
+def _parse_l2_response(raw: str) -> Optional[Dict]:
+    """Parse L2 JSON response. Handles code fences, truncation."""
+    if not raw:
+        return None
+    raw = raw.strip()
+    # Strip markdown code fences
+    raw = re.sub(r'^```(?:json)?\s*\n?', '', raw)
+    raw = re.sub(r'\n?```\s*$', '', raw)
+    raw = raw.strip()
+    try:
+        match = re.search(r'\{[^}]*\}', raw, re.DOTALL)
+        if match:
+            data = json.loads(match.group(0))
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Salvage via _parse_llm_response (returns list)
+    items = _parse_llm_response(raw)
+    if items and isinstance(items[0], dict):
+        return items[0]
+    return None
+
+
+def _call_l2(prompt_text: str) -> Optional[Dict]:
+    """L2: gemma4:e4b structured extraction. Falls back to default model."""
+    try:
+        client = get_client()
+        # Try preferred model first
+        raw = client.generate(
+            prompt_text,
+            model="gemma4:e4b",
+            timeout=120,
+            think="auto",
+            temperature=0,
+            num_predict=200,
+        )
+        result = _parse_l2_response(raw)
+        if result:
+            return result
+
+        # Fallback: use default backend model (auto-select)
+        raw = client.generate(
+            prompt_text,
+            timeout=120,
+            think="auto",
+            temperature=0,
+            num_predict=200,
+        )
+        return _parse_l2_response(raw)
+    except Exception as e:
+        _atom_debug_error("user-extract:_call_l2", e)
+        return None
+
+
+# ─── State I/O ────────────────────────────────────────────────────────────────
+
+def _read_state(session_id: str) -> Optional[Dict]:
+    """Read state-{sid}.json."""
+    state_path = WORKFLOW_DIR / f"state-{session_id}.json"
+    if not state_path.exists():
+        return None
+    try:
+        with open(state_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+# ─── Atom write via MCP subprocess ───────────────────────────────────────────
+
+def _slug_from_statement(statement: str) -> str:
+    """Generate a filesystem-safe slug from statement."""
+    # Take first 40 chars, keep alphanumeric + CJK
+    slug = re.sub(r'[^\w\u4e00-\u9fff-]', '-', statement[:40])
+    slug = re.sub(r'-+', '-', slug).strip('-').lower()
+    return slug or "auto-decision"
+
+
+# 專案規則的「線索詞」（規則 PROJECT_RULE_WORDS_ARE_HINTS）：命中只代表「疑似專案專屬」，不替 AI 定案。
+_PROJECT_RULE_MARKERS = (
+    "此專案", "本專案", "這個專案", "專案內", "上傳", "上傳到", "發布", "publish", "deploy",
+    "commit", "svn", "git", "必須", "禁止", "不得", "一律",
+)
+
+
+def project_rule_signal(statement: str, slug: str, triggers: List[str], cwd: str, l2_scope: str) -> Dict[str, Any]:
+    """內容是不是「針對專案的規則」（該落 shared）：回 {"verdict": rule|hint|none, "why", "hits"}。
+    rule（可定案）：L2（LLM）判 shared/project；或內容帶目前專案的專名／專案路徑／已登記專案名（realm_gate 查得到的事實）。
+    hint（只是線索，規則 PROJECT_RULE_WORDS_ARE_HINTS）：只命中線索詞或字面「此專案」這類字樣 → 不自動定案，
+    呼叫端落 personal 並列為「疑似專案專屬，待確認」（/memory classify 的建議表會再浮出）。
+    none：沒有任何訊號。"""
+    if str(l2_scope or "").lower() in ("shared", "project"):
+        return {"verdict": "rule", "why": i18n.t("hook.user_extract_worker.l2_llm_judged_shared"), "hits": []}
+    text = statement or ""
+    low = text.lower()
+    word_hits = [m for m in _PROJECT_RULE_MARKERS if m.lower() in low]
+    if cwd:
+        try:
+            from lib.realm_gate import (LITERAL_SOURCE, is_core_root, project_root_of, scan_known_projects,
+                                        scan_texts)
+            root = project_root_of(cwd)
+            # 只認「目前所在專案」的專名；根層 cwd 提到別的專案不代表是那個專案的規則
+            if not is_core_root(root):
+                fields = {"title": slug, "triggers": list(triggers or []), "knowledge": [text]}
+                hits = scan_texts(root, fields) + scan_known_projects(fields)
+                facts = sorted({h["term"] for h in hits if h["source"] != LITERAL_SOURCE})
+                if facts:
+                    return {"verdict": "rule", "why": i18n.t("hook.user_extract_worker.contains_project_proper_names") + i18n.t("hook.user_extract_worker.list_sep").join(facts[:4]), "hits": facts}
+        except Exception as e:  # noqa: BLE001 — 專名推導失敗只失去這一路訊號
+            _atom_debug_error("user-extract:project_rule_gate", e)
+    if word_hits:
+        return {"verdict": "hint", "why": i18n.t("hook.user_extract_worker.possibly_project_specific_confirmed") + i18n.t("hook.user_extract_worker.list_sep").join(word_hits[:4]) + i18n.t("hook.user_extract_worker.msg_x"),
+                "hits": word_hits}
+    return {"verdict": "none", "why": i18n.t("hook.user_extract_worker.personal_preference_no_project"), "hits": []}
+
+
+def _write_atom_via_mcp(
+    l2_result: Dict, candidate: Dict, session_id: str, user: str,
+    config: Dict,
+) -> str:
+    """Write atom via funnel write_atom (lib/atom_io).
+
+    走 funnel — 自動產生 audit log + 統一 atomic write 行為。
+    Returns 'wrote' | 'deduped' | 'failed'.
+    """
+    statement = l2_result.get("statement", "")
+    scope = l2_result.get("scope", "personal")
+    audience_raw = l2_result.get("audience", "programmer")
+    triggers = l2_result.get("trigger", [])
+    if not isinstance(triggers, list):
+        triggers = [str(triggers)]
+    triggers = [t.strip() for t in triggers if t and str(t).strip()]
+    if not triggers:
+        triggers = ["auto"]
+    turn_id = candidate.get("turn_id", "")
+    cwd = candidate.get("cwd", "")
+
+    audience_list = (
+        [a.strip() for a in audience_raw.split(",") if a.strip()]
+        if isinstance(audience_raw, str)
+        else list(audience_raw or [])
+    )
+
+    # Title 對拍原行為：從 statement 推導的 slug 當 title（funnel 內部會 slugify）。
+    slug = _slug_from_statement(statement)
+    knowledge_lines = [f"- [臨] {statement}", f"<!-- src: {turn_id} -->"]
+
+    # 落點三分：cwd 在 ~/.claude → global（~/.claude 本身即 global root）；
+    # 專案內且內容是「專案規則」（L2 判 shared，或提到目前專案的專名／路徑）→ shared 並記提出者
+    # （Author=使用者，日後異議找 Author）；只命中線索詞（此專案／上傳／必須／禁止…）→ 不定案，落 personal、
+    # 留帳 guard-scope_hint，等 /memory classify 建議表列「疑似專案專屬，待確認」由人判；其餘 → 本人×專案 personal。
+    in_claude_dir = _is_under_claude_dir(cwd) if cwd else False
+    sig = {"verdict": "none"} if in_claude_dir else project_rule_signal(statement, slug, triggers, cwd, scope)
+    if in_claude_dir:
+        write_scope = "global"
+    elif sig["verdict"] == "rule":
+        write_scope = "shared"
+    else:
+        write_scope = "personal"
+        if sig["verdict"] == "hint":
+            print(i18n.t("hook.user_extract_worker.scope_hint_user_extract", slug=slug, sig=sig['why']),
+                  file=sys.stderr)
+            append_guard_log("scope_hint", {"event": "hint", "rule": "PROJECT_RULE_WORDS_ARE_HINTS", "session_id": session_id,
+                                            "slug": slug, "hits": sig["hits"], "statement": statement[:120]})
+
+    # 去重預檢：用 funnel 的正規定位（locate_atom）找既有檔。核心層 atom 住
+    # memory/<範疇>/[Lv2]/，自算扁平路徑永遠 miss、去重形同死碼。
+    pre_path = None
+    try:
+        from lib.atom_io import locate_atom
+        loc = locate_atom(slug, write_scope, project_cwd=cwd or None, user=user)
+        if getattr(loc, "ok", False) and getattr(loc, "path", None) and Path(loc.path).exists():
+            pre_path = Path(loc.path)
+    except Exception as e:  # noqa: BLE001 — 定位失敗只失去去重，不擋寫入
+        _atom_debug_error("user-extract:locate", e)
+    if pre_path is not None:
+        try:
+            existing = pre_path.read_text(encoding="utf-8")
+            if statement in existing:
+                return "deduped"
+        except (OSError, UnicodeDecodeError):
+            pass
+        # 同名不同意 → 改名（funnel 以 title slugify）
+        for i in range(2, 10):
+            alt_slug = f"{slug}-{i}"
+            if not (pre_path.parent / f"{alt_slug}.md").exists():
+                slug = alt_slug
+                break
+
+    # 範疇寫入閘（scope=global create 必給 domain）：程式寫手自行分類（詞庫 → 本地 LLM，
+    # lib.atom_locations.classify_category）；unsure/error → **拒寫**，候選改進
+    # _pending.candidates.md（前綴 [category REJECT|ERROR]）+ stderr 浮訊號，不落 Else。
+    domain = None
+    realm = None
+    if write_scope == "global":
+        # realm 分類（core 全專案注入 / local 只在 ~/.claude 注入）：MCP 寫入鏈在 js 端
+        # 會自動分，hook 寫入鏈原本一律落 core、靠 SessionEnd sweep 事後搬——同一顆
+        # atom 依寫入路徑落點不同。改成寫前就分，與 MCP 對齊。安全預設 core。
+        try:
+            from lib.atom_locations import classify_realm
+            rc = classify_realm(slug, triggers)
+            if rc.get("realm") == "disabled":   # 詞表沒載入：判不出就不落卡，候選留在候選檔（開場紅字已講怎麼補）
+                _write_pending_candidate(l2_result, candidate, user, cwd, prefix="[realm OFF]")
+                return "rejected"
+            if rc.get("realm") == "local" and rc.get("domain") and not rc.get("protected"):
+                realm, domain = "local", rc["domain"]
+        except Exception as e:  # noqa: BLE001 — 分不出就走 core（原行為）
+            _atom_debug_error("user-extract:classify_realm", e)
+    if write_scope == "global" and realm is None:
+        try:
+            from lib.atom_locations import classify_category
+            cls = classify_category(slug, triggers, layer="core", excerpt=statement, config=config)
+        except Exception as e:  # noqa: BLE001 — 分類器本身炸＝error 態
+            cls = {"status": "error", "category": None, "reason": repr(e)}
+        if cls.get("status") in ("lex", "llm") and cls.get("category"):
+            domain = cls["category"]
+        else:
+            tag = "ERROR" if cls.get("status") == "error" else "REJECT"
+            print(f"[category] {tag} user-extract '{slug}': {cls.get('reason', '')}",
+                  file=sys.stderr)
+            _write_pending_candidate(l2_result, candidate, user, cwd,
+                                     prefix=f"[category {tag}]")
+            return "rejected"
+    if write_scope == "shared":
+        # shared create 也過範疇閘（shared/<Lv1>/）：分不出範疇就退回 personal，
+        # 不丟知識、不拒寫（專案規則只是暫時掛在本人名下，存量分流時再搬）。
+        try:
+            from lib.atom_locations import classify_category
+            cls = classify_category(slug, triggers, layer="shared", excerpt=statement, config=config)
+        except Exception as e:  # noqa: BLE001
+            cls = {"status": "error", "category": None, "reason": repr(e)}
+        if cls.get("status") in ("lex", "llm") and cls.get("category"):
+            domain = cls["category"]
+        else:
+            print(f"[category] shared→personal fallback user-extract '{slug}': {cls.get('reason', '')}",
+                  file=sys.stderr)
+            write_scope = "personal"
+
+    # 來源：Source 指到 session（turn_id 非 transcript uuid，故只記 session＋日期）；
+    # Quote 存使用者原話（消毒單行 ≤200 字），transcript 清掉後仍回得出原句。
+    provenance = None
+    quote_line = None
+    try:
+        from lib.provenance import format_quote, format_source_session, is_kickoff_text, sanitize_quote
+        from datetime import date as _date
+        if session_id:
+            provenance = format_source_session(session_id, None, _date.today().isoformat())
+        prompt_text = candidate.get("prompt", "") or ""
+        # 開工句裡夾的決策可以萃成卡，但開工句本身不是那張卡的使用者原話（判定同 wg_provenance）
+        q = "" if is_kickoff_text(prompt_text) else sanitize_quote(prompt_text)
+        quote_line = format_quote(q) if q else None
+    except Exception as e:
+        _atom_debug_error("user-extract:provenance", e)
+    try:
+        result = write_atom(
+            title=slug,
+            scope=write_scope,
+            confidence="[臨]",
+            triggers=triggers,
+            knowledge=knowledge_lines,
+            audience=audience_list or None,
+            user=user,
+            project_cwd=cwd or None,
+            mode="create",
+            source="hook:user-extract",
+            author=user,  # 提出此規則的使用者；來源標記走知識段的 <!-- src: turn --> 與 audit source
+            domain=domain,
+            realm=realm,
+            provenance=provenance,
+            quote=quote_line,
+        )
+    except Exception as e:
+        _atom_debug_error("user-extract:_write_atom", e)
+        return "failed"
+
+    if result.ok:
+        # 卡的實際落點記回這筆（呼叫端傳進來的 candidate 就是 confirmed_extraction）：UPS 通知與否決問句才指得出要撤哪張
+        candidate["atom_path"] = str(getattr(result, "path", None) or "")
+        return "wrote"
+    err = result.error or ""
+    if "already exists" in err:
+        return "deduped"
+    _atom_debug_error("user-extract:_write_atom", Exception(err))
+    return "failed"
+
+
+def _project_memory_ready(project_root: Path) -> bool:
+    """專案層記憶算不算已初始化。安裝版一律 True（照舊）；插件版要 <專案>/.claude/memory/ 在、而且有
+    tools/init-project-memory.py 建的 MEMORY.md 或 _atom_index.json 其一（只有空資料夾不算）。"""
+    from lib.edition import edition, PLUGIN
+    if edition() != PLUGIN:
+        return True
+    mem = project_root / ".claude" / "memory"
+    return (mem / "MEMORY.md").is_file() or (mem / "_atom_index.json").is_file()
+
+
+def _write_pending_candidate(
+    l2_result: Dict, candidate: Dict, user: str, cwd: str, prefix: str = "",
+) -> bool:
+    """Write conf 0.70-0.92 candidate to _pending.candidates.md.
+    `prefix`（如 "[category REJECT]"）：範疇閘拒寫的候選沿用同檔，前綴標明原因。"""
+    project_root = find_project_root(cwd) if cwd else None
+    if project_root and not _project_memory_ready(Path(project_root)):
+        project_root = None   # 插件版：專案記憶沒初始化就不在使用者專案裡建資料夾，落資料根（讀者兩處都掃）
+    if project_root:
+        auto_dir = Path(project_root) / ".claude" / "memory" / "personal" / "auto" / user
+    else:
+        auto_dir = CLAUDE_DIR / "memory" / "personal" / "auto" / user
+
+    auto_dir.mkdir(parents=True, exist_ok=True)
+    pending_file = auto_dir / "_pending.candidates.md"
+
+    statement = l2_result.get("statement", "")
+    conf = l2_result.get("conf", 0.0)
+    scope = l2_result.get("scope", "personal")
+    turn_id = candidate.get("turn_id", "")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    lead = f"{prefix} " if prefix else ""
+    entry = f"- {lead}[{now}] conf={conf:.2f} scope={scope} turn={turn_id}: {statement}\n"
+
+    try:
+        with open(pending_file, "a", encoding="utf-8", newline="\n") as f:
+            f.write(entry)
+        return True
+    except OSError:
+        return False
+
+
+# ─── Merge history log ────────────────────────────────────────────────────────
+
+def _append_merge_history(session_id: str, action: str, details: str = "") -> bool:
+    """Append to _merge_history.log；寫不進去回 False 並 stderr 一行（不靜默）。"""
+    log_path = WORKFLOW_DIR / "_merge_history.log"
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_path, "a", encoding="utf-8", newline="\n") as f:
+            f.write(f"[{ts}] action={action} session={session_id} {details}\n")
+        return True
+    except OSError as e:
+        print(i18n.t("hook.user_extract_worker.user_extract_cannot_write", log_path=log_path, error=e), file=sys.stderr)
+        return False
+
+
+def _record_skip(session_id: str, reason: str, candidate: Dict, text: str) -> bool:
+    """候選不送萃取時在萃取紀錄留一行原因（可觀測，不靜默）；寫不進去回 False，呼叫端把候選留在佇列等下次再記。"""
+    excerpt = " ".join((text or "").split())[:60]
+    return _append_merge_history(session_id, "user-extract-skip",
+                                 f"reason={reason} turn={candidate.get('turn_id', '')} text={excerpt!r}")
+
+
+# ─── Main extraction pipeline ────────────────────────────────────────────────
+
+def run_user_extraction(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Main pipeline: process pending_user_extract candidates."""
+    session_id = ctx.get("session_id", "")
+    cwd = ctx.get("cwd", "")
+    config = ctx.get("config", {})
+    user = ctx.get("user") or get_current_user()
+
+    ue_config = config.get("userExtraction", {})
+    token_budget = ue_config.get("tokenBudget", 240)
+
+    state = _read_state(session_id)
+    if not state:
+        return {"processed": 0, "confirmed": 0, "skipped": 0}
+
+    pending = state.get("pending_user_extract", [])
+    if not pending:
+        return {"processed": 0, "confirmed": 0, "skipped": 0}
+
+    # Get assistant context
+    assistant_last = _get_assistant_last_600(session_id, cwd)
+
+    # Session budget tracker
+    budget = SessionBudgetTracker(budget=token_budget)
+
+    confirmed_extractions = []
+    processed_indices = []
+    stats = {"processed": 0, "confirmed": 0, "skipped": 0, "l1_yes": 0, "l1_no": 0,
+             "skipped_not_user": 0, "skipped_directive": 0}
+    l2_confs: List[float] = []  # for avg_l2_conf in session evaluator
+    dedup_hit = 0
+    l2_ran = False
+
+    for idx, candidate in enumerate(pending):
+        prompt_text = candidate.get("prompt", "") or ""
+        stats["processed"] += 1
+
+        # ── 來源重驗（空候選也算）＋一次性 session 指示：不送 LLM，萃取紀錄留一行 skip 原因 ──────
+        # 來源權威不交 LLM 判：舊版排進佇列的通知、其他 session 的訊息在這裡擋下。
+        typed = user_typed_text(prompt_text, keep_lines=True)
+        directive = _session_directive_reason(typed) if typed else None
+        if not typed or directive:
+            reason = f"session-directive({directive})" if typed else "not-user-typed"
+            if _record_skip(session_id, reason, candidate, prompt_text):
+                processed_indices.append(idx)   # 紀錄寫進去才清佇列；寫不進去留著下次再記
+            stats["skipped"] += 1
+            stats["skipped_directive" if typed else "skipped_not_user"] += 1
+            continue
+        prompt_text = typed
+        candidate["prompt"] = typed   # 之後的 L1／L2 與 atom 的 Quote 都用清理後的文字
+
+        # ── Mixed sentence detection ──────────────────────────────────
+        if _is_mixed_sentence(prompt_text):
+            _atom_debug_log(
+                "user-extract:mixed",
+                f"Mixed sentence skipped: {prompt_text[:80]}",
+                config,
+            )
+            # Will be surfaced via systemMessage by guardian
+            processed_indices.append(idx)
+            stats["skipped"] += 1
+            continue
+
+        # ── Emotional commitment detection ───────────────────────────
+        if _is_emotional_commitment(prompt_text):
+            _atom_debug_log(
+                "user-extract:emotional",
+                f"Emotional commitment → 24h cooldown: {prompt_text[:80]}",
+                config,
+            )
+            # Mark for 24h cooldown — leave in pending with cooldown timestamp
+            candidate["emotional_commitment"] = True
+            candidate["cooldown_until"] = (
+                datetime.now().timestamp() + 86400  # 24h
+            )
+            stats["skipped"] += 1
+            continue
+
+        # ── Budget check ──────────────────────────────────────────────
+        if budget.is_exceeded():
+            _atom_debug_log(
+                "user-extract:budget",
+                f"Budget exceeded ({budget.remaining()} remaining), stopping",
+                config,
+            )
+            break
+
+        l1_only = budget.remaining() <= 20  # <20 tok left → L1 only
+
+        # ── L1: binary yes/no ─────────────────────────────────────────
+        l1_prompt = _load_l1_prompt(prompt_text)
+        if not l1_prompt:
+            processed_indices.append(idx)
+            stats["skipped"] += 1
+            continue
+
+        # Budget counts user-side delta only (amortized user-delta tok, not wall
+        # cost). Few-shot template is a fixed overhead independent of pending count.
+        l1_tok = _estimate_tokens(prompt_text) + 12  # user prompt + ~12 tok yes/no response
+        budget.spend(l1_tok)
+
+        l1_result = _call_l1(l1_prompt)
+        if l1_result is None:
+            # Timeout / error → skip, keep pending for retry
+            candidate["retry_count"] = candidate.get("retry_count", 0) + 1
+            if candidate["retry_count"] > 2:
+                processed_indices.append(idx)  # >2 retries → discard
+            stats["skipped"] += 1
+            continue
+
+        if not l1_result:
+            # L1 says not a decision
+            processed_indices.append(idx)
+            stats["l1_no"] += 1
+            continue
+
+        stats["l1_yes"] += 1
+
+        # ── Budget gate: L1-only mode ─────────────────────────────────
+        if l1_only:
+            _atom_debug_log(
+                "user-extract:budget",
+                f"L1-only mode (budget={budget.remaining()}), skipping L2",
+                config,
+            )
+            processed_indices.append(idx)
+            stats["skipped"] += 1
+            continue
+
+        # ── L2: structured extraction ─────────────────────────────────
+        l2_prompt = _load_l2_prompt(prompt_text, assistant_last)
+        if not l2_prompt:
+            processed_indices.append(idx)
+            stats["skipped"] += 1
+            continue
+
+        # Budget counts user-side delta only (user prompt + assistant context
+        # window + ~180 tok structured response). Few-shot template is fixed
+        # overhead.
+        l2_tok = (
+            _estimate_tokens(prompt_text)
+            + _estimate_tokens(assistant_last[:600])
+            + 180
+        )
+        budget.spend(l2_tok)
+
+        l2_result = _call_l2(l2_prompt)
+        if l2_result is None:
+            candidate["retry_count"] = candidate.get("retry_count", 0) + 1
+            if candidate["retry_count"] > 2:
+                processed_indices.append(idx)
+            stats["skipped"] += 1
+            continue
+
+        l2_ran = True
+
+        # Check L2 decision
+        if not l2_result.get("decision", False):
+            processed_indices.append(idx)
+            continue
+
+        conf = l2_result.get("conf", 0.0)
+        try:
+            l2_confs.append(float(conf))
+        except (TypeError, ValueError):
+            pass
+
+        # ── Conf-based routing ────────────────────────────────────────
+        if conf < 0.70:
+            # Low confidence → skip
+            processed_indices.append(idx)
+            continue
+
+        if conf < 0.92:
+            # Medium confidence → write to _pending.candidates.md
+            _write_pending_candidate(l2_result, candidate, user, cwd)
+            processed_indices.append(idx)
+            _atom_debug_log(
+                "user-extract:pending",
+                f"conf={conf:.2f} → _pending.candidates: {l2_result.get('statement', '')[:60]}",
+                config,
+            )
+            continue
+
+        # ── conf ≥ 0.92 → confirmed ──────────────────────────────────
+        confirmed_extractions.append({
+            "statement": l2_result.get("statement", ""),
+            "scope": l2_result.get("scope", "personal"),
+            "audience": l2_result.get("audience", "programmer"),
+            "trigger": l2_result.get("trigger", []),
+            "conf": conf,
+            "turn_id": candidate.get("turn_id", ""),
+            "cwd": cwd,
+            "prompt": candidate.get("prompt", ""),  # 使用者原話 → atom `- Quote:`
+        })
+        processed_indices.append(idx)
+        stats["confirmed"] += 1
+
+        _atom_debug_log(
+            "user-extract:confirmed",
+            f"conf={conf:.2f} → confirmed: {l2_result.get('statement', '')[:80]}",
+            config,
+        )
+
+    # ── Write confirmed extractions to state for guardian ─────────────
+    if confirmed_extractions:
+        state.setdefault("confirmed_extractions", []).extend(confirmed_extractions)
+
+    # ── Ack-then-clear processed candidates ───────────────────────────
+    if processed_indices:
+        ack_then_clear(session_id, "pending_user_extract", processed_indices)
+
+    # ── Direct atom write for confirmed (pre-write, pending user veto) ──
+    # 先寫 atom 再存 state，讓每筆 confirmed_extraction 帶 write_result，
+    # UPS 宣告時能區分成功/失敗（可觀測性鐵律：寫入失敗必須浮出訊號）。
+    write_failed: List[str] = []
+    category_rejected: List[str] = []
+    for ext in confirmed_extractions:
+        result = _write_atom_via_mcp(ext, ext, session_id, user, config)
+        ext["write_result"] = result
+        if result == "deduped":
+            dedup_hit += 1
+        elif result == "failed":
+            write_failed.append(ext.get("statement", "")[:80])
+        elif result == "rejected":  # 範疇閘分不出 → 候選已進 _pending.candidates.md
+            category_rejected.append(ext.get("statement", "")[:80])
+
+    # Save state with confirmed_extractions (含 write_result)：鎖裡重讀最新那份再加（同一把 state 鎖，拿不到留待併帳）
+    if confirmed_extractions:
+        def _apply(fresh_state: Dict[str, Any]) -> bool:
+            fresh_state.setdefault("confirmed_extractions", []).extend(confirmed_extractions)
+            if write_failed:
+                fresh_state.setdefault("user_extract_write_failed", []).extend(write_failed)
+            if category_rejected:
+                fresh_state.setdefault("user_extract_category_rejected", []).extend(category_rejected)
+            return True
+        update_state_locked(session_id, _apply)
+
+    # ── Merge history log ─────────────────────────────────────────────
+    _append_merge_history(
+        session_id,
+        "auto-extract-v41",
+        f"processed={stats['processed']} confirmed={stats['confirmed']} "
+        f"l1_yes={stats['l1_yes']} l1_no={stats['l1_no']} skipped={stats['skipped']} "
+        f"skipped_not_user={stats['skipped_not_user']} skipped_directive={stats['skipped_directive']}",
+    )
+
+    # ── Augment stats for session evaluator ──
+    avg_l2_conf = (sum(l2_confs) / len(l2_confs)) if l2_confs else 0.0
+    token_used = max(0, budget._budget - budget.remaining())
+    stats["avg_l2_conf"] = round(avg_l2_conf, 4)
+    stats["dedup_hit"] = dedup_hit
+    stats["token_used"] = token_used
+    stats["l2_ran"] = l2_ran
+
+    _atom_debug_log(
+        "user-extract:summary",
+        f"session={session_id} | {json.dumps(stats, ensure_ascii=False)}",
+        config,
+    )
+
+    # ── Session evaluator — run on latest state snapshot ──
+    try:
+        fresh_state = _read_state(session_id) or state
+        score_entry = evaluate_session(session_id, fresh_state, config, stats)
+        _atom_debug_log(
+            "user-extract:score",
+            f"session={session_id} weighted={score_entry['scores']['weighted_total']}",
+            config,
+        )
+    except Exception as e:
+        _atom_debug_error("user-extract:evaluate_session", e)
+
+    return stats
+
+
+# ─── Entry point ──────────────────────────────────────────────────────────────
+
+def main():
+    try:
+        raw_input = sys.stdin.read()
+        ctx = json.loads(raw_input)
+        result = run_user_extraction(ctx)
+        sys.stdout.write(json.dumps(result, ensure_ascii=False))
+    except Exception as e:
+        print(f"[user-extract-worker] error: {e}", file=sys.stderr)
+        _atom_debug_error("user-extract-worker:main", e)
+        sys.stdout.write(json.dumps({"processed": 0, "confirmed": 0, "error": str(e)}))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        pass  # Silent failure — never block Claude Code

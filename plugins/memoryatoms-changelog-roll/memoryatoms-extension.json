@@ -1,0 +1,16 @@
+{
+  "name": "changelog-roll",
+  "description": "When _CHANGELOG.md passes a row threshold, rolls the old rows into _CHANGELOG_ARCHIVE.md in the background",
+  "python": {
+    "path": ["hooks"],
+    "on": {
+      "PostToolUse.edited": "changelog_roll_plugin:on_edited"
+    }
+  },
+  "config": {
+    "changelog_auto_roll": {
+      "enabled": true,
+      "threshold": 8
+    }
+  }
+}

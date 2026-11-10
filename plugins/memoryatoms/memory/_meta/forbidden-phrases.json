@@ -1,0 +1,332 @@
+{
+  "schema_version": "1",
+  "_doc": "single source of truth for 反退避契約 forbidden phrases. Read by hooks/wg_evasion.py (regex assembly) and surfaced in IDENTITY.md (human-readable list). 各類的 exception 欄由程式接上（規則 NOT_DOING_DECLARED）：退避語所在那一行對到一條「不做｜<哪一件>：<理由>」就不標、留帳，exception 文字附在提示裡告訴 AI 理由要寫什麼（風險、為什麼超出）。",
+  "categories": [
+    {
+      "id": "scope-evasion",
+      "label": "範圍推諉",
+      "patterns": [
+        "不在本[^，。\\s]{0,6}範圍",
+        "範圍外(?!的?(?:測試|案例|項目|改檔|改動|文件|檔案))",
+        "非本次",
+        "非本次改動",
+        "\\bout\\s+of\\s+scope\\b(?!\\s+(?:tests?|cases?|items?|changes?|files?|docs?)\\b)",
+        "\\boutside\\s+(?:the\\s+|this\\s+|of\\s+)?scope\\b",
+        "\\b(?:not|isn'?t|aren'?t)\\s+(?:in|within|part\\s+of)\\s+(?:the\\s+|this\\s+)?(?:scope|change|task|PR|ticket)\\b"
+      ],
+      "human": [
+        "不在本範圍",
+        "非本次改動",
+        "範圍外"
+      ],
+      "exception": null
+    },
+    {
+      "id": "time-deferral",
+      "label": "時間性延後",
+      "patterns": [
+        "留給[^，。\\s]{0,4}未來",
+        "(?:下次|下回|下一次|之後|晚點|稍後|有空|有時間)\\s*再\\s*(?:處理|修|補|做|看|弄)?",
+        "未來[^，。\\s]{0,3}處理",
+        "待後續",
+        "另行處理",
+        "另外處理",
+        "先跳過",
+        "留給使用者",
+        "\\b(?:fix|handle|address|revisit|finish|clean\\s+up|deal\\s+with|come\\s+back\\s+to|look\\s+at)\\b[^,.;\\n]{0,30}\\b(?:later|next\\s+time|another\\s+time)\\b",
+        "\\b(?:left|leave|leaving)\\b[^,.;\\n]{0,20}\\bfor\\s+(?:later|(?:the\\s+)?future|(?:the\\s+)?user|a\\s+follow-?up)\\b",
+        "\\bdefer(?:red|ring|s)?\\b[^,.;\\n]{0,30}\\b(?:later|future|follow-?up|next\\s+time)\\b",
+        "\\bskip(?:ped|ping|s)?\\b[^,.;\\n]{0,15}\\bfor\\s+now\\b",
+        "\\b(?:handled?|address(?:ed)?|deal(?:t)?\\s+with)\\b[^,.;\\n]{0,20}\\bseparately\\b"
+      ],
+      "human": [
+        "留給未來 session",
+        "下次/晚點/稍後再處理",
+        "先跳過"
+      ],
+      "exception": null
+    },
+    {
+      "id": "precedent-drift",
+      "label": "前已存在搪塞",
+      "patterns": [
+        "既有[^，。\\s]{0,6}drift",
+        "既有[^，。\\s]{0,6}問題",
+        "pre-?existing",
+        "\\bexisting\\s+(?:issues?|problems?|drift)\\b",
+        "\\balready\\s+(?:broken|failing)\\s+before\\b"
+      ],
+      "human": [
+        "既有 drift",
+        "pre-existing"
+      ],
+      "exception": "除非附「檢測時點 + 不修的實際風險」"
+    },
+    {
+      "id": "capability-evasion",
+      "label": "能力推諉",
+      "patterns": [
+        "超出[^，。\\s]{0,4}能力",
+        "\\b(?:beyond|outside|exceeds?)\\s+my\\s+(?:abilit(?:y|ies)|capabilit(?:y|ies))\\b"
+      ],
+      "human": [
+        "超出能力範圍"
+      ],
+      "exception": "除非附「具體為什麼超出」"
+    },
+    {
+      "id": "scope-impact-dismiss",
+      "label": "影響輕忽",
+      "patterns": [
+        "不影響[^，。\\s]{0,4}主線",
+        "\\b(?:does\\s+not|doesn'?t|will\\s+not|won'?t)\\s+(?:affect|impact)\\s+(?:the\\s+)?main\\s+(?:line|flow|path|task)\\b"
+      ],
+      "human": [
+        "不影響主線"
+      ],
+      "exception": null
+    },
+    {
+      "id": "deferral-attribution",
+      "label": "退縮歸屬",
+      "_doc": "Stop DeferralGate 專用（wg_evasion.detect_deferral）：主任務已完工且 context 用量 ≤ deferral_gate.max_context_ratio 時，收尾訊息把『帶受詞、可做的事』推給下個 session／歸為獨立議題／歸咎非我 → 擋回三選一。同時併入 evasion 聯集（軟標記）。",
+      "patterns": [
+        "下\\s*(?:個|一個|一)?\\s*session",
+        "(?:新|另開|另一個|後續|之後的?)\\s*session\\s*(?:才(?!(?:會|能)?\\s*(?:載入|生效|看得到|上線|換新|讀到))|再|做|處理|補|修)",
+        "留(?:給|到)\\s*(?:下\\s*(?:個|一個|一)?\\s*session|新\\s*session|後續|之後|下(?:個|一個|次))",
+        "待下\\s*(?:個|一個|次)?\\s*session",
+        "不(?:是|在|屬於?)本\\s*(?:次|輪|案|回合|階段|計畫|任務|session)",
+        "非本\\s*(?:輪|案|回合|階段|計畫|任務|session)",
+        "(?:不是|非|並非)\\s*(?:我|本\\s*session)\\s*(?:造成|引起|改的|弄的|所改|的錯|的問題|的鍋|之過)",
+        "非我(?:造成|所改|之過|引起)",
+        "下\\s*(?:個|一)?\\s*(?:階段|輪|回合)\\s*(?:再|才)?\\s*(?:處理|做|補|修|看)",
+        "(?:列|歸|記)(?:為|入|進|成)\\s*(?:獨立|遺留|另案|後續)\\s*(?:議題|項目|事項|工作)",
+        "獨立議題",
+        "另案(?:處理)?",
+        "遺留(?:議題|項目|事項)",
+        "next\\s+session\\b",
+        "(?:follow-?up|future|separate)\\s+sessions?\\b",
+        "not\\s+(?:my\\s+(?:fault|change|doing)|caused\\s+by\\s+me)",
+        "out\\s+of\\s+scope\\s+for\\s+this\\s+session",
+        "\\bnot\\s+(?:part\\s+of\\s+)?this\\s+(?:session|turn|round|phase)\\b",
+        "\\bnot\\s+(?:something\\s+)?I\\s+(?:caused|changed|introduced)\\b",
+        "\\bI\\s+(?:did\\s+not|didn'?t)\\s+(?:cause|change|introduce)\\b",
+        "\\b(?:separate|independent|unrelated)\\s+(?:issue|ticket|task)\\b",
+        "\\bleft\\s*over\\s+(?:issues?|items?|work)\\b",
+        "\\bnext\\s+(?:phase|round|turn)\\b[^,.;\\n]{0,15}\\b(?:fix|handle|do|address|revisit|finish)\\b",
+        "\\b(?:fix(?:ed)?|handled?|do(?:ne)?|address(?:ed)?|revisit(?:ed)?|finish(?:ed)?)\\b[^,.;\\n]{0,30}\\bnext\\s+(?:phase|round|turn)\\b"
+      ],
+      "human": [
+        "下個 session 做",
+        "不是本次／本案／本輪",
+        "非我造成",
+        "獨立議題／另案／遺留"
+      ],
+      "exception": "主任務未完工或 context 用量 >75% 不擋；擋回時 (b) 一句話說明不可逆／需使用者拍板／會飄移主任務，或 (c) 使用者已明示延後"
+    }
+  ],
+  "dismiss_keywords": {
+    "_doc": "使用者近 3 則 prompt 含這些只是提示，任何閘都不再整段關掉：退避偵測、退縮歸屬、紅測清單要 AI 寫「不做｜<哪一件>：使用者說「<原句片段>」」對到具體事項（規則 USER_WAIVER_NEEDS_CITATION）；收割閘、收割待補、收尾檢核同樣要對到那一件（規則 HARVEST_WAIVER_ITEMIZED），命中這些詞只讓擋訊息附上這個寫法。",
+    "patterns": [
+      "先這樣",
+      "留著",
+      "不用管",
+      "不要管",
+      "跳過",
+      "先跳過",
+      "known\\s+regression",
+      "confirmed\\s+regression",
+      "\\bskip\\s+(?:it|this|that|them)\\b",
+      "\\bskip\\s+for\\s+now\\b",
+      "\\bleave\\s+(?:it|this|that)\\b",
+      "\\bnever\\s*mind\\b",
+      "\\bdon'?t\\s+(?:worry\\s+about|bother\\s+with)\\b",
+      "\\bignore\\s+(?:it|this|that)\\b",
+      "\\bgood\\s+enough\\b",
+      "\\bthat'?s\\s+(?:it|fine|enough)\\s+for\\s+now\\b"
+    ]
+  },
+  "scan_report_markers": {
+    "_doc": "合規收尾檢核必須出現下列其一（has_scan_report / detect_missing_scan_report 用）。4 項全項檢視：(a) 缺失發現與修補清單 / (b) AI 逃避通報 / (c) Token 累積警示 / (d) 衍生暫存清單。舊「順手修補」「無 drift」等保留為向下相容偵測。",
+    "patterns": [
+      "缺失發現",
+      "缺失發現與修補清單",
+      "修補清單",
+      "衍生暫存清單",
+      "衍生暫存",
+      "AI\\s*逃避通報",
+      "Token\\s*累積警示",
+      "順手修補",
+      "順手修",
+      "附帶修補",
+      "發現[^，。\\n]{0,6}drift",
+      "本次[^，。\\n]{0,3}(?:無|沒有)[^，。\\n]{0,6}drift",
+      "無發現\\s*drift",
+      "無\\s*drift",
+      "no\\s+drift",
+      "掃描報告",
+      "收尾檢核",
+      "drift\\s+(?:check|report)",
+      "需另開\\s*session",
+      "列入\\s*handoff"
+    ]
+  },
+  "completion_claim": {
+    "_doc": "完成宣告詞（claims_completion 用，案件結尾語）",
+    "patterns": [
+      "完成",
+      "已解決",
+      "全部做完",
+      "做完了(?!嗎)",
+      "總結",
+      "收尾",
+      "(?<![A-Za-z])done(?![A-Za-z])",
+      "(?<![A-Za-z])finished(?![A-Za-z])",
+      "all\\s+set",
+      "wrapped\\s+up",
+      "大功告成",
+      "搞定",
+      "完工",
+      "結案",
+      "已\\s*push",
+      "(?<![A-Za-z])complete(?:d)?(?![A-Za-z])",
+      "(?<![A-Za-z])resolved(?![A-Za-z])"
+    ],
+    "exclude_patterns": {
+      "_doc": "進行式/否定修飾緊鄰完成詞 → 非真正終結宣告，claims_completion 排除（實測 false-positive：『完成條件尚未滿足』『總結一下但還沒做完』）。標點邊界防跨句誤傷；偏 false-negative（少判完成→少誤阻）符合契約鬆綁方向。中途狀態句（仍在等／等待…回報／尚未開始／中途／進行中）同列：模型回報「A 完成、仍在等 B 回報」不是收尾，KnowledgeHarvest／Harvest-Pending／ScanReport 都不該在此刻擋。",
+      "patterns": [
+        "(?:還沒|還未|尚未|尚待|未|沒有?|先確認|正在)[^，。！？\\n]{0,8}(?:完成|做完|解決|收尾|搞定|完工|結案)",
+        "(?:完成|做完|解決|收尾|搞定|完工|結案)[^，。！？\\n]{0,6}(?:尚未|還沒|還未|未完|沒完|未滿足|沒做完|未達|待補|待修)",
+        "待(?:補|修|辦|處理|確認|完善)",
+        "(?:仍在|還在|正在)\\s*等",
+        "等待[^，。！？\\n]{0,12}(?:回報|結果|回來|回覆)",
+        "(?:尚未|還沒|還未)\\s*開始",
+        "(?:中途|進行中)",
+        "(?:\\bnot\\b|n't\\b|\\bnever\\b|\\byet\\s+to\\b)[^.!?\\n]{0,30}\\b(?:done|finished|complete(?:d)?|resolved|wrapped\\s+up)\\b",
+        "\\b(?:when|once|after|until|if)\\b[^.!?\\n]{0,30}\\b(?:done|finished|complete(?:d)?)\\b",
+        "\\bto\\s+be\\s+(?:done|fixed|added|finished|completed)\\b",
+        "\\bstill\\s+(?:waiting|working|running)\\b",
+        "\\bwaiting\\s+(?:for|on)\\b[^.!?\\n]{0,30}\\b(?:reports?|results?|responses?|repl(?:y|ies)|answers?)\\b",
+        "\\b(?:not|haven'?t|hasn'?t)\\s+(?:yet\\s+)?started\\b",
+        "\\b(?:in[ -]progress|halfway)\\b"
+      ]
+    }
+  },
+  "context_exempt_deferral": {
+    "_doc": "退避軟偵測的 context 豁免只認這一小組延後語（規則 EVASION_CONTEXT_EXEMPT，hooks/wg_release_rules.py）：延後到下個／新 session、之後／下次再。範圍推諉、前已存在、能力推諉等其他類命中一律不豁免。",
+    "patterns": [
+      "下\\s*(?:個|一個|一)?\\s*session",
+      "(?:新|另開|另一個|後續|之後的?)\\s*session",
+      "(?:下次|下回|下一次|之後)\\s*再",
+      "next\\s+session\\b",
+      "(?:follow-?up|future|separate)\\s+sessions?\\b",
+      "\\blater\\b",
+      "\\bnext\\s+time\\b"
+    ]
+  },
+  "fixed_claim": {
+    "_doc": "說「修好」→ Stop 對帳閘要本回合對得上改檔的 PASS 收據（exit 0 或無 exit）。exclude：否定／疑問／未來式／英文否定。詞表只是提示（規則 CLAIM_WORDS_ARE_HINTS，hooks/wg_release_rules.py）：命中且沒證據時要 AI 回一行「宣稱｜修好：收據 <ref>」或「宣稱｜修好：非本回合宣稱，因為 …」，程式只核對收據對不對得上、有沒有理由，並留帳。",
+    "patterns": [
+      "修好",
+      "已修復",
+      "修復(?:完成|了|好)",
+      "修正(?:完成|了|好)",
+      "已修正",
+      "修掉了",
+      "補好了",
+      "(?<![Aa] )(?<![Aa]n )(?<![Tt]he )\\bfixed\\b(?![-\\s]+(?:width|height|size|length|format|layout|list|set|values?|order|point|number|position|string|rate|price|cost|options?|columns?|rows?|labels?|header|text|wording)\\b)",
+      "\\bresolved\\b",
+      "\\bpatched\\b"
+    ],
+    "exclude_patterns": {
+      "patterns": [
+        "(?:(?:如果|假如|要是|一旦|等到|若(?!干))[^，。！？\\n]{0,12}|等)(?:修好|修復|修正|修掉|補好)",
+        "(?:修好|修復|修正|修掉|補好)[^，。！？\\n]{0,3}(?:之後|以後)(?![^，。！？\\n]*[了過])[^，。！？\\n]{0,10}(?:再|一起|才|就|會|要)",
+        "(?:還沒|還未|尚未|沒有?|未|無法|不能|不會|不算|不是|沒能)[^，。！？\\n]{0,6}(?:修好|修復|修正|修掉|補好)",
+        "(?:修好|修復|修正)[^，。！？\\n]{0,4}(?:之前|前|嗎|沒|了沒)",
+        "(?:要|該|怎麼|如何|待|請|先|再|去)\\s*(?:修好|修復|修正)",
+        "\\bnot\\b",
+        "\\bisn't\\b",
+        "\\bhasn't\\b",
+        "\\bwasn't\\b",
+        "\\bnever\\b",
+        "\\bunfixed\\b",
+        "[?？]\\s*$",
+        "嗎",
+        "n't\\b",
+        "\\bcannot\\b",
+        "\\b(?:if|once|when|after|until|unless)\\b[^,.;\\n]{0,30}\\b(?:fixed|resolved|patched)\\b",
+        "\\b(?:to|will|must|should|needs?\\s+to|can|could)\\s+be\\s+(?:fixed|resolved|patched)\\b"
+      ]
+    }
+  },
+  "measured_claim": {
+    "_doc": "說「量了」→ 要本回合 DONE 收據。",
+    "patterns": [
+      "量了",
+      "量過",
+      "量測(?:完|過|了|完成)",
+      "已量",
+      "量尺(?:跑|量)(?:過|了)",
+      "實測(?:了|過|結果|數據)",
+      "\\bmeasured\\b",
+      "\\bbenchmark(?:ed)?\\b"
+    ],
+    "exclude_patterns": {
+      "patterns": [
+        "(?:(?:如果|假如|要是|一旦|等到|若(?!干))[^，。！？\\n]{0,12}|等)(?:量|實測)",
+        "(?:量|實測)[^，。！？\\n]{0,3}(?:之後|以後)(?![^，。！？\\n]*[了過])[^，。！？\\n]{0,10}(?:再|一起|才|就|會|要)",
+        "(?:還沒|還未|尚未|沒有?|未|無法|不能|沒能)[^，。！？\\n]{0,6}(?:量|測)",
+        "(?:要|該|再|先|請|去|會)\\s*(?:量|實測)",
+        "\\bnot\\b",
+        "\\bisn't\\b",
+        "\\bhasn't\\b",
+        "\\bwasn't\\b",
+        "\\bnever\\b",
+        "\\bunfixed\\b",
+        "[?？]\\s*$",
+        "嗎",
+        "n't\\b",
+        "\\bcannot\\b",
+        "\\b(?:if|once|when|after|until|will|should|to|needs?\\s+to)\\b[^,.;\\n]{0,20}\\b(?:measure|benchmark)"
+      ]
+    }
+  },
+  "tried_claim": {
+    "_doc": "說「試過／跑了」→ 本回合要有 Bash／PowerShell 呼叫或帳本收據。",
+    "patterns": [
+      "【試過】",
+      "試過",
+      "試了",
+      "試跑(?:了|過)?",
+      "跑(?:了|過)",
+      "執行(?:了|過)",
+      "實跑(?:了|過)",
+      "\\btried\\b",
+      "\\bran\\s+(?:it|the|them)\\b",
+      "\\bran\\b",
+      "\\bexecuted\\b",
+      "\\btested\\b"
+    ],
+    "exclude_patterns": {
+      "patterns": [
+        "(?:(?:如果|假如|要是|一旦|等到|若(?!干))[^，。！？\\n]{0,12}|等)(?:試|跑|執行)",
+        "(?:試|跑|執行)[^，。！？\\n]{0,3}(?:之後|以後)(?![^，。！？\\n]*[了過])[^，。！？\\n]{0,10}(?:再|一起|才|就|會|要)",
+        "(?:還沒|還未|尚未|沒有?|未|不曾|無法|不能|沒能)[^，。！？\\n]{0,4}(?:試|跑|執行)",
+        "(?:試|跑|執行)[^，。！？\\n]{0,3}(?:之前|前|看看|嗎|了沒)",
+        "(?:要|該|再|先|會|請|建議|去)\\s*(?:試|跑|執行)",
+        "\\bnot\\b",
+        "\\bisn't\\b",
+        "\\bhasn't\\b",
+        "\\bwasn't\\b",
+        "\\bnever\\b",
+        "\\bunfixed\\b",
+        "[?？]\\s*$",
+        "嗎",
+        "n't\\b",
+        "\\bcannot\\b",
+        "\\b(?:if|once|when|after|until|will|should|to|needs?\\s+to)\\b[^,.;\\n]{0,20}\\b(?:try|run|test|execute)\\b"
+      ]
+    }
+  }
+}

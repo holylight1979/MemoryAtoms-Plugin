@@ -1,0 +1,9 @@
+{
+ "ext.changelog-roll.archive_help": "預設：--changelog 同資料夾的 _CHANGELOG_ARCHIVE.md",
+ "ext.changelog-roll.archive_malformed": "[changelog-roll] WARN: archive {archive_path} 表格結構異常，重建並保留原內容於檔尾\n",
+ "ext.changelog-roll.dry_run": "[changelog-roll] DRY-RUN: 會留 {kept} 條 / 會搬 {moved} 條到 {archive}",
+ "ext.changelog-roll.newest_moved": "  最新搬出日期: {date}",
+ "ext.changelog-roll.nothing_to_roll": "[changelog-roll] Nothing to roll (當前 {count} 條 ≤ 保留 {keep} 條)",
+ "ext.changelog-roll.oldest_moved": "  最舊搬出日期: {date}",
+ "ext.changelog-roll.rolled": "[changelog-roll] 主檔 {kept} 條 / 搬 {moved} 條到 {archive}"
+}

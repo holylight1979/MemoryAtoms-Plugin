@@ -1,0 +1,4 @@
+{
+  "_doc": "必載檔硬契約登記表（出廠為空）。contracts 每筆：id、live（每 session 一定進 context 的檔，相對資料根）、template（版控中的來源）、must_contain（必含句）、why、fix；live 為 IDENTITY.md 的那筆另可帶 sentinel（完整性哨兵句，沒寫取 must_contain 第一句）與 min_bytes（小於此大小視為 stub，預設 2000）。SessionStart 檢 live 缺句→告警；登記表沒列的檔不查。登記在此的句子不得只搬去 atom（atom 靠 trigger 命中、有預算上限、會被截斷）。",
+  "contracts": []
+}

@@ -1,0 +1,4 @@
+# 預設只裝 lancedb：嵌入走 Ollama。
+# 沒有 Ollama 又想用本地備援時才自己裝（會帶 torch，幾百 MB 到幾 GB）：
+#   python -m pip install "sentence-transformers>=4.0"
+lancedb>=0.20

@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "workflow-guardian": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/tools/workflow-guardian-mcp/server.js"
+      ],
+      "env": {
+        "CLAUDE_PLUGIN_OPTION_DATA_DIR": "${user_config.data_dir}",
+        "CLAUDE_PLUGIN_OPTION_LANGUAGE": "${user_config.language}",
+        "CLAUDE_PLUGIN_OPTION_PYTHON": "${user_config.python}",
+        "CLAUDE_PLUGIN_OPTION_REMOTE_LLM_USER": "${user_config.remote_llm_user}",
+        "CLAUDE_PLUGIN_OPTION_REMOTE_LLM_PASSWORD": "${user_config.remote_llm_password}"
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+ "ext.dashboard.all_safe_delete_only": "all_safe only goes with delete, without force",
+ "ext.dashboard.artifacts_full_install_only": "Leftover-artifact tracking comes with the closing check, which ships only in the full (git) install.",
+ "ext.dashboard.empty_output": "empty output",
+ "ext.dashboard.hud_beat_detail": "heartbeat {age_s}s ago, {clients} connections",
+ "ext.dashboard.hud_unreachable": "[Guardian:AEC] The HUD window could not be opened ({why}); this turn's closing report is at {report_file}; open http://127.0.0.1:{port}/aec/hud to see it",
+ "ext.dashboard.list_tool_silent": "The list tool did not respond",
+ "ext.dashboard.list_tool_silent_detail": "The list tool did not respond: {detail}"
+}

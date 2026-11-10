@@ -1,0 +1,23 @@
+{
+  "_doc": "Plugin edition defaults, layered on top of workflow/config.json only when this code runs as the MemoryAtoms plugin (lib/edition.layered_config). The installed (git) edition never reads this file. Anything here can be overridden in <data folder>/workflow/config.json or config.local.json.",
+  "guard_family": {
+    "_doc": "The coding-guard family (commit-order gate, cross-layer gates, verification ledger and batch gate, privacy commit gate, smell gate, OverviewHub, chain breaker, ask gate, code reconcile, red-test, equivalence, deferral, closing checklist, sync reminder, deep post-mortem, DocDrift) does not ship with the plugin: enabled=false skips every one of those checks and does not load their modules. Memory itself (per-prompt injection, write gates that point to atom_write, harvest, usefulness attribution, cards re-sent after compaction) runs as usual (hooks/wg_core.guard_family_on).",
+    "enabled": false
+  },
+  "vcs_sync": {
+    "_doc": "No background git commit / push / pull of the memory folders (root, project, and organization layers). Your cards stay on this machine until you turn sync on yourself.",
+    "enabled": false
+  },
+  "merge_driver": {
+    "_doc": "Never edits your global git config (~/.gitconfig) to install the index merge driver automatically.",
+    "auto_install": false
+  },
+  "skill_index": {
+    "_doc": "No background regeneration of the skill index after a SKILL.md changes (it would write into the plugin folder).",
+    "enabled": false
+  },
+  "eol": {
+    "_doc": "Does not add a block to your project's .gitattributes or set svn:eol-style on your project files after a card is written.",
+    "auto_normalize_project": false
+  }
+}

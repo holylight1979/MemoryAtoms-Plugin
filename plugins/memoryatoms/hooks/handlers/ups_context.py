@@ -1,0 +1,73 @@
+"""
+handlers/ups_context.py — UserPromptSubmit context build 段
+
+從 user_prompt_submit.py 拆出（複雜度熱點重構）。
+職責：atom 注入前的場景脈絡建構：
+- wisdom engine situation classification
+- parallel agent suggestion
+- _AIDocs keyword matching
+- JIT internal pipeline reference（記憶系統開發場景）
+
+公開函式 build_context() 原樣回傳 budget（不扣保留量）。
+"""
+
+import sys
+from pathlib import Path
+from typing import Any, Dict, List
+
+from wg_core import user_typed_text
+from wg_atoms import count_trigger_hits
+import wg_plugins
+
+# 確保本樹根在 path：這個回合後面的 lib.* 惰性 import 靠它（handler 執行時 cwd 不定；用檔案位置不用 Path.home()）。
+_LIB_PARENT = str(Path(__file__).resolve().parents[2])
+if _LIB_PARENT not in sys.path:
+    sys.path.insert(0, _LIB_PARENT)
+
+
+def build_context(
+    session_id: str,
+    state: Dict[str, Any],
+    config: Dict[str, Any],
+    prompt: str,
+    clean_prompt: str,
+    prompt_lower: str,
+    budget: int,
+    lines: List[str],
+) -> int:
+    """執行 context build 段。mutate state / append lines，回傳調整後 budget。"""
+    # ─── 插件的提示與統計：只看使用者打的字，通知、同伴訊息不觸發 ───
+    lines.extend(wg_plugins.emit("UserPromptSubmit", state=state, config=config, session_id=session_id,
+                                 prompt=user_typed_text(clean_prompt)))
+
+    # ─── _AIDocs keyword matching ──────────────────
+    # 只在命中明顯（關鍵字命中數 ≥ aidocs.min_prompt_hits，預設 2）才指、最多 aidocs.max_prompt_matches（預設 1）條、
+    # 命中最多的優先；同一份文件一個 session 只指一次（aidocs.v6_once 沒寫＝開，不看寫碼守門總開關）；超過 5 份命中不送照舊判
+    aidocs_cfg = config.get("aidocs", {})
+    aidocs_state = state.get("aidocs", {})
+    aidocs_kw_map = aidocs_state.get("keywords", {})
+    max_matches = aidocs_cfg.get("max_prompt_matches", 1)
+    min_hits = aidocs_cfg.get("min_prompt_hits", 2)
+    if aidocs_kw_map and prompt.strip():
+        scored = [(count_trigger_hits(keywords, prompt_lower), fname) for fname, keywords in aidocs_kw_map.items()]
+        scored = [(n, f) for n, f in scored if n >= min_hits]
+        scored.sort(key=lambda t: -t[0])
+        matched_docs: List[str] = [f for _n, f in scored]
+        if matched_docs and len(matched_docs) <= 5 and aidocs_cfg.get("v6_once", True):
+            pointed = state.setdefault("aidocs_pointed", [])
+            matched_docs = [d for d in matched_docs if d not in pointed]
+            pointed.extend(matched_docs[:max_matches])
+        if matched_docs and len(matched_docs) <= 5:
+            aidocs_root = aidocs_state.get("project_root", "")
+            pointer_lines = ["[Guardian:AIDocs] Relevant project docs:"]
+            for doc in matched_docs[:max_matches]:
+                desc = ""
+                for f, d in aidocs_state.get("entries", []):
+                    if f == doc:
+                        desc = d
+                        break
+                doc_path = f"_AIDocs/{doc}" if aidocs_root else doc
+                pointer_lines.append(f"  → Read `{doc_path}` — {desc[:80]}")
+            lines.extend(pointer_lines)
+
+    return budget

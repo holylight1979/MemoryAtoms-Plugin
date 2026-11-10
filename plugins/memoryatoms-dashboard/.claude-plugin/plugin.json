@@ -1,0 +1,12 @@
+{
+  "name": "memoryatoms-dashboard",
+  "description": "Local web dashboard served from the MCP process: dashboard, brain-world, and the wrap-up report HUD.",
+  "version": "6.1.1",
+  "author": {
+    "name": "holylight"
+  },
+  "dependencies": [
+    "memoryatoms"
+  ],
+  "license": "GPL-3.0-only"
+}

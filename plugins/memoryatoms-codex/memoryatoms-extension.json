@@ -1,0 +1,51 @@
+{
+  "name": "codex",
+  "description": "Codex integration: /codex second opinion and build delegation, Codex Companion background review and acceptance judge (its hooks are wired by the native hooks/hooks.json)",
+  "python": {
+    "path": ["hooks"],
+    "on": {
+      "SessionStart": "codex_plugin:on_session_start"
+    }
+  },
+  "config": {
+    "codex_companion": {
+      "enabled": true,
+      "_doc_codex_binary": "Leave codex_binary unset to find codex on PATH; to point at a specific executable, set it in the codex_companion section of workflow/config.local.json (tools/codex-companion/judge_backend.resolve_codex_bin: a configured path that does not exist also falls back to PATH).",
+      "model": "gpt-6-astra",
+      "assessment_timeout": 120,
+      "_doc_assessment_timeout": "Time limit in seconds for one codex call made by the background review subprocess (audit.py); the Stop hook does not wait for it, so it does not affect wrap-up time.",
+      "codex_extra_args": [],
+      "_doc_codex_extra_args": "Flags appended verbatim to codex exec (added by tools/codex-call.py; the acceptance judge goes through it too). Flags needed on one machine only (for example, disabling an MCP server registered in that machine's ~/.codex/config.toml that the judge does not need) go in the codex_companion section of workflow/config.local.json.",
+      "score_threshold": 7,
+      "max_audits_per_session": 30,
+      "silent_advisory": true,
+      "max_inject_severity": "high",
+      "soft_gate": {
+        "completion_evidence": true,
+        "architecture_review": false,
+        "handoff_review": false,
+        "block_severity_threshold": "high",
+        "_doc": "completion_evidence = wrap-up self-check (heuristics): when silent_advisory=false and severity reaches block_severity_threshold, it only writes a completion_evidence assessment file and attaches a note to the next turn; it never blocks the wrap-up. handoff_review = ask Codex to review when a next-phase / handoff file is written (this key applies while the coding guard is off; while it is on, handoff_review_v6 applies, unset = off). With both off, handoffs rely on the self-review in skills/handoff Step 3.5; for a second opinion, call the codex skill."
+      },
+      "fallback": {
+        "_doc": "Fallback judge (tools/codex-companion/judge_backend.py): when codex is missing (neither the codex_binary path nor PATH finds it) or not authorized (not logged in / 401 / 429 / quota), headless `claude -p --model <model>` acts as the judge instead. Its independence is weaker (same vendor and model family, correlated blind spots), so it only issues advisories and never blocks the wrap-up (the acceptance judge only records, whichever backend it uses). Authorization failures write a suppression marker to workflow/companion-backend.json; codex is not retried within reprobe_hours, and the marker is cleared once codex succeeds. Empty claude_binary = find it automatically (PATH -> VS Code extension -> ~/.local/share/claude/versions). If neither is available, it falls back to heuristics only and says so once at SessionStart. Turn everything off with enabled:false.",
+        "enabled": true,
+        "model": "sonnet",
+        "claude_binary": "",
+        "timeout": 90,
+        "reprobe_hours": 24
+      },
+      "audit_quota": {
+        "_doc": "Quota buckets (INV-BUDGET-ISOLATION): within the shared max_audits_per_session total, acceptance_review has its own cap (max) and a reserved minimum (min; other reviews can use at most the total minus min), so neither kind starves the other.",
+        "acceptance_review_min": 6,
+        "acceptance_review_max": 8
+      },
+      "acceptance_review": {
+        "_doc": "Acceptance judge (hooks/codex_companion.py): governed by the coding-guard master switch; when that is off, neither trigger (claiming completion at wrap-up, marking a spec file done) runs. A completion claim bound to the session's single open spec -> builds a case file (the user's original request + acceptance checklist + diff samples + test output) and sends it to codex from a background subprocess (audit.py) for a verdict; Stop does not wait and never blocks. The result lands in a companion-assessment file, and the next UserPromptSubmit always attaches one line (verdict / severity / summary); the full explanation (summary + evidence + advice) is attached only on fail with severity at or above max_inject_severity. Every verdict is written to acceptance-audit.jsonl. Binding contract: review only when there is exactly one open spec, otherwise uncertain (INV-CASE-BINDING-OR-UNCERTAIN). max_per_spec = audits per spec per session. Turn off with enabled:false.",
+        "enabled": true,
+        "max_per_spec": 2,
+        "max_prompt_chars": 22000
+      }
+    }
+  }
+}

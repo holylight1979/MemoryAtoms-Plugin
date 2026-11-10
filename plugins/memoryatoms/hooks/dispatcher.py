@@ -1,0 +1,162 @@
+"""
+dispatcher.py — Workflow Guardian V5 主入口（取代 workflow-guardian.py 的 1640+ 行 dispatcher）
+
+Claude Code hooks 的統一入口，從 stdin 讀取 JSON，根據 hook_event_name
+分派到 handlers/ 目錄下對應 handler。
+
+V5 設計：純路由 + main entry，無業務邏輯。所有 handler 在 handlers/。
+"""
+
+import importlib
+import json
+import os
+import sys
+from pathlib import Path
+
+# 確保 hooks/ 在 sys.path（runpy.run_path 不會自動加）
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import wg_read_fast   # 只載標準庫：Read 事件的快路徑在載 wg_core 之前就分流（規則 READ_FAST_PATH）
+
+# wg_core／wg_hook_timing 在 main 讀完 stdin、確定不是 Read 快路徑之後才載（模組層的名字留給測試換）
+WORKFLOW_DIR = load_config = v6_enabled = _atom_debug_error = begin_state_rmw = end_state_rmw = None
+hook_timing = None
+
+
+def _load_core() -> None:
+    global WORKFLOW_DIR, load_config, v6_enabled, _atom_debug_error, begin_state_rmw, end_state_rmw, hook_timing
+    if hook_timing is not None:
+        return
+    import wg_core as _c
+    import wg_hook_timing as _t
+    WORKFLOW_DIR, load_config, v6_enabled = _c.WORKFLOW_DIR, _c.load_config, _c.v6_enabled
+    _atom_debug_error, begin_state_rmw, end_state_rmw = _c._atom_debug_error, _c.begin_state_rmw, _c.end_state_rmw
+    hook_timing = _t
+
+# 惰性 import：event → (module, func)，只在該 event 觸發時 importlib 載入
+# 對應 handler module，省下每次 hook（含最高頻 PostToolBatch/PreToolUse）付全量
+# 9-handler import 傳遞稅（實測 ~520-639ms → ~120ms）。handlers/__init__.py 的
+# __getattr__ 保 `from handlers import handle_X` 舊用法仍可用但同樣惰性。
+HANDLERS = {
+    "SessionStart": ("handlers.session_start", "handle_session_start"),
+    "UserPromptSubmit": ("handlers.user_prompt_submit", "handle_user_prompt_submit"),
+    "PreToolUse": ("handlers.pre_tool_use", "handle_pre_tool_use"),
+    "PostToolUse": ("handlers.post_tool_use", "handle_post_tool_use"),
+    "PostToolUseFailure": ("handlers.post_tool_use", "handle_post_tool_use_failure"),  # 工具失敗不送 PostToolUse：補記 Bash 寫檔
+    "PreCompact": ("handlers.pre_compact", "handle_pre_compact"),
+    "PostCompact": ("handlers.post_compact", "handle_post_compact"),        # 選配 #4
+    "PostToolBatch": ("handlers.post_tool_batch", "handle_post_tool_batch"),  # 選配 #4
+    "Stop": ("handlers.stop", "handle_stop"),
+    "SubagentStart": ("handlers.subagent_start", "handle_subagent_start"),   # 補不經 Agent 工具的子代理記憶注入（skill fork、Workflow）
+    "SubagentStop": ("handlers.stop", "handle_subagent_stop"),   # 子代理收尾：回填注入紀錄的結果（效用帳）；寫碼守門開再跑寫碼查核閘
+    "SessionEnd": ("handlers.session_end", "handle_session_end"),
+    "InstructionsLoaded": ("handlers.instructions_loaded", "handle_instructions_loaded"),   # 只記帳：規則／索引載入對帳
+    "StopFailure": ("handlers.stop_failure", "handle_stop_failure"),   # 回合因 API 錯誤結束：留帳並標 aborted
+}
+
+# 備援裁判子 session（judge_backend.run_claude_judge 起的 headless claude，env CLAUDE_COMPANION_JUDGE=1）：
+# 不注入記憶、不跑其他閘（防裁判觸發裁判）；只留寫碼查核：PreToolUse 只擋「寫入目標判不出」（執行前就擋，不留永久欠帳），
+# PostToolUse 做最小記帳（改了哪些檔、未知寫入、驗證收據），Stop 只跑對帳／量尺閘、沒人能回答放行詢問，擋滿放行留帳。其餘事件早退。
+JUDGE_HANDLERS = {
+    "PreToolUse": ("handlers.pre_tool_use", "handle_judge_pre_tool_use"),
+    "PostToolUse": ("handlers.post_tool_use", "handle_judge_post_tool_use"),
+    "PostToolUseFailure": ("handlers.post_tool_use", "handle_post_tool_use_failure"),
+    "Stop": ("handlers.stop", "handle_judge_stop"),
+}
+
+# 寫碼守門總開關關閉（wg_core.v6_enabled）時：只分派寫碼守門關時也跑的（9e476fd0 就有的）事件與工具，
+# 加上 SubagentStop（規則 SUBAGENT_RESULT_FROM_SUBAGENT_STOP：子代理注入的效用帳兩種模式都要記；handler 在守門關時記完就走，不跑寫碼查核）；
+# 裁判子 session、hook 分段計時也是寫碼守門開著才有，關閉時照舊一律早退／不計時。
+PRE_V6_EVENTS = {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+                 "PreCompact", "PostCompact", "PostToolBatch", "Stop", "SubagentStart", "SubagentStop", "SessionEnd"}
+PRE_V6_TOOLS = {   # 9e476fd0 settings.json 的 matcher；寫碼守門加掛的工具（Read、PowerShell 後記、AskUserQuestion…）關閉時不進 handler
+    "PreToolUse": {"Write", "Edit", "NotebookEdit", "Bash", "PowerShell", "Agent", "Task"},
+    "PostToolUse": {"Edit", "Write", "MultiEdit", "NotebookEdit", "ExitPlanMode", "Bash", "Agent", "Task",
+                    "anti_evasion_report", "atom_write", "atom_retire", "knowledge_harvest_report"},
+}
+# MCP 工具名＝前綴＋尾巴：安裝版 mcp__workflow-guardian__<工具>，插件版 mcp__plugin_memoryatoms_workflow-guardian__<工具>
+# （官方 hooks.md：插件帶的 MCP 是 mcp__plugin_<插件>_<server>__<工具>）。上表 MCP 工具只寫尾巴，兩種前綴都認。
+MCP_PREFIXES = ("mcp__workflow-guardian__", "mcp__plugin_memoryatoms_workflow-guardian__")
+
+
+def _tool_key(tool_name: str) -> str:
+    """本系統 MCP 工具回尾巴（atom_write），其他工具原樣回。"""
+    for p in MCP_PREFIXES:
+        if tool_name.startswith(p):
+            return tool_name[len(p):]
+    return tool_name
+
+
+# 規則 STATE_RMW_LOCKED：每支 hook 讀到 state 就握這個 session 的鎖到 handler 結束；等鎖最多等到 hook 上限的這個比例
+# （起點同分段計時＝行程建立），後一半留給 handler 跑完與超時降級（80%）。
+STATE_LOCK_WAIT_RATIO = 0.5
+
+
+def _state_lock_deadline(event: str, input_data: dict, timer) -> float:
+    """等 state 鎖等到幾點（epoch 秒）：起點都是行程建立；有起表照它的上限，沒起表的事件（PostToolBatch、PostToolUseFailure、
+    SubagentStop…）照 settings.json 這支 hook 的 timeout，讀不到當 5 秒。"""
+    _load_core()
+    if timer:
+        return timer.t0 + timer.limit_s * STATE_LOCK_WAIT_RATIO
+    limit = hook_timing.settings_limit(event, str(input_data.get("tool_name") or "")) or 5.0
+    return hook_timing._process_started() + limit * STATE_LOCK_WAIT_RATIO
+
+
+def _pre_v6_skips(event: str, input_data: dict) -> bool:
+    if event not in PRE_V6_EVENTS:
+        return True
+    tools = PRE_V6_TOOLS.get(event)
+    return tools is not None and _tool_key(input_data.get("tool_name", "")) not in tools
+
+
+def main():
+    judge = bool(os.environ.get("CLAUDE_COMPANION_JUDGE"))   # 事件名在 stdin 裡，讀完才知道走不走
+
+    # Force UTF-8 output on Windows
+    if sys.platform == "win32":
+        sys.stdout = open(sys.stdout.fileno(), mode='w', encoding='utf-8', closefd=False)  # lf-exempt: 重包 stdio fd，不是檔案；hook 協定輸出不得改
+        sys.stderr = open(sys.stderr.fileno(), mode='w', encoding='utf-8', closefd=False)  # lf-exempt: 重包 stdio fd，不是檔案；hook 協定輸出不得改
+
+    try:
+        raw = sys.stdin.buffer.read()
+        input_data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        sys.exit(0)
+
+    # 規則 READ_FAST_PATH：Read 的 PostToolUse 只追加一行 read-log 就走（不載 wg_core、不讀 config／state、不計時）；
+    # 下一個非 Read 事件（handlers/post_tool_use.replay_read_log）補帳，寫碼守門關、導讀守門關在那裡照原判法丟掉
+    if wg_read_fast.is_fast_read(input_data):
+        wg_read_fast.log_read(input_data)
+        return
+
+    _load_core()
+    WORKFLOW_DIR.mkdir(parents=True, exist_ok=True)
+    config = load_config()
+    if not config.get("enabled", True):
+        sys.exit(0)
+
+    event = input_data.get("hook_event_name", "")
+    v6 = v6_enabled(config)
+    if not v6 and (judge or _pre_v6_skips(event, input_data)):
+        sys.exit(0)
+    spec = (JUDGE_HANDLERS if judge else HANDLERS).get(event)
+    if spec:
+        timer = hook_timing.start(event, input_data, config) if v6 else None   # Stop／PostToolUse 分段計時；過上限 80% 降級
+        begin_state_rmw(_state_lock_deadline(event, input_data, timer))
+        try:
+            module = importlib.import_module(spec[0])
+            hook_timing.lap("載入 handler")
+            getattr(module, spec[1])(input_data, config)
+        except Exception as e:
+            print(f"[workflow-guardian] Error in {event}: {e}", file=sys.stderr)
+            _atom_debug_error(f"workflow-guardian:{event}", e)
+            sys.exit(0)
+        finally:
+            end_state_rmw()
+            hook_timing.finish()
+    else:
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

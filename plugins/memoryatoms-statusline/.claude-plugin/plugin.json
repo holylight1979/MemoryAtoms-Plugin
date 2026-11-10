@@ -1,0 +1,12 @@
+{
+  "description": "Claude Code status line: edited files, knowledge queue, vector service, wrap-up report (zero tokens)",
+  "name": "memoryatoms-statusline",
+  "version": "6.1.1",
+  "author": {
+    "name": "holylight"
+  },
+  "dependencies": [
+    "memoryatoms"
+  ],
+  "license": "GPL-3.0-only"
+}

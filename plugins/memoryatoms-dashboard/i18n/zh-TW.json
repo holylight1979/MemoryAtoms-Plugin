@@ -1,0 +1,9 @@
+{
+ "ext.dashboard.all_safe_delete_only": "all_safe 只配 delete、不帶 force",
+ "ext.dashboard.artifacts_full_install_only": "留下的東西清單屬於收尾檢核，只有完整版（git 安裝版）才有。",
+ "ext.dashboard.empty_output": "空輸出",
+ "ext.dashboard.hud_beat_detail": "心跳 {age_s} 秒前、連線 {clients} 條",
+ "ext.dashboard.hud_unreachable": "[Guardian:AEC] HUD 視窗開不起來（{why}），這輪的收尾報告在 {report_file}，開 http://127.0.0.1:{port}/aec/hud 就看得到",
+ "ext.dashboard.list_tool_silent": "清單工具沒有回應",
+ "ext.dashboard.list_tool_silent_detail": "清單工具沒有回應：{detail}"
+}

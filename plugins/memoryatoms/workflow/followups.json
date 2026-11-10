@@ -1,0 +1,4 @@
+{
+ "_doc": "回訪登記表：到期後 SessionStart 自動跑 tools/followup-check.py，結果推到開場 context。每筆 handoff 以「接手者零記憶」為前提寫。owner（帳號）／host（電腦代號，`python tools/followup-check.py --host-id` 印這台的）選填：有填就只對那個人／那台機器跑和顯示，量測腳本只在某台的回訪要標 host。這裡只放登記內容；每次跑的結果與提醒日寫本機 workflow/followups.local.json（不進版控）。結案：--done <id>。",
+ "followups": []
+}

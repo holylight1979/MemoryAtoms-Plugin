@@ -1,0 +1,12 @@
+{
+  "name": "memoryatoms-handoff",
+  "description": "Automatic handoff notes: prepares next-phase-auto.md before compaction and at session end, warns when context is nearly full, and provides /handoff.",
+  "version": "6.1.1",
+  "author": {
+    "name": "holylight"
+  },
+  "dependencies": [
+    "memoryatoms"
+  ],
+  "license": "GPL-3.0-only"
+}

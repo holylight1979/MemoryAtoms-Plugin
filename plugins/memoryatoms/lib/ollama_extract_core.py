@@ -1,0 +1,193 @@
+"""
+ollama_extract_core.py — Shared extraction utilities for extract-worker.py and user-extract-worker.py.
+
+Functions preserve the signatures used by extract-worker.py and user-extract-worker.py.
+"""
+
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List
+
+# ─── sys.path for ollama_client ─────────────────────────────────────────────
+_CODE_ROOT = Path(__file__).resolve().parents[1]   # 本檔所在的樹根（~/.claude 或它的 worktree）；不用 Path.home()
+_TOOLS_DIR = str(_CODE_ROOT / "tools")
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
+from ollama_client import get_client
+
+try:
+    from .project_root import claude_data_dir
+    from .state_rmw import update_state_locked
+except ImportError:  # 頂層模組載入
+    from project_root import claude_data_dir
+    from state_rmw import update_state_locked
+
+VALID_TYPES = ("factual", "procedural", "architectural", "pitfall", "decision")
+
+
+# ─── Token estimation / Atom Debug Log（唯一一份在 lib/token_estimate.py、lib/atom_debug.py）──
+
+try:
+    from .token_estimate import estimate_tokens as _estimate_tokens
+    from .atom_debug import write as _debug_write, error_message as _debug_message
+except ImportError:  # 頂層模組載入
+    from token_estimate import estimate_tokens as _estimate_tokens
+    from atom_debug import write as _debug_write, error_message as _debug_message
+
+
+def _atom_debug_log(tag: str, content: str, config: Dict[str, Any] = None) -> None:
+    """Write to atom-debug.log when atom_debug flag is on. ERROR always writes."""
+    _debug_write(tag, content, claude_data_dir() / "Logs", config)
+
+
+def _atom_debug_error(source: str, exc: Exception) -> None:
+    """Log error with source context and stack trace."""
+    _atom_debug_log("ERROR", f"[{source}] {_debug_message(exc)}", {"atom_debug": True})
+
+
+# ─── Ollama ────────────────────────────────────────────────────────────────
+
+def _call_ollama(prompt: str, model: str = None, timeout: int = 120) -> str:
+    try:
+        client = get_client()
+        # think="auto": remote(gemma4:e4b)=True, local(qwen3:1.7b)=False — 由 backend config 控制
+        # temperature=0.0: A/B 測試 Round 2 結論，一致性最佳
+        # num_predict: 由 backend config 的 llm_num_predict 控制（remote=4096, local=2048）
+        return client.generate(
+            prompt, model=model, timeout=timeout,
+            think="auto", temperature=0.0,
+        )
+    except Exception as e:
+        _atom_debug_error("萃取:_call_ollama", e)
+        return ""
+
+
+# ─── Parse + Dedup ─────────────────────────────────────────────────────────
+
+def _parse_llm_response(raw: str) -> List[dict]:
+    if not raw:
+        return []
+    items = []
+    try:
+        match = re.search(r"\[.*\]", raw, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group(0))
+            # Filter: only keep dict items (LLM may emit strings/ints in array)
+            items = [x for x in parsed if isinstance(x, dict)]
+    except (json.JSONDecodeError, ValueError):
+        for m in re.finditer(r'"content"\s*:\s*"([^"]{10,150})"', raw):
+            items.append({"content": m.group(1), "type": "factual"})
+    return items
+
+
+def _word_overlap_score(a: str, b: str) -> float:
+    wa = set(a.lower().split())
+    wb = set(b.lower().split())
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / min(len(wa), len(wb))
+
+
+def _dedup_items(
+    items: List[dict], existing_queue: List[dict], threshold: float = 0.80
+) -> List[dict]:
+    """Validate, deduplicate, and format extracted items."""
+    existing_contents = [q.get("content", "") for q in existing_queue if q.get("content")]
+    results = []
+    now = datetime.now().astimezone().isoformat()
+
+    for item in items[:5]:
+        content = item.get("content", "").strip()
+        if not content or len(content) < 10:
+            continue
+
+        # Check overlap against existing queue
+        skip = False
+        for ec in existing_contents:
+            if _word_overlap_score(content, ec) >= threshold:
+                skip = True
+                break
+        if skip:
+            continue
+
+        # Check overlap against already-accepted results
+        for r in results:
+            if _word_overlap_score(content, r["content"]) >= threshold:
+                skip = True
+                break
+        if skip:
+            continue
+
+        kt = item.get("type", "factual")
+        if kt not in VALID_TYPES:
+            kt = "factual"
+
+        results.append({
+            "content": content[:150],
+            "classification": "[臨]",
+            "knowledge_type": kt,
+            "source": "session-end",
+            "confirmations": 1,
+            "at": now,
+        })
+        existing_contents.append(content)
+
+    return results
+
+
+# ─── Ack-then-clear ──────────────────────────────────────────────────
+
+def ack_then_clear(session_id: str, key: str, indices: List[int]) -> bool:
+    """Read state → pop specified indices from state[key] → write back（lib/state_rmw.update_state_locked：跟 hook 同一把鎖）。
+
+    Used to clear successfully-written items from knowledge_queue / pending_user_extract
+    without losing items added concurrently by other hooks：鎖裡讀改寫；拿不到鎖時寫回改留待併帳，
+    清單三方合併看基準（自己刪掉的項不會被併回、別人新加的照留）。
+
+    Returns True when written / left as a pending record / nothing to clear; False when the state is missing/unreadable
+    or both the state and the pending record failed to write.
+    """
+    if not indices:
+        return True
+
+    def _pop(state: Dict[str, Any]) -> bool:
+        queue = state.get(key, [])
+        if not queue:
+            return False  # nothing to clear
+        for idx in sorted(indices, reverse=True):   # Pop indices in reverse order to maintain correctness
+            if 0 <= idx < len(queue):
+                queue.pop(idx)
+        state[key] = queue
+        return True
+
+    return update_state_locked(session_id, _pop) in ("written", "pending", "unchanged")
+
+
+# ─── Session Budget Tracker ──────────────────────────────────────────
+
+class SessionBudgetTracker:
+    """Track token budget consumption within a session.
+
+    Budget defaults to 240 tok.
+    When exceeded, callers should degrade to L1-only or skip extraction entirely.
+    """
+
+    def __init__(self, budget: int = 240):
+        self._budget = budget
+        self._spent = 0
+
+    def spend(self, tok: int) -> None:
+        """Record token expenditure."""
+        self._spent += tok
+
+    def remaining(self) -> int:
+        """Return remaining budget (may be negative if overspent)."""
+        return self._budget - self._spent
+
+    def is_exceeded(self) -> bool:
+        """Return True if budget is fully consumed."""
+        return self._spent >= self._budget

@@ -1,0 +1,9 @@
+{
+ "ext.changelog-roll.archive_help": "default: _CHANGELOG_ARCHIVE.md in the same folder as --changelog",
+ "ext.changelog-roll.archive_malformed": "[changelog-roll] WARN: archive {archive_path} has a malformed table; rebuilding it and keeping the original content at the end of the file\n",
+ "ext.changelog-roll.dry_run": "[changelog-roll] DRY-RUN: would keep {kept} rows / move {moved} rows to {archive}",
+ "ext.changelog-roll.newest_moved": "  newest moved date: {date}",
+ "ext.changelog-roll.nothing_to_roll": "[changelog-roll] Nothing to roll ({count} rows ≤ keep {keep})",
+ "ext.changelog-roll.oldest_moved": "  oldest moved date: {date}",
+ "ext.changelog-roll.rolled": "[changelog-roll] main file {kept} rows / moved {moved} rows to {archive}"
+}

@@ -1,0 +1,2096 @@
+<!DOCTYPE html>
+<!--
+  腦內世界（Brain-World）— L2 娛樂外掛，非 guardian 常駐。
+  ▸ 定位：原子記憶的擬人化視覺化（生物＝atom、房間＝專案、診所＝atom-heal 手動觸發）。
+  ▸ 生命週期：獨立瀏覽器檔（file:// 開啟），按需啟動；輪詢 guardian MCP(:3848) 的 /api/*。
+             不隨 guardian hook pipeline 常駐、不屬收尾主流程——關掉瀏覽器即完全休眠。
+  ▸ 診所（clinic）：手動拖入生病生物＝按需觸發 atom-heal（含 L2 LLM 死連結修復）。
+             這是「娛樂 UI 的按需入口」，非唯一/主要觸發；世界無關的背景 L2 sweep 走
+             server.js /api/heal-all（headless），真引擎在 tools/atom-heal.py。
+  ▸ World Command Bus（/api/world-command…）：保留的按需通道（Claude/使用者下指令→前端
+             執行→回報），非死路；同屬此娛樂層，不常駐。
+  正名原則：此層可獨立存在、可隨時不開，但不刪——它是有效的視覺化/手動維護面。
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>原子記憶 · 腦內世界</title>
+<style>
+  :root{
+    --bg:#06080f; --panel:#0d1117; --fg:#e6edf3; --muted:#8b949e; --line:#222b36;
+    --core:#58a6ff; --sick:#3fb950; --gold:#e3b341; --silver:#c9d1d9; --evolve:#d2a8ff;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0; min-height:100%; background:var(--bg); color:var(--fg);
+    font-family:"Segoe UI",system-ui,"Microsoft JhengHei",sans-serif; overflow-x:hidden;}
+  body{overflow-y:auto;}
+
+  /* Layer 0 背景 */
+  #bg{position:fixed; inset:0; z-index:0; display:block;}
+
+  /* Layer 1 場景（房間 + 生物 同一座標空間）*/
+  #scene{position:relative; z-index:1; width:100%;}
+
+  /* ── 房間（專案）─────────────────────────────── */
+  .room{position:absolute; border-radius:16px; isolation:isolate;   /* isolate：把 sign/env-layer 的 z-index 鎖在房內，不外洩到 scene 蓋住生物 */
+    background:linear-gradient(180deg, rgba(255,255,255,.015), rgba(0,0,0,.18));
+    border:1px solid var(--line); overflow:hidden;}
+  .room.active{box-shadow:0 0 0 1px rgba(88,166,255,.35), 0 0 30px rgba(88,166,255,.10) inset;}
+  .room .sign{position:absolute; top:8px; left:12px; right:12px; z-index:3; font-size:12px; font-weight:700; color:var(--fg);
+    text-shadow:0 1px 3px #000; pointer-events:none;}
+  .room .sign .sgn-main{white-space:nowrap;}
+  .room .sign .meta{color:var(--muted); font-weight:400; margin-left:6px;}
+
+  /* ── 環境演化：招牌進度行 + 房內建築層（env-layer）─────────────────── */
+  .room .devline{margin-top:3px; display:flex; align-items:center; gap:5px; font-size:10px; font-weight:600;
+    color:var(--silver); white-space:nowrap; max-width:100%; overflow:hidden;}
+  .room .devline.incub{color:var(--muted); font-weight:400;}
+  .room .devfam{color:var(--fg);}
+  .room .devbar{flex:0 0 auto; width:54px; height:5px; border-radius:3px; background:rgba(255,255,255,.12); overflow:hidden;}
+  .room .devfill{display:block; height:100%; border-radius:3px; transition:width .4s;
+    background-image:linear-gradient(90deg,#3fb950,#d4e157 60%,#e3b341); background-size:54px 100%; background-repeat:no-repeat;}
+  .room .devpct{color:var(--gold); font-weight:700;}
+  .room .dev-done{filter:drop-shadow(0 0 4px rgba(63,185,80,.85));}
+  .room .devfam2{color:var(--muted); font-weight:400;}
+  svg.env-layer{position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:1;}  /* 夾在 floor(0) 與生物(scene 上層) 之間 */
+  svg.env-layer text{filter:drop-shadow(0 1px 1px rgba(0,0,0,.6));}
+  svg.env-layer .env-glow{animation:envGlow 3.6s ease-in-out infinite;}
+  @keyframes envGlow{0%,100%{opacity:.82; filter:drop-shadow(0 0 2px rgba(227,179,65,.5))} 50%{opacity:1; filter:drop-shadow(0 0 7px rgba(227,179,65,.85))}}
+  .room .floor{position:absolute; left:0; right:0; bottom:0; height:34%;
+    background:linear-gradient(180deg, transparent, rgba(88,166,255,.05) 30%, rgba(88,166,255,.10));
+    border-top:1px solid rgba(88,166,255,.10);}
+  .room.core{border-color:rgba(88,166,255,.4);}
+  .room.core .floor{background:linear-gradient(180deg, transparent, rgba(88,166,255,.08) 30%, rgba(88,166,255,.16));}
+
+  /* ── 生物（記憶 atom）───────────────────────────── */
+  .cr{position:absolute; left:0; top:0; width:var(--s); height:var(--s);
+    will-change:transform; cursor:grab; touch-action:none;
+    color:hsl(var(--h,205),66%,57%);}            /* 體色＝腦區 hue；SVG fill=currentColor 取用 */
+  .cr.drag{cursor:grabbing; z-index:50;}
+  .cr .cbody{width:100%; height:100%; display:block; overflow:visible;
+    filter:drop-shadow(0 2px 2px rgba(0,0,0,.5)); transition:transform .25s;}
+  /* 表情：依狀態 class 切換眼/嘴（預設健康＝睜眼+微笑）*/
+  .cr .eyes-closed,.cr .eyes-sick,.cr .m-flat,.cr .m-sick{display:none;}
+  .cr.sleep .eyes-open,.cr.sleep .m-smile{display:none;}
+  .cr.sleep .eyes-closed,.cr.sleep .m-flat{display:inline;}
+  .cr.sick  .eyes-open,.cr.sick  .m-smile{display:none;}
+  .cr.sick  .eyes-sick,.cr.sick  .m-sick{display:inline;}
+  .cr.ghost{color:rgba(214,220,250,.85); cursor:default;}
+  .cr .tag{position:absolute; top:calc(100% + 13px); left:50%; transform:translateX(-50%);
+    font-size:10px; color:var(--muted); white-space:nowrap; max-width:110px; overflow:hidden;
+    text-overflow:ellipsis; text-shadow:0 1px 2px #000; pointer-events:none; opacity:.0; transition:opacity .2s;}
+  .cr:hover .tag, .cr.named .tag{opacity:.95;}
+  .cr:hover{z-index:40; filter:brightness(1.2);}
+  /* 戰力星條：生物下方 ⭐×N（power 0..1→0..5 星）；power 缺則隱藏 */
+  .cr .stars{position:absolute; top:calc(100% + 1px); left:50%; transform:translateX(-50%);
+    font-size:9px; line-height:1; letter-spacing:-1px; white-space:nowrap; pointer-events:none;
+    filter:drop-shadow(0 1px 1px #000); display:none;}
+
+  /* 進化階段環（drop-shadow 光暈貼合 SVG 輪廓，非方框）*/
+  .cr.c-fixed   .cbody{filter:drop-shadow(0 0 3px var(--gold)) drop-shadow(0 0 6px rgba(227,179,65,.5)) drop-shadow(0 2px 2px rgba(0,0,0,.5));}
+  .cr.c-observe .cbody{filter:drop-shadow(0 0 3px var(--silver)) drop-shadow(0 0 4px rgba(201,209,201,.4)) drop-shadow(0 2px 2px rgba(0,0,0,.5));}
+
+  /* 角標 */
+  .cr .badge{position:absolute; font-size:calc(var(--s)*.42); line-height:1; filter:drop-shadow(0 0 3px #000); pointer-events:none; display:none;}
+  .cr .b-zzz{top:-6px; right:-2px; animation:zzz 3s ease-in-out infinite;}
+  .cr .b-evolve{top:-8px; left:-4px; animation:evolvePulse 1.4s ease-in-out infinite;}
+  .cr .b-crown{top:-10px; left:50%; transform:translateX(-50%);}
+  .cr .b-tool{bottom:-4px; right:-6px; animation:work 1s ease-in-out infinite;}
+  @keyframes zzz{0%,100%{opacity:.3} 50%{opacity:1}}
+  @keyframes evolvePulse{0%,100%{transform:scale(1)} 50%{transform:scale(1.3)}}
+  @keyframes work{0%,100%{transform:rotate(-15deg)} 50%{transform:rotate(20deg)}}
+
+  /* 生病：體色轉病綠（currentColor 覆寫，與 hue 無關）+ 綠煙 + 反胃表情 */
+  .cr.sick{color:#5cbf66;}
+  .cr.sick .cbody{filter:saturate(.85) brightness(.92) drop-shadow(0 2px 2px rgba(0,0,0,.5));}
+  .cr .smoke{display:none; position:absolute; inset:-10px; border-radius:50%; pointer-events:none;
+    background:radial-gradient(circle,rgba(63,185,80,.5),transparent 62%);}
+  .cr.sick .smoke{display:block; animation:smoke 2.1s ease-in-out infinite;}
+  @keyframes smoke{0%,100%{opacity:.25;transform:scale(.85)} 50%{opacity:.65;transform:scale(1.2)}}
+
+  /* 沉睡：傾身打盹 + 變淡（閉眼由表情 class 處理）*/
+  .cr.sleep .cbody{transform:rotate(14deg); opacity:.6; transform-origin:50% 70%;}
+
+  /* 進化中：紫光閃爍 */
+  .cr.evolving .cbody{animation:evoGlow 1.5s ease-in-out infinite;}
+  @keyframes evoGlow{
+    0%,100%{filter:drop-shadow(0 0 3px var(--evolve)) drop-shadow(0 2px 2px rgba(0,0,0,.5));}
+    50%{filter:drop-shadow(0 0 9px var(--evolve)) drop-shadow(0 0 16px rgba(210,168,255,.7)) drop-shadow(0 2px 2px rgba(0,0,0,.5));}}
+
+  /* 頂級龍（mass≥16）：威風呼吸 */
+  .cr.mega .cbody{animation:megaBreath 3s ease-in-out infinite; transform-origin:50% 62%;}
+  @keyframes megaBreath{0%,100%{transform:scale(1)} 50%{transform:scale(1.06)}}
+
+  /* 對話泡泡 */
+  .bubble{position:absolute; z-index:60; transform:translate(-50%,-100%);
+    background:#fff; color:#111; font-size:12px; padding:5px 9px; border-radius:10px;
+    box-shadow:0 4px 14px rgba(0,0,0,.5); white-space:nowrap; pointer-events:none;
+    animation:pop .2s ease-out;}
+  .bubble::after{content:""; position:absolute; bottom:-5px; left:50%; transform:translateX(-50%);
+    border:5px solid transparent; border-top-color:#fff;}
+  @keyframes pop{from{transform:translate(-50%,-90%) scale(.7); opacity:0} to{transform:translate(-50%,-100%) scale(1); opacity:1}}
+
+  /* 治癒星星 */
+  .heal{position:absolute; z-index:60; font-size:22px; pointer-events:none; animation:healUp 1s ease-out forwards;}
+  @keyframes healUp{from{opacity:1; transform:translate(-50%,-50%) scale(.6)} to{opacity:0; transform:translate(-50%,-180%) scale(1.4)}}
+
+  /* ── UI ─────────────────────────────────────── */
+  #topbar{position:fixed; z-index:5; top:0; left:0; right:0; padding:8px 14px;
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    background:linear-gradient(180deg,rgba(6,8,15,.95),rgba(6,8,15,0));}
+  #topbar h1{font-size:15px; margin:0; font-weight:800;}
+  #topbar .s{font-size:12px; color:var(--muted);} #topbar .s b{color:var(--fg);}
+  /* 最強記憶 TOP3 排行 */
+  #topbar .top3box{display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap;}
+  #top3list{display:inline-flex; align-items:center; gap:4px; flex-wrap:wrap;}
+  .t3{display:inline-flex; align-items:center; gap:3px; font-size:11px; color:var(--fg);
+    background:rgba(227,179,65,.10); border:1px solid rgba(227,179,65,.3); border-radius:9px; padding:1px 7px; max-width:170px;}
+  .t3 b{color:var(--gold); font-weight:800;}
+  .t3 span{overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .t3dot{flex:0 0 auto; width:7px; height:7px; border-radius:50%;}
+  .t3p{color:var(--gold); font-weight:700;}
+  .t3muted{font-size:11px; color:var(--muted);}
+  #topbar .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;}
+  .dot.ok{background:#3fb950} .dot.bad{background:#f85149}
+  #help{position:fixed; z-index:5; top:38px; left:14px; right:14px; font-size:12px; color:var(--muted);
+    text-shadow:0 1px 2px #000; pointer-events:none;}
+
+  #clinic{position:fixed; z-index:6; right:18px; bottom:18px; width:120px; height:96px;
+    border:1px dashed rgba(63,185,80,.5); border-radius:14px; background:rgba(63,185,80,.06);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+    color:var(--sick); font-size:12px; text-align:center;}
+  #clinic.hot{background:rgba(63,185,80,.2); box-shadow:0 0 24px rgba(63,185,80,.4);}
+  #clinic .ic{font-size:34px;}
+
+  #legend{position:fixed; z-index:5; left:14px; bottom:56px; font-size:11px; color:var(--muted);
+    background:rgba(13,17,23,.82); border:1px solid var(--line); border-radius:10px; padding:8px 12px; pointer-events:none;}
+  #legend b{color:var(--fg)} #legend .r{margin:2px 0}
+
+  #detail{position:fixed; z-index:7; top:64px; right:16px; width:330px; max-height:calc(100vh - 120px);
+    overflow:auto; display:none; background:rgba(13,17,23,.97); border:1px solid var(--line);
+    border-radius:14px; padding:16px; box-shadow:0 10px 50px rgba(0,0,0,.6);}
+  #detail.show{display:block}
+  #detail .x{float:right; cursor:pointer; color:var(--muted); font-size:18px}
+  #detail h2{font-size:16px; margin:0 0 6px; word-break:break-all}
+  #detail .say{font-size:13px; line-height:1.7; color:var(--fg); margin:8px 0}
+  #detail .st{font-size:13px; margin:6px 0; padding:6px 10px; border-radius:8px}
+  #detail .st.ok{background:rgba(63,185,80,.12); color:#56d364}
+  #detail .st.sick{background:rgba(248,81,73,.12); color:#ff7b72}
+  #detail .st.sleep{background:rgba(139,148,158,.12); color:#adbac7}
+  #detail .st.evolve{background:rgba(210,168,255,.12); color:var(--evolve)}
+  #detail .chip{display:inline-block; font-size:11px; padding:2px 7px; margin:2px 3px 2px 0;
+    border:1px solid var(--line); border-radius:10px; color:var(--muted)}
+  #detail details{margin-top:10px} #detail summary{cursor:pointer; color:var(--muted); font-size:12px}
+  #detail pre{margin-top:8px; padding:8px; background:#010409; border:1px solid var(--line); border-radius:8px;
+    font-size:11px; line-height:1.5; white-space:pre-wrap; color:#adbac7; max-height:220px; overflow:auto}
+  /* 最近對話（每隻生物 el._chatLog 環形緩衝；看出剛才跟誰講了什麼）*/
+  #dChat{margin-top:12px}
+  #dChat .chatttl{font-size:12px; color:var(--muted); margin-bottom:5px}
+  #dChat .chatln{font-size:12px; line-height:1.6; color:var(--fg); padding:3px 8px; margin:3px 0;
+    background:rgba(88,166,255,.07); border-left:2px solid rgba(88,166,255,.4); border-radius:4px; word-break:break-word}
+  #dChat .cdir{color:var(--core); font-weight:700; margin-right:4px}
+  #dChat .cwho{color:var(--gold); margin-right:3px}
+
+  /* 指令台（command bus 選項式輸入框；可收合，body 向上展開、header 釘底）*/
+  #cmdbar{position:fixed; z-index:8; left:14px; bottom:14px; width:300px; background:rgba(13,17,23,.95);
+    border:1px solid var(--line); border-radius:12px; box-shadow:0 6px 24px rgba(0,0,0,.5); color:var(--fg);}
+  #cmdbar .cb-h{padding:8px 12px; cursor:pointer; font-weight:700; user-select:none; font-size:12px;
+    display:flex; justify-content:space-between; align-items:center}
+  #cmdbar .cb-sub{font-weight:400; font-size:10px; color:var(--muted)}
+  #cmdbar .cb-tog{transition:transform .2s; color:var(--muted)}
+  #cmdbar.open .cb-tog{transform:rotate(180deg)}
+  #cmdbar .cb-body{display:none; padding:0 12px 12px; font-size:12px}
+  #cmdbar.open .cb-body{display:block}
+  #cmdbar .cb-row{display:flex; gap:6px; margin-bottom:6px}
+  #cmdbar select,#cmdbar input{background:#0d1117; border:1px solid var(--line); color:var(--fg);
+    border-radius:6px; padding:4px 6px; font-size:12px; flex:1; min-width:0}
+  #cmdbar button{background:#238636; border:none; color:#fff; border-radius:6px; padding:4px 14px; cursor:pointer; font-size:12px}
+  #cmdbar button:hover{background:#2ea043}
+  #cmdbar .cb-desc{font-size:11px; color:var(--muted); margin:2px 0 8px; min-height:14px}
+  #cmdbar .cb-args{display:flex; flex-direction:column; gap:6px}
+  #cmdbar .cbarg{display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted)}
+  #cmdbar .cbarg select,#cmdbar .cbarg input{flex:1; color:var(--fg)}
+  #cmdbar .cb-log{margin-top:8px; font-size:11px; color:#7ee787; min-height:14px; word-break:break-all}
+
+  /* 自癒視覺：治療中發光、轉診人工貼 OK 繃（誠實：只有 server 確認 fixed 才移 .sick）*/
+  #scene .cr.healing{ filter:brightness(1.25) drop-shadow(0 0 7px rgba(63,185,80,.8)); }
+  #scene .cr.bandaged::after{ content:"🩹"; position:absolute; top:-4px; right:-4px; font-size:15px; filter:none; }
+</style>
+</head>
+<body>
+  <!-- ── 體型 SVG <symbol> 定義（4 階生物 + 幽靈，<use> 復用、零素材）──────
+       主體 fill=currentColor（＝.cr 的 color＝腦區 hue）；明暗用白/黑 opacity 疊層，
+       與 hue 無關，故任何腦區色都有立體感。表情(眼/嘴)畫在各生物的 light-DOM svg 裡，
+       可被 document CSS class 切換（symbol 內無法被外層 class 選取）。-->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+    <symbol id="sym-egg" viewBox="0 0 100 100">
+      <ellipse cx="50" cy="80" rx="22" ry="5.5" fill="#000" opacity=".16"/>
+      <path d="M50 14 C30 18 22 46 24 62 C26 80 38 90 50 90 C62 90 74 80 76 62 C78 46 70 18 50 14 Z" fill="currentColor"/>
+      <path d="M50 14 C30 18 22 46 24 62 C26 80 38 90 50 90 C62 90 74 80 76 62 C78 46 70 18 50 14 Z" fill="none" stroke="#000" stroke-opacity=".16" stroke-width="2"/>
+      <ellipse cx="40" cy="40" rx="8" ry="12" fill="#fff" opacity=".22"/>
+      <path d="M36 30 l7 6 l-6 6 l8 5" fill="none" stroke="#000" stroke-opacity=".14" stroke-width="2" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="sym-slime" viewBox="0 0 100 100">
+      <ellipse cx="50" cy="86" rx="30" ry="5.5" fill="#000" opacity=".16"/>
+      <circle cx="30" cy="88" r="3" fill="currentColor"/><circle cx="68" cy="89" r="2.4" fill="currentColor"/>
+      <path d="M16 80 C14 44 28 26 50 26 C72 26 86 44 84 80 C84 84 80 86 75 84 C68 88 60 86 52 87 C44 88 34 88 27 84 C22 86 16 84 16 80 Z" fill="currentColor"/>
+      <path d="M16 80 C14 44 28 26 50 26 C72 26 86 44 84 80" fill="none" stroke="#000" stroke-opacity=".12" stroke-width="2"/>
+      <ellipse cx="38" cy="44" rx="8" ry="11" fill="#fff" opacity=".25"/>
+    </symbol>
+    <symbol id="sym-monster" viewBox="0 0 100 100">
+      <ellipse cx="50" cy="89" rx="27" ry="5" fill="#000" opacity=".16"/>
+      <path d="M30 34 L22 12 L42 28 Z" fill="currentColor"/><path d="M70 34 L78 12 L58 28 Z" fill="currentColor"/>
+      <ellipse cx="37" cy="84" rx="9" ry="6" fill="currentColor"/><ellipse cx="63" cy="84" rx="9" ry="6" fill="currentColor"/>
+      <ellipse cx="18" cy="58" rx="7" ry="10" fill="currentColor"/><ellipse cx="82" cy="58" rx="7" ry="10" fill="currentColor"/>
+      <ellipse cx="50" cy="56" rx="30" ry="29" fill="currentColor"/>
+      <ellipse cx="50" cy="62" rx="17" ry="15" fill="#fff" opacity=".13"/>
+      <ellipse cx="40" cy="44" rx="7" ry="9" fill="#fff" opacity=".2"/>
+    </symbol>
+    <symbol id="sym-dragon" viewBox="0 0 100 100">
+      <ellipse cx="50" cy="90" rx="26" ry="4.5" fill="#000" opacity=".16"/>
+      <path d="M30 52 C8 38 4 60 16 64 C6 70 20 76 28 68 C24 62 26 56 30 52 Z" fill="currentColor" opacity=".92"/>
+      <path d="M70 52 C92 38 96 60 84 64 C94 70 80 76 72 68 C76 62 74 56 70 52 Z" fill="currentColor" opacity=".92"/>
+      <path d="M58 80 C78 86 86 72 76 62 C74 70 66 72 60 70 Z" fill="currentColor"/>
+      <path d="M40 30 L35 14 L45 26 Z" fill="currentColor"/><path d="M60 30 L65 14 L55 26 Z" fill="currentColor"/>
+      <ellipse cx="40" cy="84" rx="7" ry="5.5" fill="currentColor"/><ellipse cx="60" cy="84" rx="7" ry="5.5" fill="currentColor"/>
+      <ellipse cx="50" cy="56" rx="25" ry="27" fill="currentColor"/>
+      <path d="M38 60 q12 12 24 0 q-2 16 -12 18 q-10 -2 -12 -18 Z" fill="#fff" opacity=".15"/>
+      <ellipse cx="40" cy="42" rx="6" ry="8" fill="#fff" opacity=".2"/>
+    </symbol>
+    <symbol id="sym-ghost" viewBox="0 0 100 100">
+      <path d="M24 56 C24 32 40 20 50 20 C60 20 76 32 76 56 L76 82 C76 86 72 86 70 82 C68 78 64 78 62 82 C60 86 56 86 54 82 C52 78 48 78 46 82 C44 86 40 86 38 82 C36 78 32 78 30 82 C28 86 24 86 24 82 Z" fill="currentColor"/>
+      <ellipse cx="40" cy="40" rx="6" ry="8" fill="#fff" opacity=".18"/>
+    </symbol>
+  </defs></svg>
+
+  <!-- ── 環境大地標 <symbol>（env-*；center 元素 svg_hint 命中者用 <use>，未定義者退放大 emoji）──
+       固定填色（與生物 hue 無關），在深色背景上可辨識；viewBox 100×100 等比放置。-->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+    <symbol id="env-keep" viewBox="0 0 100 100">
+      <rect x="32" y="38" width="36" height="50" fill="#8a8f98"/>
+      <rect x="32" y="38" width="36" height="50" fill="none" stroke="#5b6068" stroke-width="2"/>
+      <path d="M30 38 h6 v-6 h5 v6 h5 v-6 h5 v6 h5 v-6 h5 v6 h4 v6 H30 Z" fill="#9aa0aa"/>
+      <rect x="44" y="62" width="12" height="26" fill="#3a3f47"/>
+      <rect x="37" y="50" width="7" height="9" fill="#2a2f37"/><rect x="56" y="50" width="7" height="9" fill="#2a2f37"/>
+    </symbol>
+    <symbol id="env-castle" viewBox="0 0 100 100">
+      <rect x="20" y="50" width="60" height="40" fill="#8a8f98"/>
+      <rect x="14" y="40" width="16" height="50" fill="#9aa0aa"/><rect x="70" y="40" width="16" height="50" fill="#9aa0aa"/>
+      <rect x="42" y="28" width="16" height="62" fill="#a6acb6"/>
+      <path d="M14 40 h16 v-5 h-4 v3 h-4 v-3 h-4 v3 h-4 z" fill="#9aa0aa"/>
+      <path d="M70 40 h16 v-5 h-4 v3 h-4 v-3 h-4 v3 h-4 z" fill="#9aa0aa"/>
+      <path d="M42 28 h16 v-5 h-4 v3 h-4 v-3 h-4 v3 h-4 z" fill="#a6acb6"/>
+      <rect x="46" y="64" width="8" height="26" fill="#3a3f47"/>
+      <g fill="#2a2f37"><rect x="19" y="56" width="6" height="8"/><rect x="75" y="56" width="6" height="8"/></g>
+      <path d="M50 22 l11 4 l-11 4 z" fill="#e3b341"/>
+    </symbol>
+    <symbol id="env-ferris" viewBox="0 0 100 100">
+      <circle cx="50" cy="42" r="34" fill="none" stroke="#c9d1d9" stroke-width="3"/>
+      <g stroke="#8b949e" stroke-width="2"><path d="M50 42 V8"/><path d="M50 42 V76"/><path d="M50 42 H16"/><path d="M50 42 H84"/><path d="M50 42 L26 18"/><path d="M50 42 L74 18"/><path d="M50 42 L26 66"/><path d="M50 42 L74 66"/></g>
+      <g fill="#58a6ff"><circle cx="50" cy="8" r="4"/><circle cx="50" cy="76" r="4"/><circle cx="16" cy="42" r="4"/><circle cx="84" cy="42" r="4"/><circle cx="26" cy="18" r="4"/><circle cx="74" cy="18" r="4"/><circle cx="26" cy="66" r="4"/><circle cx="74" cy="66" r="4"/></g>
+      <circle cx="50" cy="42" r="5" fill="#e3b341"/>
+      <path d="M50 42 L40 90 H60 Z" fill="none" stroke="#8b949e" stroke-width="2"/>
+    </symbol>
+    <symbol id="env-lighthouse" viewBox="0 0 100 100">
+      <path d="M40 88 L44 34 H56 L60 88 Z" fill="#e6edf3"/>
+      <path d="M44 48 h12 M43 62 h14 M42 76 h16" stroke="#f85149" stroke-width="5"/>
+      <rect x="42" y="24" width="16" height="11" fill="#3a3f47"/>
+      <path d="M40 24 h20 l-4 -6 h-12 z" fill="#e3b341"/>
+      <circle cx="50" cy="30" r="3" fill="#fff3b0"/>
+      <path d="M58 30 l16 -6 M58 30 l16 6" stroke="#e3b341" stroke-width="2" opacity=".7"/>
+    </symbol>
+    <symbol id="env-pyramid" viewBox="0 0 100 100">
+      <path d="M50 18 L82 84 H18 Z" fill="#d8b36a"/>
+      <path d="M50 18 L66 84 H50 Z" fill="#bb9550"/>
+      <path d="M50 18 L82 84 H18 Z" fill="none" stroke="#8a6d35" stroke-width="2"/>
+    </symbol>
+    <symbol id="env-temple" viewBox="0 0 100 100">
+      <path d="M50 18 L86 40 H14 Z" fill="#cdd3da"/>
+      <rect x="14" y="40" width="72" height="6" fill="#aab1ba"/>
+      <g fill="#e6edf3"><rect x="20" y="46" width="7" height="36"/><rect x="34" y="46" width="7" height="36"/><rect x="48" y="46" width="7" height="36"/><rect x="62" y="46" width="7" height="36"/><rect x="76" y="46" width="7" height="36"/></g>
+      <rect x="14" y="82" width="72" height="8" fill="#aab1ba"/>
+    </symbol>
+    <symbol id="env-windmill" viewBox="0 0 100 100">
+      <path d="M40 90 L46 42 H54 L60 90 Z" fill="#c9b18a"/>
+      <rect x="38" y="86" width="24" height="6" fill="#8a6d35"/>
+      <g fill="#e6edf3" stroke="#8b949e" stroke-width="1.5"><path d="M50 42 L52 16 L48 16 Z"/><path d="M50 42 L76 44 L76 40 Z"/><path d="M50 42 L48 68 L52 68 Z"/><path d="M50 42 L24 40 L24 44 Z"/></g>
+      <circle cx="50" cy="42" r="4" fill="#3a3f47"/>
+    </symbol>
+    <symbol id="env-barn" viewBox="0 0 100 100">
+      <path d="M20 50 Q50 24 80 50 V88 H20 Z" fill="#b5503f"/>
+      <path d="M30 50 h40 v6 h-40 z" fill="#9a4334"/>
+      <rect x="42" y="60" width="16" height="28" fill="#e6d2a8"/>
+      <path d="M42 60 l16 28 M58 60 l-16 28" stroke="#7d3528" stroke-width="2"/>
+    </symbol>
+  </defs></svg>
+
+  <canvas id="bg"></canvas>
+  <div id="scene"></div>
+
+  <div id="topbar">
+    <h1>🧠 原子記憶 · 腦內世界</h1>
+    <span class="s"><span id="conn" class="dot bad"></span><span id="connTxt">連線中…</span></span>
+    <span class="s">專案房間 <b id="sRooms">0</b></span>
+    <span class="s">記憶 <b id="sOrbs">0</b></span>
+    <span class="s">🤢生病 <b id="sSick">0</b></span>
+    <span class="s">💤沉睡 <b id="sSleep">0</b></span>
+    <span class="s">🆙進化中 <b id="sEvo">0</b></span>
+    <span class="s">👻回憶 <b id="sGhost">0</b></span>
+    <span class="s top3box">🏆 最強記憶 <span id="top3list"><span class="t3muted">待戰力遙測…</span></span></span>
+  </div>
+  <div id="help">每個<b style="color:#e6edf3">房間=一個專案</b>，裡面的小生物=記憶原子。越大越資深；外圈金=[固]成熟、銀=[觀]成長。腳下 ⭐ 越多=戰力(power)越高。🤢冒綠煙=格式有問題，💤躺著=超過 60 天沒被喚醒，🆙=快升級了，👑=最常被讀取/確認的人氣王。把兩隻拖在一起會聊天，把生病的拖去右下角 🏥。</div>
+
+  <div id="clinic"><div class="ic">🏥</div>診所<br><span style="font-size:10px;opacity:.7">拖生病的來這</span></div>
+
+  <!-- 指令台：選項式 command bus（單一 WORLD_COMMANDS registry 衍生；Claude 走同一套 /api/world-* API）-->
+  <div id="cmdbar">
+    <div class="cb-body">
+      <div class="cb-row"><select id="cbCmd"></select><button onclick="runCmdBar()">執行</button></div>
+      <div id="cbDesc" class="cb-desc"></div>
+      <div id="cbArgs" class="cb-args"></div>
+      <div id="cbLog" class="cb-log"></div>
+    </div>
+    <div class="cb-h" onclick="document.getElementById('cmdbar').classList.toggle('open')">
+      <span>🎮 指令台 <span class="cb-sub">選指令→填參數→執行</span></span><span class="cb-tog">▴</span>
+    </div>
+  </div>
+
+  <div id="legend">
+    <div class="r"><b>體型</b> 🥚蛋→史萊姆→小怪→龍（越大越資深；龍滿級會威風呼吸）</div>
+    <div class="r"><b>戰力</b> 腳下 ⭐×N（相對全場最強 power）　｜　🏆 topbar 顯示最強 TOP3</div>
+    <div class="r"><b>狀態</b> 🤢生病　💤沉睡(>60d)　🌱/🔨工作中　🆙進化中　👑人氣王</div>
+    <div class="r"><b>進化環</b> 金=[固] 銀=[觀]　｜　點生物看白話身份卡</div>
+  </div>
+
+  <div id="detail">
+    <span class="x" onclick="hideDetail()">✕</span>
+    <h2 id="dName"></h2>
+    <div class="say" id="dSay"></div>
+    <div id="dStatus"></div>
+    <div id="dChips"></div>
+    <details><summary>看原始內容</summary><pre id="dContent"></pre></details>
+    <div id="dChat"></div>
+  </div>
+
+<script type="application/json" id="env-catalog">
+{
+  "version": 1,
+  "_note": "腦內世界環境演化風格目錄。world.html fetch 此檔；LLM 從 families 白名單選 family_id。tier 累加非替換；threshold=該 tier 解鎖門檻(發展度%)。element: {id,name_zh,emoji,svg_hint?,pos,tier,threshold,unique?,night_glow?}。pos ∈ ground-row|wall|center|corner|edge|scatter。emoji 必填(小框首選)；svg_hint 選填(center 大地標退簡易 SVG symbol，無對應 symbol 則放大 emoji)。",
+  "thresholds": [0, 20, 40, 60, 80, 100],
+  "seeds": [
+    {"id": "seed.campfire", "name_zh": "營火", "emoji": "🔥", "pos": "center", "tier": 0, "threshold": 0, "night_glow": true},
+    {"id": "seed.bedroll", "name_zh": "地鋪", "emoji": "🛏️", "pos": "wall", "tier": 0, "threshold": 0},
+    {"id": "seed.path", "name_zh": "小徑", "emoji": "·", "pos": "ground-row", "tier": 0, "threshold": 0},
+    {"id": "seed.signpost", "name_zh": "路牌", "emoji": "🪧", "pos": "edge", "tier": 0, "threshold": 0},
+    {"id": "seed.sapling", "name_zh": "樹苗", "emoji": "🌱", "pos": "scatter", "tier": 0, "threshold": 0}
+  ],
+  "families": {
+    "settlement": {
+      "name_zh": "聚落城鎮", "emoji": "🏠", "mood": "溫暖群居、煙火氣",
+      "fits_personality": ["social", "general", "mixed", "docs", "preferences"],
+      "tiers": {
+        "0": [{"id": "settlement.tent", "name_zh": "帳篷", "emoji": "⛺", "pos": "ground-row", "tier": 0, "threshold": 0}],
+        "20": [{"id": "settlement.hut", "name_zh": "草棚", "emoji": "🛖", "pos": "ground-row", "tier": 1, "threshold": 20},
+               {"id": "settlement.well", "name_zh": "水井", "emoji": "🪣", "pos": "corner", "tier": 1, "threshold": 20}],
+        "40": [{"id": "settlement.house", "name_zh": "木屋", "emoji": "🏠", "pos": "ground-row", "tier": 2, "threshold": 40},
+               {"id": "settlement.stall", "name_zh": "市集攤", "emoji": "🍎", "pos": "edge", "tier": 2, "threshold": 40}],
+        "60": [{"id": "settlement.stone_house", "name_zh": "石屋", "emoji": "🏘️", "pos": "ground-row", "tier": 3, "threshold": 60},
+               {"id": "settlement.chapel", "name_zh": "禮拜堂", "emoji": "⛪", "pos": "wall", "tier": 3, "threshold": 60}],
+        "80": [{"id": "settlement.fountain", "name_zh": "噴泉", "emoji": "⛲", "pos": "center", "tier": 4, "threshold": 80},
+               {"id": "settlement.clock_tower", "name_zh": "鐘樓", "emoji": "🕰️", "svg_hint": "tower", "pos": "wall", "tier": 4, "threshold": 80},
+               {"id": "settlement.lamp", "name_zh": "街燈", "emoji": "🏮", "pos": "scatter", "tier": 4, "threshold": 80, "night_glow": true}],
+        "100": [{"id": "settlement.town_hall", "name_zh": "市政廳", "emoji": "🏛️", "svg_hint": "hall", "pos": "center", "tier": 5, "threshold": 100, "unique": true},
+                {"id": "settlement.gate", "name_zh": "城門", "emoji": "🚪", "pos": "edge", "tier": 5, "threshold": 100}]
+      }
+    },
+    "fortress": {
+      "name_zh": "城堡要塞", "emoji": "🏰", "mood": "嚴謹防禦、秩序威嚴",
+      "fits_personality": ["system", "architecture", "security", "rules", "core", "decisions"],
+      "tiers": {
+        "0": [{"id": "fortress.watchfire", "name_zh": "瞭望火", "emoji": "🔥", "pos": "center", "tier": 0, "threshold": 0, "night_glow": true}],
+        "20": [{"id": "fortress.motte", "name_zh": "土丘木塔", "emoji": "🗼", "svg_hint": "keep", "pos": "center", "tier": 1, "threshold": 20, "unique": true},
+               {"id": "fortress.palisade", "name_zh": "木柵", "emoji": "🚧", "pos": "edge", "tier": 1, "threshold": 20}],
+        "40": [{"id": "fortress.keep", "name_zh": "石堡", "emoji": "🏰", "svg_hint": "keep", "pos": "center", "tier": 2, "threshold": 40, "unique": true},
+               {"id": "fortress.barracks", "name_zh": "兵營", "emoji": "⚔️", "pos": "ground-row", "tier": 2, "threshold": 40}],
+        "60": [{"id": "fortress.wall", "name_zh": "城牆", "emoji": "🧱", "pos": "edge", "tier": 3, "threshold": 60},
+               {"id": "fortress.tower", "name_zh": "角塔", "emoji": "🗼", "pos": "corner", "tier": 3, "threshold": 60}],
+        "80": [{"id": "fortress.gatehouse", "name_zh": "門樓", "emoji": "🚪", "pos": "edge", "tier": 4, "threshold": 80},
+               {"id": "fortress.banner", "name_zh": "旗幟", "emoji": "🚩", "pos": "wall", "tier": 4, "threshold": 80},
+               {"id": "fortress.moat", "name_zh": "護城河", "emoji": "🌊", "pos": "edge", "tier": 4, "threshold": 80}],
+        "100": [{"id": "fortress.castle", "name_zh": "大城堡", "emoji": "🏯", "svg_hint": "castle", "pos": "center", "tier": 5, "threshold": 100, "unique": true},
+                {"id": "fortress.drawbridge", "name_zh": "吊橋", "emoji": "🌉", "pos": "edge", "tier": 5, "threshold": 100}]
+      }
+    },
+    "garden": {
+      "name_zh": "園林花園", "emoji": "🌷", "mood": "寧靜療癒、有機留白",
+      "fits_personality": ["meditation", "notes", "calm", "personal", "memory"],
+      "tiers": {
+        "0": [{"id": "garden.flowerbed", "name_zh": "花圃", "emoji": "🌸", "pos": "ground-row", "tier": 0, "threshold": 0}],
+        "20": [{"id": "garden.stone_path", "name_zh": "踏石步道", "emoji": "🪨", "pos": "ground-row", "tier": 1, "threshold": 20},
+               {"id": "garden.hedge", "name_zh": "綠籬", "emoji": "🌿", "pos": "edge", "tier": 1, "threshold": 20}],
+        "40": [{"id": "garden.pond", "name_zh": "蓮池", "emoji": "🪷", "pos": "center", "tier": 2, "threshold": 40},
+               {"id": "garden.bridge", "name_zh": "拱橋", "emoji": "🌉", "pos": "center", "tier": 2, "threshold": 40}],
+        "60": [{"id": "garden.fountain", "name_zh": "噴泉", "emoji": "⛲", "pos": "center", "tier": 3, "threshold": 60},
+               {"id": "garden.topiary", "name_zh": "造型樹", "emoji": "🌳", "pos": "scatter", "tier": 3, "threshold": 60},
+               {"id": "garden.lantern", "name_zh": "石燈籠", "emoji": "🏮", "pos": "edge", "tier": 3, "threshold": 60, "night_glow": true}],
+        "80": [{"id": "garden.zen_sand", "name_zh": "枯山水", "emoji": "🌀", "pos": "ground-row", "tier": 4, "threshold": 80},
+               {"id": "garden.basin", "name_zh": "水缽", "emoji": "🫗", "pos": "corner", "tier": 4, "threshold": 80},
+               {"id": "garden.torii", "name_zh": "鳥居", "emoji": "⛩️", "pos": "edge", "tier": 4, "threshold": 80}],
+        "100": [{"id": "garden.tea_house", "name_zh": "茶亭", "emoji": "🏯", "svg_hint": "pavilion", "pos": "center", "tier": 5, "threshold": 100, "unique": true},
+                {"id": "garden.pagoda", "name_zh": "寶塔", "emoji": "🗼", "svg_hint": "pagoda", "pos": "corner", "tier": 5, "threshold": 100, "unique": true}]
+      }
+    },
+    "playground": {
+      "name_zh": "遊戲場", "emoji": "🛝", "mood": "童趣活潑、無壓力",
+      "fits_personality": ["experiment", "draft", "light", "play", "sandbox"],
+      "tiers": {
+        "0": [{"id": "playground.sandbox", "name_zh": "沙坑", "emoji": "🏖️", "pos": "ground-row", "tier": 0, "threshold": 0}],
+        "20": [{"id": "playground.swing", "name_zh": "鞦韆", "emoji": "🤸", "pos": "ground-row", "tier": 1, "threshold": 20},
+               {"id": "playground.spring_rider", "name_zh": "彈簧搖馬", "emoji": "🐴", "pos": "scatter", "tier": 1, "threshold": 20}],
+        "40": [{"id": "playground.slide", "name_zh": "溜滑梯", "emoji": "🛝", "pos": "ground-row", "tier": 2, "threshold": 40},
+               {"id": "playground.seesaw", "name_zh": "蹺蹺板", "emoji": "⚖️", "pos": "ground-row", "tier": 2, "threshold": 40}],
+        "60": [{"id": "playground.climb", "name_zh": "攀爬架", "emoji": "🧗", "pos": "center", "tier": 3, "threshold": 60},
+               {"id": "playground.monkey_bars", "name_zh": "猴架", "emoji": "🐒", "pos": "ground-row", "tier": 3, "threshold": 60}],
+        "80": [{"id": "playground.carousel", "name_zh": "旋轉木馬", "emoji": "🎠", "pos": "center", "tier": 4, "threshold": 80},
+               {"id": "playground.jungle_gym", "name_zh": "組合堡台", "emoji": "🧩", "pos": "corner", "tier": 4, "threshold": 80}],
+        "100": [{"id": "playground.play_castle", "name_zh": "遊戲城堡", "emoji": "🏰", "svg_hint": "playcastle", "pos": "center", "tier": 5, "threshold": 100, "unique": true},
+                {"id": "playground.trampoline", "name_zh": "彈跳床", "emoji": "🤾", "pos": "corner", "tier": 5, "threshold": 100}]
+      }
+    },
+    "themepark": {
+      "name_zh": "主題樂園", "emoji": "🎡", "mood": "歡騰誇張、奇觀人潮",
+      "fits_personality": ["creative", "ideas", "flagship", "active", "world"],
+      "tiers": {
+        "0": [{"id": "themepark.ticket", "name_zh": "售票亭", "emoji": "🎫", "pos": "edge", "tier": 0, "threshold": 0},
+              {"id": "themepark.balloon", "name_zh": "氣球攤", "emoji": "🎈", "pos": "ground-row", "tier": 0, "threshold": 0}],
+        "20": [{"id": "themepark.teacups", "name_zh": "旋轉杯", "emoji": "🫖", "pos": "ground-row", "tier": 1, "threshold": 20},
+               {"id": "themepark.carousel", "name_zh": "旋轉木馬", "emoji": "🎠", "pos": "ground-row", "tier": 1, "threshold": 20}],
+        "40": [{"id": "themepark.bumper", "name_zh": "碰碰車", "emoji": "🚗", "pos": "ground-row", "tier": 2, "threshold": 40},
+               {"id": "themepark.funhouse", "name_zh": "歡樂屋", "emoji": "🎪", "pos": "wall", "tier": 2, "threshold": 40}],
+        "60": [{"id": "themepark.ferris", "name_zh": "摩天輪", "emoji": "🎡", "svg_hint": "ferris", "pos": "center", "tier": 3, "threshold": 60, "unique": true}],
+        "80": [{"id": "themepark.coaster", "name_zh": "雲霄飛車", "emoji": "🎢", "pos": "edge", "tier": 4, "threshold": 80},
+               {"id": "themepark.drop_tower", "name_zh": "自由落體", "emoji": "🗼", "pos": "corner", "tier": 4, "threshold": 80}],
+        "100": [{"id": "themepark.castle", "name_zh": "童話城堡", "emoji": "🏰", "svg_hint": "fairycastle", "pos": "center", "tier": 5, "threshold": 100, "unique": true},
+                {"id": "themepark.fireworks", "name_zh": "煙火", "emoji": "🎆", "pos": "scatter", "tier": 5, "threshold": 100, "night_glow": true}]
+      }
+    },
+    "farm": {
+      "name_zh": "農場工坊", "emoji": "🚜", "mood": "務實循環、自給生產",
+      "fits_personality": ["tool", "pipeline", "automation", "routine", "toolchain"],
+      "tiers": {
+        "0": [{"id": "farm.soil", "name_zh": "犁田", "emoji": "🟫", "pos": "ground-row", "tier": 0, "threshold": 0},
+              {"id": "farm.scarecrow", "name_zh": "稻草人", "emoji": "🧑‍🌾", "pos": "scatter", "tier": 0, "threshold": 0}],
+        "20": [{"id": "farm.crops", "name_zh": "作物", "emoji": "🌾", "pos": "ground-row", "tier": 1, "threshold": 20},
+               {"id": "farm.veggie", "name_zh": "菜圃", "emoji": "🥕", "pos": "ground-row", "tier": 1, "threshold": 20}],
+        "40": [{"id": "farm.coop", "name_zh": "雞舍", "emoji": "🐔", "pos": "corner", "tier": 2, "threshold": 40},
+               {"id": "farm.fence", "name_zh": "圍欄", "emoji": "🚧", "pos": "edge", "tier": 2, "threshold": 40},
+               {"id": "farm.animal", "name_zh": "牲口", "emoji": "🐄", "pos": "scatter", "tier": 2, "threshold": 40}],
+        "60": [{"id": "farm.barn", "name_zh": "穀倉", "emoji": "🏚️", "svg_hint": "barn", "pos": "center", "tier": 3, "threshold": 60, "unique": true},
+               {"id": "farm.silo", "name_zh": "穀塔", "emoji": "🛢️", "pos": "corner", "tier": 3, "threshold": 60}],
+        "80": [{"id": "farm.windmill", "name_zh": "風車", "emoji": "🌬️", "svg_hint": "windmill", "pos": "corner", "tier": 4, "threshold": 80},
+               {"id": "farm.workshop", "name_zh": "工坊", "emoji": "🔨", "pos": "ground-row", "tier": 4, "threshold": 80},
+               {"id": "farm.waterwheel", "name_zh": "水車", "emoji": "⚙️", "pos": "edge", "tier": 4, "threshold": 80}],
+        "100": [{"id": "farm.manor", "name_zh": "莊園磨坊", "emoji": "🏰", "svg_hint": "mill", "pos": "center", "tier": 5, "threshold": 100, "unique": true},
+                {"id": "farm.orchard", "name_zh": "果園", "emoji": "🍎", "pos": "ground-row", "tier": 5, "threshold": 100}]
+      }
+    },
+    "harbor": {
+      "name_zh": "水岸港口", "emoji": "⚓", "mood": "開放流動、連結貿易",
+      "fits_personality": ["io", "api", "sync", "hub", "interface", "vector"],
+      "tiers": {
+        "0": [{"id": "harbor.shore", "name_zh": "灘岸", "emoji": "🌊", "pos": "edge", "tier": 0, "threshold": 0},
+              {"id": "harbor.rowboat", "name_zh": "小舟", "emoji": "🚣", "pos": "ground-row", "tier": 0, "threshold": 0}],
+        "20": [{"id": "harbor.dock", "name_zh": "木棧道", "emoji": "🪵", "pos": "edge", "tier": 1, "threshold": 20},
+               {"id": "harbor.net", "name_zh": "漁網", "emoji": "🎣", "pos": "corner", "tier": 1, "threshold": 20}],
+        "40": [{"id": "harbor.boat", "name_zh": "漁船", "emoji": "⛵", "pos": "edge", "tier": 2, "threshold": 40},
+               {"id": "harbor.fish_market", "name_zh": "魚市", "emoji": "🐟", "pos": "ground-row", "tier": 2, "threshold": 40}],
+        "60": [{"id": "harbor.pier", "name_zh": "石堤碼頭", "emoji": "🛟", "pos": "edge", "tier": 3, "threshold": 60},
+               {"id": "harbor.warehouse", "name_zh": "倉庫", "emoji": "🏭", "pos": "wall", "tier": 3, "threshold": 60}],
+        "80": [{"id": "harbor.crane", "name_zh": "起重機", "emoji": "🏗️", "pos": "corner", "tier": 4, "threshold": 80},
+               {"id": "harbor.cargo_ship", "name_zh": "貨輪", "emoji": "🚢", "pos": "edge", "tier": 4, "threshold": 80},
+               {"id": "harbor.container", "name_zh": "貨櫃", "emoji": "📦", "pos": "ground-row", "tier": 4, "threshold": 80}],
+        "100": [{"id": "harbor.lighthouse", "name_zh": "燈塔", "emoji": "🗼", "svg_hint": "lighthouse", "pos": "corner", "tier": 5, "threshold": 100, "unique": true, "night_glow": true},
+                {"id": "harbor.grand_port", "name_zh": "大商港", "emoji": "🌉", "pos": "center", "tier": 5, "threshold": 100, "unique": true}]
+      }
+    },
+    "wonder": {
+      "name_zh": "世界奇觀", "emoji": "🗿", "mood": "史詩唯一、紀念碑性",
+      "fits_personality": ["milestone", "flagship", "mature", "showcase", "elder"],
+      "tiers": {
+        "0": [{"id": "wonder.foundation", "name_zh": "基壇", "emoji": "🪨", "pos": "center", "tier": 0, "threshold": 0},
+              {"id": "wonder.scaffold", "name_zh": "鷹架", "emoji": "🏗️", "pos": "edge", "tier": 0, "threshold": 0}],
+        "20": [{"id": "wonder.obelisk", "name_zh": "方尖碑", "emoji": "🗿", "svg_hint": "obelisk", "pos": "center", "tier": 1, "threshold": 20, "unique": true}],
+        "40": [{"id": "wonder.temple", "name_zh": "神殿", "emoji": "🏛️", "svg_hint": "temple", "pos": "center", "tier": 2, "threshold": 40, "unique": true}],
+        "60": [{"id": "wonder.pyramid", "name_zh": "金字塔", "emoji": "🔺", "svg_hint": "pyramid", "pos": "center", "tier": 3, "threshold": 60, "unique": true},
+               {"id": "wonder.gardens", "name_zh": "空中花園", "emoji": "🌿", "pos": "wall", "tier": 3, "threshold": 60}],
+        "80": [{"id": "wonder.colossus", "name_zh": "巨像", "emoji": "🗽", "svg_hint": "colossus", "pos": "center", "tier": 4, "threshold": 80, "unique": true},
+               {"id": "wonder.great_lighthouse", "name_zh": "大燈塔", "emoji": "🗼", "pos": "corner", "tier": 4, "threshold": 80, "night_glow": true}],
+        "100": [{"id": "wonder.great_pyramid", "name_zh": "世界奇觀", "emoji": "🔺", "svg_hint": "greatpyramid", "pos": "center", "tier": 5, "threshold": 100, "unique": true},
+                {"id": "wonder.aura", "name_zh": "聖光", "emoji": "✨", "pos": "scatter", "tier": 5, "threshold": 100, "night_glow": true}]
+      }
+    }
+  }
+}
+</script>
+<script>
+/* ════════════════════════════════════════════════════════════════════
+   原子記憶 · 腦內世界  —  看懂為主的氛圍儀表（零 server.js 改動）
+   靠 dashboard 既有 CORS(*) 直接 fetch /api/*
+   ════════════════════════════════════════════════════════════════════ */
+const API_BASE = "http://127.0.0.1:3848";
+const POLL_MS  = 5000;
+const CHAT_MODEL = "";  // 生物對話 LLM 模型名；空字串＝由 :3848 /api/creature-chat 代理用設定決定（後端的 world_chat_model，否則 llm_model）。要固定就填後端實際載入的模型名（/api/tags），否則 upstream 404 → 退罐頭台詞
+let activeChats = 0;          // 並發對話計數：取代單一 chatBusy 鎖，允許同時多場 LLM 對話
+const MAX_CHATS = 4;          // 並發上限（生物對話 + 環境 LLM 共用此池）。小模型多半吃得下 4；真並行需後端 OLLAMA_NUM_PARALLEL≥4，否則 Ollama 端排隊（功能仍可用、只是每句變慢）
+function chatPoolFull(){ return activeChats >= MAX_CHATS; }   // 讀:池滿？ 寫:占用 activeChats++ / 釋放(finally) activeChats--
+let autoOn = true;      // 自主行為總開關（漫步 + 對話導演）；可由指令台 auto on/off 切換
+const $ = (id) => document.getElementById(id);
+const scene = $("scene");
+
+/* 持久狀態 */
+const crEls = new Map();     // name -> element
+const roomEls = new Map();   // key  -> {box, sign, floor}
+const ghostEls = new Map();  // filename -> element
+const healed = new Set();     // 假裝治好的（cosmetic，本 session）
+const dragged = new Set();    // 被拖過、位置不再自動重排的
+let model = null, rooms = [], creatures = [], ghosts = [];
+
+/* ── 工具 ─────────────────────────────────────────────────────────── */
+const basename = (p) => (p || "").split(/[\\/]/).pop().replace(/\.md$/i, "");
+function countKnowledge(content) {
+  if (!content) return 0;
+  let inK = false, c = 0;
+  for (const ln of content.split("\n")) {
+    if (/^##\s*知識/.test(ln)) { inK = true; continue; }
+    if (/^##\s/.test(ln) && inK) break;
+    if (inK && /^[-*]\s*\[/.test(ln)) c++;
+  }
+  return c;
+}
+function norm(s){ return (s||"").toLowerCase().replace(/[^a-z0-9一-鿿]+/g,"-").replace(/^-|-$/g,""); }
+
+/* ── 資料層 ───────────────────────────────────────────────────────── */
+async function fetchJSON(p){ const r = await fetch(API_BASE + p, {cache:"no-store"}); if(!r.ok) throw new Error(p+" "+r.status); return r.json(); }
+
+async function refresh(){
+  try{
+    const episodic = [];   // 情境記憶已拆（沒有 /api/episodic），幽靈層固定為空
+    const [projects, atoms, health, sessions, worlddev] = await Promise.all([
+      fetchJSON("/api/projects"), fetchJSON("/api/atoms"), fetchJSON("/api/health"),
+      fetchJSON("/api/sessions"), fetchJSON("/api/world-dev"),
+    ]);
+    // 回填 regionDev（server=重開續長的存檔源）。★只 backfill 缺漏 key，不覆寫本地進行中狀態：
+    //   瀏覽器引擎(Phase 3)為各 region 真相源，POST 落盤；避免 GET 沖掉 in-flight 推進。
+    if(worlddev && worlddev.regions){
+      for(const [k,v] of Object.entries(worlddev.regions)){          // ★單調 max 合併（取代「只 backfill 永不更新」）：本地沒有→收；本地正在改→保留；server 較進階→採用
+        const local=regionDev.get(k);
+        if(!local){ regionDev.set(k, v); continue; }
+        if(_devDirty.has(k) || _envSeedInFlight.has(k)) continue;      // 本地 in-flight → 別被 server 舊值覆寫
+        const sStyles=(v.styles||[]).length, lStyles=(local.styles||[]).length;
+        const sMax=(v.styles||[]).reduce((m,s)=>Math.max(m,s.dev||0),0), lMax=(local.styles||[]).reduce((m,s)=>Math.max(m,s.dev||0),0);
+        if((v.completed&&!local.completed) || sStyles>lStyles || sMax>lMax+0.5) regionDev.set(k, v);  // 修「舊分頁/本地 idle 擋住 server 進度」
+      }
+    }
+    if(worlddev && worlddev.mode) _serverMode = worlddev.mode;     // server 持久 mode（_modeOverride 優先）
+    model = buildModel({projects, atoms, health, sessions, episodic});
+    layout();
+    render();
+    refreshCmdOptions();
+    setConn(true);
+  }catch(e){ console.error("[world] refresh failed:", e); setConn(false); }
+}
+
+function buildModel({projects, atoms, health, sessions, episodic}){
+  health = health || {}; atoms = atoms || []; projects = projects || []; sessions = sessions || []; episodic = episodic || [];
+
+  /* 生病：issues 裡 level=error（格式畸形）→ name→[reasons] */
+  const sickReason = new Map();
+  (health.issues||[]).forEach(i=>{
+    if(i.level==="error"){ const n = basename(i.file); if(!sickReason.has(n)) sickReason.set(n,[]); sickReason.get(n).push(i.message||"格式問題"); }
+  });
+  /* 斷線（孤單）：missing_reverse_refs */
+  const lonely = new Set();
+  (health.missing_reverse_refs||[]).forEach(m=>{ if(m && m.atom_a) lonely.add(m.atom_a); });
+  (health.broken_refs||[]).forEach(b=>{ const n = typeof b==="string"?basename(b):(b&&b.atom_a); if(n) sickReason.set(n,(sickReason.get(n)||[]).concat("參照斷裂")); });
+  /* 進化中：promotions */
+  const promoting = new Map();
+  (health.promotions||[]).forEach(p=> promoting.set(basename(p.file), {from:p.current, to:p.suggested, reason:p.reason}));
+
+  /* Phase C：精準遙測（Phase A /api/atoms 新欄位；live 舊 daemon 無 power → null fallback）*/
+  const SLEEP_DAYS = 60;                                   // 真實 last_used 超過 → 沉睡（沿用 health.distant 門檻）
+  const powerOf = a => (typeof a.power === "number") ? a.power : null;
+  const popOf   = a => (Number(a.read_hits)||0) + (Number(a.confirmations)||0);  // 人氣＝讀取+確認
+  function parseDays(lu){                                   // 容忍髒格式 '2026-05-25 (尾註)'，抽前導日期
+    if(lu==null) return null;
+    const m = String(lu).match(/(\d{4})-(\d{2})-(\d{2})/); if(!m) return null;
+    const t = new Date(+m[1], +m[2]-1, +m[3]).getTime();
+    return isNaN(t) ? null : Math.floor((Date.now()-t)/86400000);
+  }
+  const daysUsedOf = a => (typeof a.days_since_used === "number") ? a.days_since_used : parseDays(a.last_used);
+
+  /* 工作中房間：working session 的 project 路徑模糊比對 */
+  const workingProjNorms = sessions.filter(s=>s.phase==="working").map(s=>norm(s.project));
+  function roomWorking(key, slug){
+    const sn = key==="core" ? "claude" : norm(slug);
+    return workingProjNorms.some(pn => sn.length>3 && (pn.includes(sn) || sn.includes(pn)));
+  }
+
+  /* regions：核心 + 各專案 */
+  const regions = new Map();
+  regions.set("core", {key:"core", label:".claude 核心", core:true, list:[]});
+  projects.forEach(p=> regions.set("project:"+p.slug, {key:"project:"+p.slug, label:p.slug, slug:p.slug, last_seen:p.last_seen, list:[]}));
+
+  /* 入度（fallback 長老）*/
+  const indeg = new Map();
+  atoms.forEach(a => (a.related||[]).forEach(r => indeg.set(r,(indeg.get(r)||0)+1)));
+  const maxIndeg = Math.max(1, ...indeg.values(), 1);
+
+  /* 皇冠＝人氣（read_hits+confirmations）高者；全 0（如 live 舊 daemon）→ fallback 入度長老 */
+  const totalPop = atoms.reduce((s,a)=> s + popOf(a), 0);
+  const crownNames = new Set();
+  if(totalPop > 0){
+    atoms.slice().sort((a,b)=> popOf(b)-popOf(a)).filter(a=> popOf(a)>0)
+      .slice(0, Math.max(3, Math.ceil(atoms.length*0.05))).forEach(a=> crownNames.add(a.name));
+  } else {
+    atoms.forEach(a=>{ if((indeg.get(a.name)||0) >= Math.max(3, maxIndeg*0.6)) crownNames.add(a.name); });
+  }
+
+  /* 建立生物 */
+  const crs = [];
+  atoms.forEach(a=>{
+    const sc = a.scope || a.layer || "global";
+    const rk = sc.startsWith("project:") ? "project:"+sc.split(":")[1] : "core";
+    if(!regions.has(rk)) regions.set(rk,{key:rk,label:rk.replace("project:",""),slug:rk.split(":")[1],list:[]});
+    const reg = regions.get(rk);
+    const know = a.knowledge_count || countKnowledge(a.content);
+    const mass = Math.max(know, Math.round((a.line_count||0)/10));
+    const daysUsed = daysUsedOf(a);                          // 真實近用天數（Phase A days_since_used 優先，否則解析 last_used）
+    const sick = sickReason.has(a.name) && !healed.has(a.name);
+    const sleeping = !sick && daysUsed != null && daysUsed >= SLEEP_DAYS;   // 精準沉睡：>60d 才睡
+    const active = !sick && !sleeping && daysUsed != null && daysUsed <= 7; // 近 7 天用過 → 活躍走動
+    const cr = {
+      uid:rk+"|"+a.name, name:a.name, region:rk, scope:sc, confidence:a.confidence||"",
+      type:a.type||"", know, mass, lines:a.line_count||0,
+      related:a.related||[], triggers:a.triggers||[], content:a.content||"",
+      sick, sickReason:(sickReason.get(a.name)||[]), lonely:lonely.has(a.name),
+      sleeping, active, daysUsed,
+      power:powerOf(a), powerN:(typeof a.power_n==="number"?a.power_n:null),
+      readHits:Number(a.read_hits)||0, confirmations:Number(a.confirmations)||0, pop:popOf(a),
+      promoting:promoting.get(a.name)||null,
+      indeg:indeg.get(a.name)||0,
+      elder:crownNames.has(a.name),                          // 皇冠＝人氣長老
+    };
+    reg.list.push(cr); crs.push(cr);
+  });
+
+  // TOP3 最強記憶（按 power 戰力排序；無 power 遙測時為空 → topbar 顯示待遙測）
+  const top3 = crs.filter(c=> c.power != null && c.power > 0)
+    .sort((a,b)=> b.power-a.power || (b.powerN||0)-(a.powerN||0))
+    .slice(0,3).map(c=>({ name:c.name, power:c.power, region:c.region }));
+  const maxPower = crs.reduce((m,c)=> Math.max(m, c.power||0), 0);   // 相對戰力星歸一基準
+
+  regions.forEach(r=>{ r.working = roomWorking(r.key, r.slug); r.active = r.core || r.working || daysOf(r.last_seen)<=7; });
+
+  /* episodic 幽靈 */
+  const gs = episodic.map((e,i)=>({ key:(e.filename||"ep")+"#"+i, filename:e.filename||("ep"+i), title:e.title||e.filename,
+    ttl:e.days_until_expiry, kn:(e.knowledge_lines||[]).length, dying:(e.days_until_expiry||99)<=5 }));
+
+  return { regions, creatures:crs, ghosts:gs, top3, maxPower,
+    stats:{ distant:health.distant_count||0, conf:health.confidence_counts||{} } };
+}
+function daysOf(iso){ if(!iso) return 999; const t=new Date(iso).getTime(); return isNaN(t)?999:(Date.now()-t)/86400000; }
+
+/* ── 佈局：核心房置中放大 + 其餘 shelf-pack（同列等高＝floor 對齊）+ cell 網格防重疊 ── */
+function layout(){
+  const W = innerWidth;
+  const CW=76, CH=92, PADX=14, HEAD=42, BOT=16, GAP=18, TOP=64;
+  const all = [...model.regions.values()].filter(r=>r.core || r.list.length>0);
+  const core = all.find(r=>r.core);
+  const others = all.filter(r=>!r.core).sort((a,b)=> b.list.length - a.list.length);
+
+  const sizeCreatures = r => r.list.forEach(c=>{ c.s = Math.round(Math.max(28, Math.min(62, 28 + c.mass*3.2))); });
+  function sizeRoom(r, maxCols){
+    const n = Math.max(1, r.list.length);
+    let cols = Math.min(Math.max(1, Math.min(maxCols, Math.ceil(Math.sqrt(n*1.25)))), n);
+    r.cols = cols; r.rows = Math.ceil(n/cols);
+    r.w = Math.max(168, cols*CW + PADX*2);
+    r.h = HEAD + r.rows*CH + BOT;
+    sizeCreatures(r);
+  }
+
+  let y = TOP;
+  // 核心房：放大、置中、置頂獨佔一列
+  if(core){
+    const targetW = Math.min(W-28, Math.max(560, Math.floor(W*0.6)));
+    core.cols = Math.max(4, Math.floor((targetW-PADX*2)/CW));
+    core.rows = Math.ceil(Math.max(1, core.list.length)/core.cols);
+    core.w = core.cols*CW + PADX*2;
+    core.h = HEAD + core.rows*CH + BOT;
+    sizeCreatures(core);
+    core.x = Math.max(14, (W-core.w)/2);
+    core.y = y;
+    y += core.h + GAP;
+  }
+
+  // 其餘房：shelf-pack；每列收尾統一列高 → 底邊（floor）對齊
+  let x = 14, rowH = 0, rowStart = 0;
+  const seq = [];
+  const flushRow = end => { for(let k=rowStart;k<end;k++) seq[k].h = rowH; rowStart = end; };
+  others.forEach(r=>{
+    sizeRoom(r, 6);
+    if(x>14 && x + r.w > W-14){ flushRow(seq.length); x=14; y += rowH+GAP; rowH=0; }
+    r.x=x; r.y=y; seq.push(r); x += r.w+GAP; rowH = Math.max(rowH, r.h);
+  });
+  flushRow(seq.length);
+  y += rowH;
+
+  rooms = [core, ...others].filter(Boolean);
+  scene.style.height = Math.max(innerHeight, y + 100) + "px";   // 超量自動捲動
+
+  // 生物站位：cell 寬>最大體型 → 防重疊；由房間底往上排（同列 floor 對齊）
+  rooms.forEach(r=>{
+    const x0 = r.x + (r.w - r.cols*CW)/2;     // 網格水平置中
+    const floorY = r.y + r.h - BOT;           // 房間底（地板線）
+    r.list.forEach((c,i)=>{
+      const col = i % r.cols, rb = (r.rows-1) - Math.floor(i / r.cols);   // rb：由底往上，底列=0
+      c.slotX = x0 + (col + 0.5)*CW;
+      c.slotY = floorY - rb*CH - CH*0.42;
+      c.phase = (c.name.charCodeAt(0)||0) % 100 / 100 * Math.PI*2;
+      c.span = c.active ? Math.min((CW-c.s)/2 - 2, 6) : 1.5;   // 走動幅度受 cell 餘裕限制 → 不重疊
+      // 自主漫步邊界：限制在房間框內（扣邊距與體型），讓 wander 不致跑出房
+      c.roomMinX = r.x + PADX + c.s/2;   c.roomMaxX = r.x + r.w - PADX - c.s/2;
+      c.roomMinY = r.y + HEAD + c.s/2;   c.roomMaxY = r.y + r.h - BOT - c.s/2;
+    });
+  });
+
+  ghosts = model.ghosts;
+}
+
+/* ── 視覺對應 ─────────────────────────────────────────────────────── */
+function faceOf(c){
+  if(c.type==="episodic") return "👻";
+  if(c.sick) return "🤢";
+  if(c.sleeping) return "😴";
+  const m=c.mass;
+  if(m>=16) return "🐲"; if(m>=10) return "👹"; if(m>=6) return "👾"; if(m>=3) return "🐣"; return "🥚";
+}
+function confClass(c){ if(c.includes("固")) return "c-fixed"; if(c.includes("觀")) return "c-observe"; return ""; }
+function hueOf(key){ if(key==="core") return 205; let h=0; for(const ch of key) h=(h*31+ch.charCodeAt(0))%360; return h; }
+// 相對戰力星：以全場最強 power 歸一（真實 Wilson 下界全 <0.1，絕對 round(power×5) 全歸 0 → 改相對）
+function powerStars(power, maxPower){
+  if(power == null || power <= 0 || !maxPower || maxPower <= 0) return 0;
+  return Math.max(1, Math.min(5, Math.round(power / maxPower * 5)));
+}
+
+/* 4 階體型：沿用 faceOf 的 mass 門檻 → SVG symbol id（≥16 另加 mega 威風呼吸）*/
+function tierOf(c){
+  const m = c.mass;
+  if(m>=10) return "dragon";   // 龍
+  if(m>=6)  return "monster";  // 小怪
+  if(m>=3)  return "slime";    // 史萊姆
+  return "egg";                // 🥚 蛋（幼體）
+}
+const FACE_Y = { egg:57, slime:51, monster:48, dragon:45, ghost:46 };  // 各體型臉部 y 位移
+/* 生物 SVG：<use> 復用體型 symbol（fill=currentColor＝腦區色）+ 可切換表情組 */
+function crSvg(){
+  return `<svg class="cbody" viewBox="0 0 100 100" width="100%" height="100%">`+
+    `<use class="shape" href="#sym-egg"></use>`+
+    `<g class="face" transform="translate(50,57)">`+
+      `<g class="eyes eyes-open"><circle cx="-9" cy="-2" r="3.4" fill="#15242e"/><circle cx="9" cy="-2" r="3.4" fill="#15242e"/><circle cx="-7.7" cy="-3.4" r="1.1" fill="#fff"/><circle cx="10.3" cy="-3.4" r="1.1" fill="#fff"/></g>`+
+      `<g class="eyes eyes-closed" stroke="#15242e" stroke-width="2" stroke-linecap="round" fill="none"><path d="M-13 -2 q4 4.5 8 0"/><path d="M5 -2 q4 4.5 8 0"/></g>`+
+      `<g class="eyes eyes-sick" stroke="#15242e" stroke-width="2" stroke-linecap="round" fill="none"><path d="M-12 -5 l6 6 M-6 -5 l-6 6"/><path d="M6 -5 l6 6 M12 -5 l-6 6"/></g>`+
+      `<path class="mouth m-smile" d="M-7 5 q7 6 14 0" stroke="#15242e" stroke-width="2" stroke-linecap="round" fill="none"/>`+
+      `<ellipse class="mouth m-flat" cx="0" cy="8" rx="2.6" ry="2" fill="#15242e"/>`+
+      `<path class="mouth m-sick" d="M-8 6 q2.7 -4 5.3 0 q2.6 4 5.3 0 q2.7 -4 2.7 0" stroke="#15242e" stroke-width="2" stroke-linecap="round" fill="none"/>`+
+    `</g>`+
+  `</svg>`;
+}
+
+/* ════════ 環境演化（區域自主發展）：靜態目錄 + 持久發展狀態 + deterministic 渲染 ════════
+   ★暫態原則：發展狀態存「模組級 regionDev / 持久 roomEl」，絕不存進每 POLL_MS 重建的 model.c
+   （見 atom reconcile-render 動畫狀態歸屬陷阱）。env 為靜態無 per-frame 動畫，sig 沒變不碰 DOM。*/
+let ENV_CATALOG = null;                 // environment-catalog.json（啟動 fetch 一次）
+const regionDev = new Map();            // region.key -> 發展狀態（鏡像 world-dev.json）
+const ENV_SYMBOLS = new Set(["keep","castle","ferris","lighthouse","pyramid","temple","windmill","barn"]); // 已定義 <defs> 大地標
+let _catIdx = null;                     // id -> element 索引（catalog 載入後重置）
+
+async function loadCatalog(){
+  try{ const r = await fetch("environment-catalog.json",{cache:"no-store"}); if(r.ok){ ENV_CATALOG = await r.json(); _catIdx = null; return; } }  // http(:8899) 服務時優先外部檔（可即時改 json）
+  catch(e){ /* ★file:// 直接雙擊開檔時，瀏覽器把本機檔當 origin=null，CORS 擋同源相對 fetch → 落入下方內嵌 fallback */ }
+  try{ const el = document.getElementById("env-catalog");                  // ★內嵌 fallback：純 file:// 自足、免 :8899 靜態伺服器（環境建築才畫得出來）
+       if(el){ ENV_CATALOG = JSON.parse(el.textContent); _catIdx = null; console.info("[world] 用內嵌 environment-catalog（file:// 自足模式）"); return; } }
+  catch(e){ console.warn("[world] 內嵌 catalog 解析失敗:", e); }
+  console.warn("[world] env catalog 載入全失敗（外部 fetch 被擋且無內嵌 #env-catalog 節點）");
+}
+function catalogIndex(){
+  if(_catIdx) return _catIdx;
+  const m = new Map();
+  if(ENV_CATALOG){
+    (ENV_CATALOG.seeds||[]).forEach(e=> m.set(e.id, e));
+    for(const fam of Object.values(ENV_CATALOG.families||{}))
+      for(const arr of Object.values(fam.tiers||{})) (arr||[]).forEach(e=> m.set(e.id, e));
+  }
+  return (_catIdx = m);
+}
+function famMeta(family){ return (ENV_CATALOG && ENV_CATALOG.families && ENV_CATALOG.families[family]) || null; }
+
+/* deterministic 亂數：FNV-1a hash32 → LCG（★禁 Math.random，確保 refresh 跨 5s 同位置不位移）*/
+function hash32(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619); } return h>>>0; }
+function mkRnd(seed){ let s=(seed>>>0)||1; return ()=>{ s=(Math.imul(s,1664525)+1013904223)>>>0; return s/4294967296; }; }
+
+/* 房內 deterministic 座標（room-local px，viewBox=0 0 r.w r.h）。pos→分區；scatter 碰生物 slot 黃金角偏移 */
+function placeEnv(r, element){
+  const rnd = mkRnd(hash32(r.key+"|"+element.id));
+  const W=r.w, H=r.h, M=16, innerW=Math.max(20, W-2*M);
+  let x, y, size;
+  /* ★建築垂直帶壓到房間上中段 0.12~0.55H：房間常比視窗高，原本下段(0.58~0.92H)落在視窗下緣外/被底部生物擋住 → 看不到。
+     上中段在你視窗內、且生物多聚底部那段較空，建築一眼可見。 */
+  switch(element.pos){
+    case "center":
+      size = Math.max(40, Math.min(92, Math.min(W,H)*0.34));
+      x = W/2 + (rnd()-0.5)*W*0.08; y = H*0.32; break;
+    case "ground-row":
+      size = 22; x = M + rnd()*innerW; y = H*0.50 + (rnd()-0.5)*H*0.05; break;
+    case "wall":
+      size = 22; x = M + rnd()*innerW; y = H*0.18 + (rnd()-0.5)*H*0.04; break;
+    case "corner": { size = 22; const k=Math.floor(rnd()*4);
+      x = (k%2) ? W-M-6 : M+6; y = (k<2) ? H*0.16 : H*0.50; break; }
+    case "edge": { size = 20; const per=2*(innerW + H*0.40), top=innerW, side=H*0.40; let d=rnd()*per;
+      if(d<top){ x=M+d; y=H*0.14; }
+      else if(d<top+side){ x=W-M; y=H*0.14+(d-top); }
+      else if(d<2*top+side){ x=W-M-(d-top-side); y=H*0.54; }
+      else { x=M; y=H*0.54-(d-2*top-side); } break; }
+    case "scatter": default: { size=20; x=M+rnd()*innerW; y=H*0.18+rnd()*H*0.36;
+      for(let t=0;t<5;t++){ let hit=false;                       // 碰生物 slot（scene 座標轉房內）→ 黃金角推開
+        for(const c of (r.list||[])){ const sx=c.slotX-r.x, sy=c.slotY-r.y;
+          if((x-sx)*(x-sx)+(y-sy)*(y-sy) < (c.s*0.7)*(c.s*0.7)){ hit=true; break; } }
+        if(!hit) break;
+        const ang=t*2.39996323+rnd()*0.5, rad=14+t*6;            // 137.5° 黃金角
+        x=Math.max(M, Math.min(W-M, x+Math.cos(ang)*rad));
+        y=Math.max(H*0.14, Math.min(H*0.56, y+Math.sin(ang)*rad)); }
+      break; }
+  }
+  return {x, y, size};
+}
+
+/* 發展狀態取用（rank1 主、rank2 次、最高票 proposal）*/
+function rank1Style(dev){ if(!dev||!dev.styles||!dev.styles.length) return null; return dev.styles.find(s=>s.rank===1) || dev.styles.slice().sort((a,b)=>(a.rank||9)-(b.rank||9))[0]; }
+function rank2Style(dev){ if(!dev||!dev.styles) return null; return dev.styles.find(s=>s.rank===2) || null; }
+function topProposal(dev){ if(!dev||!dev.proposals||!dev.proposals.length) return null; return dev.proposals.slice().sort((a,b)=>(b.consensus||0)-(a.consensus||0))[0]; }
+
+/* 髒檢查 sig：rank1/rank2 的 family|dev|unlocked + 房尺寸（resize 重排）+ 醞釀中 family */
+function envSig(r, dev){
+  const part = s => s ? `${s.family}:${Math.round(s.dev||0)}:${(s.unlocked||[]).map(u=>u.id).join(",")}` : "";
+  const prop = topProposal(dev);
+  return `${Math.round(r.w)}x${Math.round(r.h)}|${part(rank1Style(dev))}|${part(rank2Style(dev))}|${(!rank1Style(dev)&&prop)?("p:"+prop.family):""}`;
+}
+
+/* 蒐集要畫的 env 元素：unlocked → 元素定義；center 只留最高 tier（campfire→keep→castle 演化替換），其餘 pos 累加 */
+function collectEnvElements(dev){
+  const idx = catalogIndex(), out = [];
+  const pushStyle = (style)=>{
+    if(!style) return;
+    const els = (style.unlocked||[]).map(u=> idx.get(u.id)).filter(Boolean);
+    const centerEls = els.filter(e=>e.pos==="center");
+    const maxCt = centerEls.reduce((m,e)=> Math.max(m, e.tier||0), -1);
+    const keep = els.filter(e=> e.pos!=="center" || (e.tier||0)===maxCt);
+    keep.sort((a,b)=> String(a.id).localeCompare(String(b.id)));   // id 字典序穩定 DOM 順序
+    keep.forEach(e=> out.push(e));
+  };
+  pushStyle(rank1Style(dev));
+  pushStyle(rank2Style(dev));
+  // ★施工中工地：有未完工風格 or 規劃中提案 → 旁邊放吊車🏗️+圍欄🚧（dev 到 100 完工後自動撤、只剩成品地標）
+  const _bld = dev && ((dev.styles||[]).some(s=>(s.dev||0)>0 && (s.dev||0)<100) || (dev.proposals||[]).some(p=>!p.direction_locked));
+  if(_bld){ out.push({id:"_ws.crane", emoji:"🏗️", pos:"wall"}); out.push({id:"_ws.fence", emoji:"🚧", pos:"corner"}); }
+  if(!out.length && dev){                                          // 醞釀中/已追蹤但未鎖：放幾顆種子（未追蹤的房維持空）
+    ((ENV_CATALOG && ENV_CATALOG.seeds) || []).slice(0,3).forEach(e=> out.push(e));
+  }
+  return out;
+}
+function envElSvg(r, el){
+  const p = placeEnv(r, el);
+  const glow = el.night_glow ? ' class="env-glow"' : "";
+  if(el.pos==="center" && el.svg_hint && ENV_SYMBOLS.has(el.svg_hint)){
+    const s=p.size;
+    return `<g${glow} transform="translate(${p.x.toFixed(1)},${p.y.toFixed(1)})">`+
+      `<use href="#env-${el.svg_hint}" x="${(-s/2).toFixed(1)}" y="${(-s/2).toFixed(1)}" width="${s.toFixed(1)}" height="${s.toFixed(1)}"></use></g>`;
+  }
+  return `<text${glow} x="${p.x.toFixed(1)}" y="${p.y.toFixed(1)}" font-size="${p.size.toFixed(1)}" text-anchor="middle" dominant-baseline="central">${el.emoji||"·"}</text>`;
+}
+/* 房內建築層：sig 沒變不碰 DOM；變了才一次性重建 env-layer（靜態無動畫狀態，重建無副作用）*/
+function renderEnv(r, roomEl, dev){
+  if(!ENV_CATALOG) return;
+  const sig = envSig(r, dev);
+  if(roomEl._envSig === sig) return;
+  roomEl._envSig = sig;
+  let layer = roomEl.env;
+  if(!layer){
+    layer = document.createElementNS("http://www.w3.org/2000/svg","svg");
+    layer.setAttribute("class","env-layer"); layer.setAttribute("preserveAspectRatio","none");
+    roomEl.box.appendChild(layer); roomEl.env = layer;
+  }
+  layer.setAttribute("viewBox", `0 0 ${r.w} ${r.h}`);
+  layer.innerHTML = collectEnvElements(dev).map(el=> envElSvg(r, el)).join("");
+}
+/* 招牌第二行：風格 emoji+中文名+dev% + mini 進度條；未鎖顯醞釀中；dev≥80 加✅；rank2 加 +次風格 */
+function devLineHtml(dev){
+  if(!dev || !ENV_CATALOG) return "";
+  const s1 = rank1Style(dev);
+  if(s1){
+    const f = famMeta(s1.family); if(!f) return "";
+    const d = Math.round(s1.dev||0), done = d>=80;
+    const s2 = rank2Style(dev), f2 = s2 && famMeta(s2.family);
+    let html = `<div class="devline"><span class="devfam">${f.emoji} ${f.name_zh}</span>`+
+      `<span class="devbar"><span class="devfill" style="width:${Math.max(0,Math.min(100,d))}%"></span></span>`+
+      `<span class="devpct">${d}%</span>${done?' <span class="dev-done">✅</span>':''}`;
+    if(f2 && s2) html += `<span class="devfam2">+ ${f2.emoji}${f2.name_zh} ${Math.round(s2.dev||0)}%</span>`;
+    return html + `</div>`;
+  }
+  const p = topProposal(dev);
+  if(p){ const f=famMeta(p.family); return `<div class="devline incub">🌱 ${f?f.emoji+f.name_zh:p.family} 醞釀中…</div>`; }
+  return "";
+}
+
+/* ════════ 環境演化引擎（Phase 3：免LLM 推進）════════════════════════════════════════════════
+   ★暫態鐵律：所有進行中狀態存 regionDev(模組級) / el._carry(持久 DOM)，絕不存每 POLL_MS 重建的 model.c
+     （見 atom reconcile-render 動畫狀態歸屬陷阱）。單調收斂：dev 只增不減（diminishing return 趨緩 + Math.min(100) 夾頂），無震盪。
+   雙軌時間：mode=slow|fast（fast 只加快此免LLM 路徑；經 world-dev.json 持久 / ?fast=1 / worlddev 指令覆寫）。
+   零影響原子記憶：只讀生物特性（type/name/triggers/scope），只寫 regionDev→world-dev.json。
+   種子/定案 Phase 3 用前端 fallback（family 投票 + 罐頭主題），LLM 留 Phase 4。 */
+const ENGINE = {
+  TICK_MS: 1000,
+  DIRECTION_GATE: 35,            // proposal dev≥ → 可定案
+  CONS_MIN: 3,                   // proposal consensus≥（小區自動下修至生物數）→ 可定案
+  STYLE2_GATE: [60, 80],         // rank1 dev∈此 → 准開第二風格
+  DONE_AT: 80,                   // rank1 dev≥ → 該區完工
+  CHAT_DEV: 1.5,                 // 同區原子對談每句注入的基礎 dev（×affinity；蓋房子才是主力、對談為輔）
+  BUILD_FLOOR: 1,                // 「蓋房子」bar 一旦開始的最低值（setback 不歸零）
+  PROP_BUILD_STEP: 3.5,          // 蓋房子推進「規劃中提案(未定案)」的量（正向、無 setback）
+  BUILD_WALK_TTL: 16,            // 一次蓋房子行程上限秒數（逾時強制歸位）
+  THRESHOLDS: [0, 20, 40, 60, 80, 100],
+  CARRY_DECAY: 0.7,              // el._carry 想法強度每 tick 衰減
+  POST_THROTTLE_MS: 4000,        // dev 連續累加節流落盤
+  PROPOSAL_TTL_SLOW: 1000*60*30, // 醞釀逾時未達共識 → 枯死
+  PROPOSAL_TTL_FAST: 60000,
+  ENV_LLM_MIN_GAP: 4000,         // ★LLM 硬閘：兩次環境 LLM（種子/定案）最短間隔（含 fast；後端序列處理不爆）
+  ENV_LLM_TIMEOUT: 20000,        // 環境 LLM 逾時 → fallback（部分模型夾 thought channel 產 JSON 較慢，留 20s 裕度）
+  CROSS_FACTOR: 0.5,             // 跨區串門子：訪客對作客區 dev 貢獻 = devStep × 此（免LLM）
+  CROSS_MAX: 2,                  // 同時最多幾隻在外串門子
+  VISIT_TTL: 26,                 // 單次串門子壽命（秒，rAF 時鐘；逾時強制歸位）
+  VISIT_STAY_SLOW: 8, VISIT_STAY_FAST: 4,   // 到站後作客停留秒數
+  modes: {                       // 雙軌倍率（此處為唯一來源；config.json 不鏡像，純前端免重啟）
+    //   ★活動驅動·慢：dev 累加「只」靠生物行為——蓋房子(maybeBuild 走工地) / 同區對談(contributeEnv) / 串門子(crossInject)。
+    //     engineTick 不再呼 RNG diffuse（閒置≈凍結、每一步都看得到是哪隻生物造成）。env_chance 只決定「何時種下要蓋什麼」的提案。
+    //     pair_chance 保留欄位但已不驅動 dev（=0）。fast 只加快蓋房子頻率/種子，不動 LLM 節奏。
+    slow: { env_chance: 0.03, pair_chance: 0, dev_step: 1.2, cross_chance: 0.010, build_chance: 0.5 },
+    fast: { env_chance: 0.6,  pair_chance: 0, dev_step: 6.0, cross_chance: 0.06,  build_chance: 1.0 },
+  },
+};
+let _modeOverride = null;        // ?fast=1 / worlddev 指令（覆寫 server mode）
+let _serverMode = "slow";        // 由 GET /api/world-dev 回填
+/* ── Phase 4 LLM/跨區 暫態狀態（★全模組級，不落盤、不進 model.c）─────────────
+   _lastEnvLlm：上次環境 LLM 完成/發起時戳（MIN_GAP 硬閘基準）
+   _envSeedInFlight / _envDirInFlight：種子/定案 LLM 飛行中守衛（防同區/同提案重複觸發）*/
+let _lastEnvLlm = 0;
+const _envSeedInFlight = new Set();   // region.key
+const _envDirInFlight  = new Set();   // region.key + "|" + pid
+function envLlmReady(){ return !chatPoolFull() && (Date.now() - _lastEnvLlm >= ENGINE.ENV_LLM_MIN_GAP); }   // 與生物對話共用並發池（同一個後端；池滿→閘關走免LLM fallback）
+function curMode(){ return _modeOverride || _serverMode || "slow"; }
+function isFast(){ return curMode() === "fast"; }
+function tn(){ return ENGINE.modes[curMode()] || ENGINE.modes.slow; }
+
+/* 落盤狀態（先宣告，供下方各 mutation 引用）*/
+let _engineDirty = false;        // 本 tick 有變動 → 觸發 render
+const _devDirty = new Set();     // 待落盤 region keys
+let _lastPost = 0;
+function markDirty(key){ _devDirty.add(key); }
+function postMilestone(key){ _devDirty.add(key); _postDev(true); }   // 里程碑即時 POST
+function _postDev(immediate){
+  if(!_devDirty.size) return;
+  if(!immediate && Date.now()-_lastPost < ENGINE.POST_THROTTLE_MS) return;
+  const regions={}; for(const k of _devDirty){ const d=regionDev.get(k); if(d) regions[k]=d; }
+  _devDirty.clear(); _lastPost=Date.now();
+  fetch(API_BASE+"/api/world-dev",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:curMode(),regions})}).catch(()=>{});
+}
+
+/* 發展狀態骨架 + 取用 */
+function freshDev(){ return { proposals:[], styles:[], next_style_eligible:false, completed:false, completed_at:null, llm_calls:0, last_activity_at:0, dormant:false }; }
+function ensureDev(key){ let d=regionDev.get(key); if(!d){ d=freshDev(); regionDev.set(key,d); } return d; }
+
+/* 區域個性 → family 投票（Phase 3 fallback；LLM Phase 4）：生物 type/name/triggers/scope 命中 fits_personality 計分；exclude=已用家族 */
+function regionFamilyVote(r, exclude){
+  exclude = exclude || new Set();
+  const fams = Object.keys(ENV_CATALOG.families).sort().filter(f=>!exclude.has(f));
+  if(!fams.length) return null;
+  const tally={}; fams.forEach(f=>tally[f]=0);
+  for(const c of (r.list||[])){ const sig=[String(c.type||""),norm(c.name),norm(c.scope||""),...(c.triggers||[]).map(norm)].join(" ");
+    for(const f of fams){ for(const kw of (ENV_CATALOG.families[f].fits_personality||[])){ if(kw && sig.includes(kw)) tally[f]++; } } }
+  let best=fams[0], bestN=-1; for(const f of fams){ if(tally[f]>bestN){ bestN=tally[f]; best=f; } }
+  if(bestN<=0) best = fams[hash32(r.key)%fams.length];        // 無訊號 → 依區 key deterministic 選（穩定）
+  return best;
+}
+function regionTheme(family){ const f=famMeta(family); return f? (f.mood||f.name_zh) : family; }
+
+/* diminishing return：趨頂趨緩、恆正 → 單調收斂不震盪 */
+function devStep(dev){ return Math.max(0.3, tn().dev_step * (1 - dev/140)); }
+function consMin(r){ return Math.min(ENGINE.CONS_MIN, Math.max(2, (r.list||[]).length)); }
+function pickContributor(r, have){ const s=new Set(have||[]); const pool=(r.list||[]).filter(c=>!s.has(c.name)); return pool.length? pool[Math.floor(Math.random()*pool.length)] : null; }
+
+/* ① 種子 proposal（IDLE，需 list≥2；同 family 去重）*/
+function canSeed(r, dev){
+  if((r.list||[]).length < 2) return false;
+  if(!dev) return true;
+  const liveProp = (dev.proposals||[]).some(p=>!p.direction_locked);
+  if(!rank1Style(dev)) return !liveProp;                        // 首風格未鎖：無進行中提案才種
+  return dev.next_style_eligible && !rank2Style(dev) && !liveProp;   // 已鎖首：達閘且無次風格才種第二
+}
+/* 建提案核心（種子 LLM 與 fallback 共用）：選首位貢獻者、起始 dev、賦予 el._carry 想法載體 */
+function buildProposal(r, dev, family, theme){
+  if((r.list||[]).length===0) return null;
+  const first = (r.list||[])[hash32(r.key+family)%r.list.length];
+  theme = theme || regionTheme(family);
+  dev.proposals.push({ pid:"p_"+family, family, theme, consensus:1,
+    contributors: first?[first.name]:[], dev: tn().dev_step, created_by: first?first.name:"", created_at: Date.now(), direction_locked:false });
+  if(first){ const el=elOf(first); if(el) el._carry={family, theme, pid:"p_"+family, strength:1}; }
+  _engineDirty = true;
+  return first;
+}
+/* 免LLM fallback 種子：純前端依生物個性投票選 family + 罐頭主題（LLM 失敗/閘關時走此，仍建 proposal 不阻塞）*/
+function seedProposal(r, dev){
+  const used = new Set([...(dev.styles||[]).map(s=>s.family), ...(dev.proposals||[]).map(p=>p.family)]);
+  const family = regionFamilyVote(r, used); if(!family) return;
+  buildProposal(r, dev, family, regionTheme(family));
+}
+
+/* ── 種子 LLM 派發（envSeed）：閘開→LLM 種子；閘關→免LLM fallback（不阻塞引擎）──
+   ★fast 仍跑（env_chance 加速），但 LLM 受 ENV_LLM_MIN_GAP 節流，多數 fast 種子走 fallback → fast 不卡 */
+function envSeed(r, dev){
+  if(!envLlmReady()){ seedProposal(r, dev); markDirty(r.key); return; }   // 閘關（忙線/未過 MIN_GAP）→ 免LLM
+  activeChats++; _lastEnvLlm = Date.now(); _envSeedInFlight.add(r.key);  // 占用並發池一槽 + 飛行守衛
+  dev.llm_calls = (dev.llm_calls||0) + 1;                                  // 計數本次 LLM 發起（落盤 telemetry）
+  const hasLiveProp = () => (dev.proposals||[]).some(p=>!p.direction_locked);
+  envBrainstorm(r, dev)
+    .then(res => applyEnvSeed(r, dev, res))                                // {family∈白名單, theme, line}
+    .catch(() => { if(!hasLiveProp()) seedProposal(r, dev); })             // LLM 失敗/逾時/解析不過 → 投票 fallback（仍建 proposal）
+    .finally(() => { activeChats--; _envSeedInFlight.delete(r.key); markDirty(r.key); _engineDirty = true; if(model) render(); });
+}
+function applyEnvSeed(r, dev, res){
+  if((dev.proposals||[]).some(p=>!p.direction_locked)) return;             // 飛行中已被跨區/他途種下 → 不重複建提案
+  const used = new Set([...(dev.styles||[]).map(s=>s.family), ...(dev.proposals||[]).map(p=>p.family)]);
+  if(!res || !res.family || used.has(res.family)){ seedProposal(r, dev); return; }  // 無效/重複 family → 投票 fallback
+  const first = buildProposal(r, dev, res.family, res.theme);
+  if(first && res.line){ const el=elOf(first); if(el) bubbleAtEl(el, res.line, 3600); }   // 生物說出 LLM 種子台詞
+}
+
+/* ── 環境 LLM 通道（複用 /api/creature-chat → 設定的 Ollama 後端；world-chat.js 不改；斷網/逾時必拋→fallback）── */
+async function envLlmCall(sys, usr){
+  const ctrl = new AbortController();
+  const timer = setTimeout(()=>ctrl.abort(), ENGINE.ENV_LLM_TIMEOUT);
+  try{
+    const r = await fetch(API_BASE + "/api/creature-chat", {
+      method:"POST", headers:{"Content-Type":"application/json"}, signal:ctrl.signal,
+      body: JSON.stringify({ model:CHAT_MODEL, think:false, options:{num_predict:200, temperature:0.7},
+        messages:[{role:"system",content:sys},{role:"user",content:usr}] })
+    });
+    if(!r.ok) throw new Error("http "+r.status);
+    const j = await r.json();
+    return j.content || "";
+  } finally { clearTimeout(timer); }
+}
+/* 部分模型會夾 <|channel|> 控制 token + ```圍欄 → 剝除後 JSON.parse；失敗再抓 /\{[\s\S]*\}/ 重試 */
+function parseEnvJson(raw){
+  if(!raw) return null;
+  let s = String(raw).replace(/<\|?[^>]*\|?>/g," ").replace(/```json?/gi," ").replace(/```/g," ");
+  try{ return JSON.parse(s); }catch{}
+  const m = s.match(/\{[\s\S]*\}/);
+  if(m){ try{ return JSON.parse(m[0]); }catch{} }
+  return null;
+}
+/* 聚合該區生物集體個性（類別分布 + 代表名 + fits_personality 命中傾向）給 LLM 配對 family */
+function aggregatePersona(r){
+  const list = (r.list||[]);
+  const types = {}; list.forEach(c=>{ const k=c.type||"atom"; types[k]=(types[k]||0)+1; });
+  const tally = {}; Object.keys((ENV_CATALOG&&ENV_CATALOG.families)||{}).forEach(f=>tally[f]=0);
+  for(const c of list){ const sig=[String(c.type||""),norm(c.name),norm(c.scope||""),...((c.triggers||[]).map(norm))].join(" ");
+    for(const f in tally){ for(const kw of (ENV_CATALOG.families[f].fits_personality||[])){ if(kw && sig.includes(kw)) tally[f]++; } } }
+  const lean = Object.entries(tally).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([f])=>f);
+  const names = list.slice(0,6).map(c=>c.name).join("、");
+  return `${list.length} 隻（${Object.entries(types).map(([k,v])=>k+"×"+v).join("，")}）：${names}` + (lean.length?`；個性偏向：${lean.join("/")}`:"");
+}
+/* LLM#1 種子腦力激盪：依集體個性挑 family + 主題 + 起始設施 + 提議台詞；回 {family,theme,line}（family 須∈可用白名單）*/
+async function envBrainstorm(r, dev){
+  const used = new Set([...(dev.styles||[]).map(s=>s.family), ...(dev.proposals||[]).map(p=>p.family)]);
+  const avail = Object.keys(ENV_CATALOG.families).filter(f=>!used.has(f));
+  if(!avail.length) throw new Error("no available family");
+  const famList = avail.map(f=>{ const m=ENV_CATALOG.families[f]; return `${f}（${m.name_zh}/${m.mood}）`; }).join("、");
+  const sys = '你是『腦內世界』某腦區的環境設計師。根據該區記憶生物的集體個性，從給定風格家族挑「一個」最契合的，提出環境發展方向。'
+            + '嚴格只輸出一個 JSON 物件，格式：{"family_id":"<清單裡的id>","theme":"<4到8字中文主題>","seed_element":"<起始設施中文名>","line":"<一句生物提議的口語台詞,不超過25字>"}。不要任何其他文字或說明。';
+  const usr = `腦區「${r.label}」住著這些記憶生物：${aggregatePersona(r)}。可選風格家族：${famList}。挑最契合集體個性的一個 family_id（必須是清單裡的英文 id），給這區一個發展主題與起始設施，並用一句生物的口吻說出這個提議。`;
+  const obj = parseEnvJson(await envLlmCall(sys, usr));
+  if(!obj || !obj.family_id || !avail.includes(obj.family_id)) throw new Error("invalid family");
+  return { family: obj.family_id, theme: (String(obj.theme||"").slice(0,12) || regionTheme(obj.family_id)), line: cleanLine(obj.line||"") };
+}
+/* LLM#2 定案宣告：確認/微調 family + 最終主題 + 興奮定案台詞；回 {family,theme,line} */
+async function envDirection(r, dev, p){
+  const fam = famMeta(p.family);
+  const sys = '你是『腦內世界』某腦區的環境總設計師。這個腦區醞釀出一個發展方向，現在要正式定案。'
+            + '嚴格只輸出一個 JSON：{"family_id":"<有效家族id>","theme":"<4到8字中文主題>","line":"<一句定案宣告的口語台詞,不超過30字>"}。不要其他文字。';
+  const usr = `腦區「${r.label}」決定往「${fam?fam.name_zh:p.family}（${p.theme}）」風格發展。請確認 family_id=「${p.family}」（若有更貼切的可改，但必須是有效家族），給最終主題，並用一句生物興奮宣告定案的台詞。`;
+  const obj = parseEnvJson(await envLlmCall(sys, usr));
+  if(!obj) throw new Error("parse fail");
+  const fid = (obj.family_id && ENV_CATALOG.families[obj.family_id]) ? obj.family_id : p.family;
+  return { family: fid, theme: (String(obj.theme||p.theme||"").slice(0,12)), line: cleanLine(obj.line||"") };
+}
+
+/* ② 配對擴散：成長已鎖風格（含 rank2 並行）+ 醞釀 top proposal；consensus 綁不重複貢獻者 → 收斂封頂 */
+function diffuse(r, dev){
+  let acted=false;
+  for(const s of (dev.styles||[]).filter(s=>(s.dev||0)<100)){ growStyle(r, dev, s, devStep(s.dev)); acted=true; }
+  const p = (dev.proposals||[]).filter(x=>!x.direction_locked).sort((a,b)=>(b.consensus||0)-(a.consensus||0))[0];
+  if(p){ p.dev=Math.min(100,(p.dev||0)+devStep(p.dev));
+    const c=pickContributor(r, p.contributors);
+    if(c){ p.contributors.push(c.name); p.consensus=p.contributors.length; const el=elOf(c); if(el) el._carry={family:p.family,theme:p.theme,pid:p.pid,strength:1}; }
+    acted=true; }
+  if(acted){ dev.last_activity_at=Date.now(); _engineDirty=true; }
+}
+function growStyle(r, dev, s, step){
+  const before=s.dev||0; s.dev=Math.min(100, before+step);
+  const c=pickContributor(r, s.contributors); if(c){ s.contributors.push(c.name); s.consensus=s.contributors.length; }
+  unlockTiers(r, dev, s, before, s.dev);
+}
+
+/* ④ tier 解鎖（跨 0/20/40/60/80/100 門檻 → 去重加元素；里程碑即時落盤；center unique 由 collectEnvElements 篩最高 tier）*/
+function unlockTiers(r, dev, s, before, after){
+  const fam=famMeta(s.family); if(!fam) return;
+  s.crossed=s.crossed||[]; s.unlocked=s.unlocked||[];
+  const have=new Set(s.unlocked.map(u=>u.id));
+  for(const th of ENGINE.THRESHOLDS){
+    if(th>before && th<=after && !s.crossed.includes(th)){
+      s.crossed.push(th);
+      for(const el of ((fam.tiers&&fam.tiers[String(th)])||[])){ if(!have.has(el.id)){ s.unlocked.push({id:el.id, threshold:th}); have.add(el.id); } }
+      postMilestone(r.key);
+    }
+  }
+}
+
+/* ③ 定案：proposal 達門檻 → 晉升 styles[rank N]（Phase 4：envDirect 走 LLM 定案，閘關/失敗退罐頭 promoteToStyle）*/
+function promoteProposals(r, dev){
+  for(const p of (dev.proposals||[]).slice()){
+    if(p.direction_locked) continue;
+    if((p.dev||0)>=ENGINE.DIRECTION_GATE && (p.consensus||0)>=consMin(r)) envDirect(r, dev, p);
+  }
+}
+/* LLM#2 定案派發：飛行守衛 → 閘關走罐頭 promoteToStyle；閘開呼 envDirection 產定案台詞 + 確認 family，失敗退罐頭 */
+function envDirect(r, dev, p){
+  const key = r.key + "|" + p.pid;
+  if(_envDirInFlight.has(key)) return;                                   // 同提案 LLM 飛行中 → 不重觸（亦防池滿期間同步罐頭搶跑）
+  if(!envLlmReady()){ promoteToStyle(r, dev, p); return; }               // 閘關 → 免LLM 罐頭定案
+  _envDirInFlight.add(key); activeChats++; _lastEnvLlm = Date.now();
+  dev.llm_calls = (dev.llm_calls||0) + 1;
+  envDirection(r, dev, p)
+    .then(res => {
+      if(res){
+        if(res.family && res.family!==p.family && ENV_CATALOG.families[res.family]
+           && !(dev.styles||[]).some(s=>s.family===res.family)){ p.family=res.family; p.pid="p_"+res.family; }  // 微調 family（去重後）
+        if(res.theme) p.theme = res.theme;
+      }
+      promoteToStyle(r, dev, p);
+      const c = findCr(p.created_by) || (r.list||[])[0]; const el = c && elOf(c);
+      if(el && res && res.line) bubbleAtEl(el, res.line, 4200);          // 生物宣告定案
+    })
+    .catch(() => promoteToStyle(r, dev, p))                              // LLM 失敗/逾時 → 罐頭定案
+    .finally(() => { _envDirInFlight.delete(key); activeChats--; markDirty(r.key); _engineDirty = true; if(model) render(); });
+}
+function promoteToStyle(r, dev, p){
+  if((dev.styles||[]).some(s=>s.family===p.family)){ p.direction_locked=true; dev.proposals=dev.proposals.filter(x=>x!==p); return; }
+  const rank=(dev.styles||[]).length + 1;
+  if(rank>=2 && !dev.next_style_eligible) return;               // 未達多風格閘不准開第二
+  const s={ family:p.family, rank, dev:p.dev, consensus:p.consensus, contributors:(p.contributors||[]).slice(),
+    unlocked:[], crossed:[], theme:p.theme, locked_at:Date.now() };
+  dev.styles.push(s);
+  unlockTiers(r, dev, s, -1, s.dev);                            // 含 threshold 0 起始元素
+  p.direction_locked=true; dev.proposals=dev.proposals.filter(x=>x!==p);
+  postMilestone(r.key); _engineDirty=true;
+}
+
+/* ⑤ 多風格閘 + ⑥ 完工（rank1 為準；次風格續長不影響完工判定）*/
+function checkGates(r, dev){
+  const s1=rank1Style(dev); if(!s1) return; const d1=s1.dev||0;
+  if(d1>=ENGINE.STYLE2_GATE[0] && !dev.next_style_eligible){ dev.next_style_eligible=true; postMilestone(r.key); _engineDirty=true; }  // 去上界：fast 單 tick 跨過 [60,80) 窗口也能開第二風格
+  if(d1>=ENGINE.DONE_AT && !dev.completed){ dev.completed=true; dev.completed_at=Date.now(); postMilestone(r.key); _engineDirty=true; }
+}
+
+/* 邊界：proposal 枯死（區<2 / 逾時未達共識 / 已晉升殘留）*/
+function pruneProposals(r, dev){
+  const now=Date.now(), ttl=isFast()?ENGINE.PROPOSAL_TTL_FAST:ENGINE.PROPOSAL_TTL_SLOW, n=(r.list||[]).length;
+  const before=dev.proposals.length;
+  dev.proposals=dev.proposals.filter(p=> !p.direction_locked && !((now-(p.created_at||now))>ttl && (p.consensus||0)<consMin(r)) && (n>=2 || (p.dev||0)>=ENGINE.DIRECTION_GATE) );  // 區暫掉到<2 不誤殺已近定案的高進度提案
+  if(dev.proposals.length!==before) _engineDirty=true;
+}
+
+/* el._carry 想法衰減（存 el，跨 refresh 存活；Phase 4 跨區串門子載體）*/
+function decayCarries(){ crEls.forEach(el=>{ if(el._carry){ el._carry.strength*=ENGINE.CARRY_DECAY; if(el._carry.strength<0.05) el._carry=null; } }); }
+
+/* ════════ ④ 跨區串門子（需求#3，免LLM）════════════════════════════════════════
+   低頻挑「攜帶想法（el._carry）」的閒置生物，lerp 走向他區中心作客 → 注入提案/共識 → 到期歸位。
+   ★只動 el._x/_y（視覺），絕不改 c.region（模型）；carry 於觸發時快照進 _visiting，免被 decayCarries 沖掉。
+   ★_visiting 掛持久 el（守 reconcile-render 鐵律），lerp 接在 tick() 位移軸（見 stepVisit）。*/
+function _visitCount(){ let n=0; crEls.forEach(el=>{ if(el._visiting) n++; }); return n; }
+function maybeCrossVisit(t){
+  if(_visitCount() >= ENGINE.CROSS_MAX) return;
+  if(Math.random() >= (t.cross_chance||0)) return;                 // 低頻（fast 略快，仍免LLM）
+  const cands=[]; crEls.forEach(el=>{ const c=el._c;
+    if(c && el._carry && !el._visiting && !el._dragging && !el._pinned && !c.sick) cands.push(el); });
+  if(!cands.length) return;
+  const el=cands[Math.floor(Math.random()*cands.length)], c=el._c;
+  const targets=(rooms||[]).filter(rr=>rr.key!==c.region && (rr.list||[]).length>0);
+  if(!targets.length) return;
+  const rr=targets[Math.floor(Math.random()*targets.length)];
+  const now=performance.now()/1000;
+  el._visiting={ toKey:rr.key, tx:rr.x+rr.w/2, ty:rr.y+rr.h/2, phase:"going",
+                 carry:{family:el._carry.family, theme:el._carry.theme}, stayUntil:0, until:now+ENGINE.VISIT_TTL };
+}
+/* 訪客到站 → 對作客區注入（免LLM）：同 family 風格/提案→共識+1 & dev+=devStep×CROSS_FACTOR；無同 family→以 carry 為種子建提案 */
+function crossInject(v, visitorC){
+  const rr=(rooms||[]).find(x=>x.key===v.toKey); if(!rr){ return; }
+  const dev=ensureDev(rr.key), carry=v.carry, name=visitorC.name; if(!carry) return;
+  const sameStyle=(dev.styles||[]).find(s=>s.family===carry.family);
+  const sameProp =(dev.proposals||[]).find(p=>p.family===carry.family && !p.direction_locked);
+  if(sameStyle){
+    if(!sameStyle.contributors.includes(name)){ sameStyle.contributors.push(name); sameStyle.consensus=sameStyle.contributors.length; }
+    const before=sameStyle.dev||0; sameStyle.dev=Math.min(100, before + devStep(before)*ENGINE.CROSS_FACTOR);  // 單調夾頂
+    unlockTiers(rr, dev, sameStyle, before, sameStyle.dev);
+  } else if(sameProp){
+    if(!sameProp.contributors.includes(name)){ sameProp.contributors.push(name); sameProp.consensus=sameProp.contributors.length; }
+    sameProp.dev=Math.min(100,(sameProp.dev||0)+devStep(sameProp.dev||0)*ENGINE.CROSS_FACTOR);
+  } else {
+    const used=new Set([...(dev.styles||[]).map(s=>s.family),...(dev.proposals||[]).map(p=>p.family)]);
+    if(!used.has(carry.family) && canSeed(rr, dev)){                 // 無同 family 且該區可種 → carry 當種子（免LLM）
+      dev.proposals.push({ pid:"p_"+carry.family, family:carry.family, theme:carry.theme||regionTheme(carry.family),
+        consensus:1, contributors:[name], dev:tn().dev_step, created_by:name, created_at:Date.now(), direction_locked:false, cross_seeded:true });
+    }
+  }
+  dev.last_activity_at=Date.now(); markDirty(rr.key); _engineDirty=true; if(model) render();
+  const el=elOf(visitorC); if(el) bubbleAtEl(el, "我從「"+(c2label(visitorC.region))+"」帶來個點子…", 2800);
+}
+function c2label(key){ const r=(rooms||[]).find(x=>x.key===key); return r?r.label:(key||"").replace("project:",""); }
+
+/* ════════ 原子 ↔ 環境 耦合（活動驅動：對談/蓋房子注入 dev，取代純 RNG 為主驅動）════════
+   每個環節都接回原子：種子 family=身份投票｜dev 累加=原子實際活動｜consensus=真實參與的原子數。 */
+/* #2 affinityFor：每隻原子對「發展自家腦區家園」的興趣 0..1。LLM 評定一次、client-only 快取在 el（不落盤、守零影響鐵則）；
+      LLM 忙線/失敗 → affinityFallback 依類別給底值。所有注入量 ×affinity。 */
+function affinityFallback(c){
+  const n=(c.name||"").toLowerCase();
+  if(c.type==="episodic")                                   return 0.35;
+  if(/architecture/.test(n))                                return 0.9;
+  if(/^workflow|^decisions/.test(n))                        return 0.8;
+  if(/^toolchain|^memory|^atom|^preferences|^user/.test(n)) return 0.6;
+  if(/^feedback/.test(n))                                   return 0.5;
+  return 0.5;
+}
+const _affinityAsked = new Set();   // 已評定過的原子名（防重複問 LLM）
+function affinityFor(el){
+  const c=el&&el._c; if(!c) return 0.5;
+  if(typeof el._envAffinity==="number") return el._envAffinity;     // 已有值 → 直接用
+  el._envAffinity = affinityFallback(c);                            // 先給 fallback（立即可用、不阻塞）
+  if(!_affinityAsked.has(c.name) && envLlmReady()){                 // 閘開才花一次 LLM 評定（共用並發池）
+    _affinityAsked.add(c.name); activeChats++; _lastEnvLlm=Date.now();
+    envLlmCall("你在評估一隻記憶生物對『參與建設、發展自己居住的腦區家園』有多熱衷。"+personaOf(c),
+               "只回 0 到 1 之間的一個小數（例如 0.7），數字越大越想參與蓋自己的家。只輸出數字，不要任何其他字。")
+      .then(txt=>{ const m=String(txt).match(/0?\.\d+|1(?:\.0+)?|0|1/); if(m){ const v=parseFloat(m[0]); if(!isNaN(v)) el._envAffinity=Math.max(0.05,Math.min(1,v)); } })
+      .catch(()=>{})
+      .finally(()=>{ activeChats--; });
+  }
+  return el._envAffinity;
+}
+/* 純讀取版 affinity（不觸發 LLM、無副作用）：給 maybeBuild 每 tick 選人用，避免對全區生物連發 LLM 灌爆並發池 */
+function affinityCached(el){ const c=el&&el._c; if(!c) return 0.5; return (typeof el._envAffinity==="number") ? el._envAffinity : affinityFallback(c); }
+/* #1+#3 contributeEnv：對談的發展貢獻＝「建立共識」(把參與的原子記為 contributor → consensus)＋無提案時就地播種「要蓋什麼」。
+   ★dev(實體進度)不在這裡加 → 那是蓋房子(maybeBuild 走工地)的可視工作。如此 slow 節奏由全域蓋房子速率決定、與人口無關，
+     熱鬧區(很多生物→很多對談)不會偷偷暴衝；define 仍需 consensus≥門檻(靠對談) + dev≥35(靠蓋)，兩者缺一不可。 */
+function contributeEnv(el, reason){
+  const c=el&&el._c; if(!c) return false;
+  const rr=(rooms||[]).find(x=>x.key===c.region); if(!rr) return false;
+  let dev=regionDev.get(c.region); if(!dev) dev=ensureDev(c.region);
+  const addC=(o)=>{ if(o && !o.contributors.includes(c.name)){ o.contributors.push(c.name); o.consensus=o.contributors.length; } };
+  const style=(dev.styles||[]).filter(s=>(s.dev||0)<100).sort((a,b)=>(a.dev||0)-(b.dev||0))[0];
+  if(style){ addC(style); }                                       // 進行中風格 → 添一名參與者（dev 留給蓋房子）
+  else {
+    let p=(dev.proposals||[]).filter(x=>!x.direction_locked).sort((a,b)=>(b.consensus||0)-(a.consensus||0))[0];
+    if(!p){ if(!canSeed(rr, dev)) return false; seedProposal(rr, dev); p=(dev.proposals||[]).filter(x=>!x.direction_locked)[0]; if(!p) return false; }  // 無提案 → 對談就地播下方向
+    addC(p);
+    if(!el._carry) el._carry={family:p.family, theme:p.theme, pid:p.pid, strength:1};
+  }
+  dev.last_activity_at=Date.now(); markDirty(c.region); _engineDirty=true;
+  return true;
+}
+/* #4 蓋房子（活動驅動主力·可視）：低頻挑一個「進行中」腦區（有規劃提案 or 未完工風格），依 affinity 加權選一隻原子，
+   興趣檢定過 → 派牠「走到工地」(el._building，見 stepBuild)；到站才真的推進（applyBuild）+ 🔨 蓋房台詞。
+   閒置（沒人去蓋）→ bar 完全不動，發展看得到是哪隻生物造成、slow 下緩慢可看。 */
+const BUILD_LINES = ["這面牆我來砌！","地基要打穩～","屋頂交給我","再疊一層磚","這裡留扇窗吧","幫忙遞個料～","快成形了！","這根樑這樣擺"];
+function buildSiteXY(r){ return { tx: r.x + r.w/2, ty: r.y + r.h*0.34 }; }   // 工地點＝中央地標附近（與 placeEnv center 對齊）
+function maybeBuild(t){
+  if(!autoOn) return;
+  if(Math.random() >= (t.build_chance||0)) return;
+  const sites=[];
+  for(const r of (rooms||[])){
+    if(!(r.list||[]).length) continue;
+    const dev=regionDev.get(r.key); if(!dev) continue;
+    if((dev.styles||[]).some(x=>(x.dev||0)<100) || (dev.proposals||[]).some(x=>!x.direction_locked)) sites.push(r);
+  }
+  if(!sites.length) return;
+  const r=sites[Math.floor(Math.random()*sites.length)];
+  const els=[]; for(const c of (r.list||[])){ const el=elOf(c);
+    if(el && !el._dragging && !el._visiting && !el._building && !c.sleeping && !c.sick) els.push(el); }
+  if(!els.length) return;
+  let best=els[0], bw=-1; for(const el of els){ const w=affinityCached(el)*(0.4+Math.random()); if(w>bw){ bw=w; best=el; } }
+  affinityFor(best);   // #2：順手讓被選中者的「對發展的興趣」走一次 LLM 評定（gated、最多一次/dispatch，結果快取於 el）
+  if(Math.random() >= affinityCached(best)){ if(Math.random()<0.2) bubbleAtEl(best, "（先忙別的…）", 1200); return; }  // 興趣沒過 → 這次不蓋
+  const xy=buildSiteXY(r);
+  best._building={ rkey:r.key, tx:xy.tx, ty:xy.ty, phase:"going", until:(performance.now()/1000)+ENGINE.BUILD_WALK_TTL, applied:false };
+}
+/* 到工地後實際推進該區進行中目標：未完工風格 → bar delta∈[-1,2]、floor=已解鎖最高門檻(bar 不低於已蓋的)；
+   無風格但有提案 → 正向推進提案 dev（達 DIRECTION_GATE 由 promoteProposals 定案）。回傳 🔨/📐 台詞。 */
+function applyBuild(rkey, name){
+  const dev=regionDev.get(rkey); if(!dev) return null;
+  const rr=(rooms||[]).find(x=>x.key===rkey); if(!rr) return null;
+  const style=(dev.styles||[]).filter(x=>(x.dev||0)<100).sort((a,b)=>(a.dev||0)-(b.dev||0))[0];
+  if(style){
+    const before=style.dev||0, delta=Math.floor(Math.random()*4)-1;            // -1,0,1,2（使用者指定範圍）
+    const floor=Math.max(ENGINE.BUILD_FLOOR, ...((style.crossed&&style.crossed.length)?style.crossed:[0]));
+    const after=Math.max(floor, Math.min(100, before+delta));
+    style.dev=after;
+    if(after>before) unlockTiers(rr, dev, style, before, after);              // bar 不低於已解鎖門檻 → 進度條與已蓋元素一致
+    if(!style.contributors.includes(name)){ style.contributors.push(name); style.consensus=style.contributors.length; }
+    dev.last_activity_at=Date.now(); markDirty(rkey); _engineDirty=true;
+    return delta<0 ? "🔨…欸、這邊歪了重來" : "🔨 "+BUILD_LINES[Math.floor(t1()*BUILD_LINES.length)];
+  }
+  let p=(dev.proposals||[]).filter(x=>!x.direction_locked).sort((a,b)=>(b.consensus||0)-(a.consensus||0))[0];
+  if(!p){ if(!canSeed(rr, dev)) return null; seedProposal(rr, dev); p=(dev.proposals||[]).filter(x=>!x.direction_locked)[0]; if(!p) return null; }
+  const fam=famMeta(p.family);
+  p.dev=Math.min(100,(p.dev||0)+ENGINE.PROP_BUILD_STEP);
+  if(!p.contributors.includes(name)){ p.contributors.push(name); p.consensus=p.contributors.length; }
+  dev.last_activity_at=Date.now(); markDirty(rkey); _engineDirty=true;
+  return "📐 規劃「"+(fam?fam.name_zh:p.family)+"」…";
+}
+
+/* 引擎主迴圈（低頻 TICK_MS；只動 regionDev/el，render 反映進度；單調、零影響原子記憶）*/
+function engineTick(){
+  if(!ENV_CATALOG || !model || !rooms.length) return;
+  const t=tn();
+  for(const r of rooms){
+    let dev=regionDev.get(r.key);
+    if((r.list||[]).length===0){ if(dev) dev.dormant=true; continue; }   // 空區休眠（保留既有 styles 凍結）
+    if(dev) dev.dormant=false;
+    if(canSeed(r, dev) && !_envSeedInFlight.has(r.key) && Math.random()<t.env_chance){ dev=ensureDev(r.key); envSeed(r, dev); markDirty(r.key); }  // 種子＝決定「要蓋什麼」(免LLM fallback；飛行守衛防重觸)
+    if(!dev) continue;
+    // ★活動驅動：dev 累加只靠生物行為（maybeBuild 蓋房子 / contributeEnv 對談 / crossInject 串門）→ 不再呼 RNG diffuse，閒置≈凍結
+    promoteProposals(r, dev);
+    pruneProposals(r, dev);
+    checkGates(r, dev);
+  }
+  maybeCrossVisit(t);                                            // ④ 跨區串門子（免LLM；低頻挑攜帶想法生物 lerp 去鄰區）
+  maybeBuild(t);                                                 // ⑤ 蓋房子（活動驅動：原子推進已定案建築 bar、興趣加權、setback 不歸零）
+  decayCarries();
+  if(_engineDirty){ if(model) render(); _engineDirty=false; }    // 變動才重繪（env-layer 仍 sig 髒檢查）
+  _postDev(false);                                               // dev 累加節流落盤
+}
+
+/* 雙軌時間控制（指令台 worlddev + ?fast=1）*/
+function setMode(m){ if(m==="fast"||m==="slow") _modeOverride=m;
+  fetch(API_BASE+"/api/world-dev",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:curMode()})}).catch(()=>{}); }
+function worldDevCmd(action){
+  if(action==="fast"||action==="slow"){ setMode(action); return "環境演化："+(action==="fast"?"加速模式 ⏩":"慢速放置 🐢"); }
+  if(action==="reset"){ regionDev.clear(); _devDirty.clear();
+    fetch(API_BASE+"/api/world-dev",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({reset:true})}).catch(()=>{});
+    if(model) render(); return "已重置所有區域發展狀態（僅 world-dev.json）"; }
+  let done=0, tracked=0; const lines=[];
+  regionDev.forEach((d,k)=>{ tracked++; if(d.completed) done++; const s=rank1Style(d);
+    lines.push("· "+k+"："+(s?(s.family+" "+Math.round(s.dev||0)+"%"+(d.completed?" ✅":"")):((d.proposals&&d.proposals[0]&&"🌱"+d.proposals[0].family+" 醞釀中")||"idle"))); });
+  return `模式=${curMode()}　追蹤=${tracked}　完工=${done}`+(lines.length?("\n"+lines.join("\n")):"（尚無區域進入發展）");
+}
+
+/* ── 渲染（reconcile）─────────────────────────────────────────────── */
+function render(){
+  // 房間
+  const liveR=new Set();
+  rooms.forEach(r=>{
+    liveR.add(r.key);
+    let el = roomEls.get(r.key);
+    if(!el){
+      const box=document.createElement("div"); box.className="room";
+      const sign=document.createElement("div"); sign.className="sign";
+      const floor=document.createElement("div"); floor.className="floor";
+      box.appendChild(sign); box.appendChild(floor); scene.appendChild(box);
+      el={box,sign,floor}; roomEls.set(r.key,el);
+    }
+    const hue=hueOf(r.key);
+    el.box.className = "room"+(r.core?" core":"")+(r.active?" active":"");
+    el.box.style.left=r.x+"px"; el.box.style.top=r.y+"px"; el.box.style.width=r.w+"px"; el.box.style.height=r.h+"px";
+    el.box.style.borderColor=`hsla(${hue},65%,55%,${r.active?.45:.2})`;
+    const sickN=r.list.filter(c=>c.sick).length, sleepN=r.list.filter(c=>c.sleeping).length;
+    const dev = regionDev.get(r.key);
+    el.sign.innerHTML=`<div class="sgn-main">${r.label}<span class="meta">· ${r.list.length} 記憶`+
+      (r.working?` · 🔨工作中`:"")+(sickN?` · 🤢${sickN}`:"")+(sleepN?` · 💤${sleepN}`:"")+`</span></div>`+
+      devLineHtml(dev);
+    renderEnv(r, el, dev);                                  // 房內建築層（deterministic、sig 髒檢查）
+  });
+  roomEls.forEach((el,k)=>{ if(!liveR.has(k)){ el.box.remove(); roomEls.delete(k);} });
+
+  // 生物
+  creatures = model.creatures;
+  const liveC=new Set();
+  creatures.forEach(c=>{
+    liveC.add(c.uid);
+    let el=crEls.get(c.uid);
+    if(!el){
+      el=document.createElement("div"); el.className="cr";
+      el.innerHTML=crSvg()+
+        `<div class="smoke"></div>`+
+        `<div class="badge b-zzz">💤</div><div class="badge b-evolve">🆙</div>`+
+        `<div class="badge b-crown">👑</div><div class="badge b-tool">🌱</div>`+
+        `<span class="stars"></span><span class="tag"></span>`;
+      bindDrag(el, c); scene.appendChild(el); crEls.set(c.uid, el);
+    }
+    el._c = c;
+    if(el._x===undefined){ el._x=c.slotX; el._y=c.slotY; }
+    el.style.setProperty("--s", c.s+"px");
+    el.style.setProperty("--h", hueOf(c.region));
+    const tier = tierOf(c);
+    if(el._tier !== tier){                              // 體型變了才換 symbol（reconcile 省工）
+      el._tier = tier;
+      el.querySelector(".shape").setAttribute("href", "#sym-"+tier);
+      el.querySelector(".face").setAttribute("transform","translate(50,"+FACE_Y[tier]+")");
+    }
+    const mega = tier==="dragon" && c.mass>=16 && !c.sick && !c.sleeping;
+    el.className = "cr "+confClass(c.confidence)+(c.sick?" sick":"")+(c.sleeping?" sleep":"")+
+      (c.promoting?" evolving":"")+(c.elder?" named":"")+(mega?" mega":"");
+    el.querySelector(".tag").textContent = c.name;
+    const stEl = el.querySelector(".stars"); const ns = powerStars(c.power, model.maxPower);   // 相對戰力星（power 缺/0 → 隱藏）
+    if(c.power != null && ns > 0){ stEl.textContent = "⭐".repeat(ns); stEl.style.display="block"; }
+    else stEl.style.display = "none";
+    el.querySelector(".b-zzz").style.display = c.sleeping?"block":"none";
+    el.querySelector(".b-evolve").style.display = c.promoting?"block":"none";
+    el.querySelector(".b-crown").style.display = c.elder?"block":"none";
+    const working = model.regions.get(c.region)?.working && !c.sick && !c.sleeping;
+    const tool = el.querySelector(".b-tool"); tool.style.display = working?"block":"none";
+    if(working) tool.textContent = (c.name.charCodeAt(1)||0)%2 ? "🔨":"🌱";
+  });
+  crEls.forEach((el,n)=>{ if(!liveC.has(n)){ el.remove(); crEls.delete(n);} });
+
+  // 幽靈
+  const liveG=new Set();
+  ghosts.forEach(g=>{
+    liveG.add(g.key);
+    let el=ghostEls.get(g.key);
+    if(!el){ el=document.createElement("div"); el.className="cr ghost";
+      el.innerHTML=`<svg class="cbody" viewBox="0 0 100 100" width="100%" height="100%"><use class="shape" href="#sym-ghost"></use>`+
+        `<g class="face" transform="translate(50,46)"><g class="eyes eyes-open"><circle cx="-8" cy="-2" r="2.8" fill="#2a2f45"/><circle cx="8" cy="-2" r="2.8" fill="#2a2f45"/></g>`+
+        `<path class="mouth m-smile" d="M-5 6 q5 4 10 0" stroke="#2a2f45" stroke-width="1.6" stroke-linecap="round" fill="none"/></g></svg><span class="tag"></span>`;
+      el.title=g.title; scene.appendChild(el); ghostEls.set(g.key,el);
+      let hh=0; for(const ch of g.key) hh=(hh*31+ch.charCodeAt(0))%100000;
+      el._gx=(hh%Math.max(1,innerWidth-40))+20; el._gy=70+(hh%120); el._gvx=(((hh%5)-2)*0.12)+0.05;
+    }
+    el.style.setProperty("--s","26px");
+    el.style.opacity = g.dying ? .3 : .6;
+    el.querySelector(".tag").textContent = "TTL "+g.ttl+"d";
+  });
+  ghostEls.forEach((el,k)=>{ if(!liveG.has(k)){ el.remove(); ghostEls.delete(k);} });
+
+  // 統計
+  $("sRooms").textContent=rooms.length;
+  $("sOrbs").textContent=creatures.length;
+  $("sSick").textContent=creatures.filter(c=>c.sick).length;
+  $("sSleep").textContent=creatures.filter(c=>c.sleeping).length;
+  $("sEvo").textContent=creatures.filter(c=>c.promoting).length;
+  $("sGhost").textContent=ghosts.length;
+  renderTop3();
+}
+/* 最強記憶 TOP3 排行（按 power；無遙測 → 待遙測）*/
+function renderTop3(){
+  const box=$("top3list"); if(!box) return;
+  const t3 = (model && model.top3) || [];
+  box.innerHTML = t3.length
+    ? t3.map((e,i)=>`<span class="t3"><b>${i+1}</b><span class="t3dot" style="background:hsl(${hueOf(e.region)},66%,57%)"></span><span class="t3n">${e.name}</span><span class="t3p">${e.power.toFixed(2)}</span></span>`).join("")
+    : `<span class="t3muted">待戰力遙測…</span>`;
+}
+
+/* ════════ 對話導演已移除（#2 接觸觸發改制）：不再憑「寬鬆靠近 / related 任意距離」憑空對話。
+   自主對話一律由 checkDialogue 的「真接觸」觸發；跨區接觸由既有 maybeCrossVisit 串門子帶動。════════ */
+
+/* ════════ 指令台（Command Bus）：單一 WORLD_COMMANDS registry 驅動 UI + executor + 遠端輪詢 ════════ */
+function findCr(name){
+  if(!name) return null; const s=String(name);
+  return (creatures||[]).find(c=>c.name===s)
+      || (creatures||[]).find(c=>c.name.toLowerCase()===s.toLowerCase())
+      || (creatures||[]).find(c=>c.name.includes(s)) || null;
+}
+function elOf(c){ return c && crEls.get(c.uid); }
+function moveCreatureTo(c, to){
+  const el=elOf(c); if(!el) return "找不到生物"; if(!to) return "缺目的地";
+  const ss=scene.getBoundingClientRect(); let tx, ty;
+  if(/醫院|診所|clinic|hospital/i.test(to)){
+    const r=$("clinic").getBoundingClientRect(); tx=r.left-ss.left+r.width/2; ty=r.top-ss.top+r.height/2;
+  } else {
+    const rm=(rooms||[]).find(r=>r&&(r.key===to||r.label===to||r.slug===to||(r.label&&r.label.includes(to))||r.key.includes(to)));
+    if(!rm) return "找不到目標：「"+to+"」"; tx=rm.x+rm.w/2; ty=rm.y+rm.h/2;
+  }
+  el._pinned=true; el._visiting=null; el._x=tx; el._y=ty; el.style.transform=`translate(${el._x-c.s/2}px,${el._y-c.s}px)`;  // 刻意擺放 → 取消串門子
+  return `${c.name} → ${to}`;
+}
+/* registry：加新指令＝在此加一筆（UI 選單/說明/控件/executor 自動長出）*/
+const WORLD_COMMANDS = [
+  { cmd:"move", label:"移動", desc:"讓生物走到指定房間或診所",
+    args:[{name:"name",type:"creature",label:"生物"},{name:"to",type:"room",label:"目的地"}],
+    run:a=>moveCreatureTo(findCr(a.name), a.to) },
+  { cmd:"say", label:"說話", desc:"讓生物冒出一句指定台詞（免費、不呼 LLM）",
+    args:[{name:"name",type:"creature",label:"生物"},{name:"text",type:"text",label:"台詞"}],
+    run:a=>{ const c=findCr(a.name), el=elOf(c); if(!el) return "找不到生物"; bubbleAtEl(el, a.text||"…", 2600); return c.name+"："+a.text; } },
+  { cmd:"chat", label:"對話", desc:"讓兩隻生物對話一次（呼本地 LLM 約 1 次）",
+    args:[{name:"a",type:"creature",label:"生物A"},{name:"b",type:"creature",label:"生物B"}],
+    run:a=>{ const ca=findCr(a.a), cb=findCr(a.b), ea=elOf(ca); if(!ca||!cb||!ea) return "找不到生物"; if(chatPoolFull()) return "忙線中，稍候"; sayPair(ca, cb, ea); return ca.name+" ↔ "+cb.name; } },
+  { cmd:"heal", label:"治療", desc:"把生物送診所觸發修復（生病才有效）",
+    args:[{name:"name",type:"creature",label:"生物"}],
+    run:a=>{ const c=findCr(a.name); if(!c) return "找不到生物"; heal(c); return "送診："+c.name; } },
+  { cmd:"auto", label:"自主行為", desc:"開關生物自主漫步與偶發對話",
+    args:[{name:"state",type:"enum",label:"狀態",options:["on","off"]}],
+    run:a=>{ autoOn=(a.state!=="off"); return "自主行為："+(autoOn?"開啟":"關閉"); } },
+  { cmd:"spotlight", label:"聚焦", desc:"打開該生物的白話身份卡",
+    args:[{name:"name",type:"creature",label:"生物"}],
+    run:a=>{ const c=findCr(a.name); if(!c) return "找不到生物"; showDetail(c); return "聚焦："+c.name; } },
+  { cmd:"snapshot", label:"快照", desc:"回傳目前所有生物狀態（給 Claude 讀）",
+    args:[],
+    run:()=>{ pushSnapshot(); return "已更新快照（"+crEls.size+" 生物）"; } },
+  { cmd:"worlddev", label:"環境演化", desc:"控制區域環境演化引擎（加速/慢速/重置/狀態）",
+    args:[{name:"action",type:"enum",label:"動作",options:["status","fast","slow","reset"]}],
+    run:a=>worldDevCmd(a.action) },
+  { cmd:"reload", label:"清快取重載", desc:"強制從硬碟重讀 world.html，繞過 file:// 快取（改了碼卻看不到更新時用這個）",
+    args:[],
+    run:()=>{ location.href = location.pathname + "?_cb=" + Date.now(); return "重載中…"; } },
+];
+function curCmdDef(){ return WORLD_COMMANDS.find(d=>d.cmd===$("cbCmd").value) || WORLD_COMMANDS[0]; }
+function buildCmdBar(){
+  $("cbCmd").innerHTML = WORLD_COMMANDS.map(d=>`<option value="${d.cmd}">${d.label}（${d.cmd}）</option>`).join("");
+  $("cbCmd").onchange = renderCmdArgs; renderCmdArgs();
+}
+function ctlFor(arg){
+  let ctl;
+  if(arg.type==="creature"){ ctl=document.createElement("select"); ctl.innerHTML=`<option value=""></option>`+(creatures||[]).map(c=>`<option>${c.name}</option>`).join(""); }
+  else if(arg.type==="room"){ ctl=document.createElement("select"); ctl.innerHTML=`<option value=""></option><option value="醫院">🏥 診所</option>`+(rooms||[]).map(r=>`<option value="${r.key}">${r.label}</option>`).join(""); }
+  else if(arg.type==="enum"){ ctl=document.createElement("select"); ctl.innerHTML=(arg.options||[]).map(o=>`<option>${o}</option>`).join(""); }
+  else { ctl=document.createElement("input"); ctl.type="text"; ctl.placeholder=arg.label||arg.name; }
+  ctl.dataset.arg=arg.name; ctl.className="cbctl"; return ctl;
+}
+function renderCmdArgs(){
+  const def=curCmdDef(); $("cbDesc").textContent=def.desc; const box=$("cbArgs"); box.innerHTML="";
+  (def.args||[]).forEach(arg=>{ const w=document.createElement("label"); w.className="cbarg"; w.textContent=(arg.label||arg.name)+"："; w.appendChild(ctlFor(arg)); box.appendChild(w); });
+}
+function refreshCmdOptions(){   // 模型更新後刷新生物/房間下拉（保留現選值）
+  $("cbArgs").querySelectorAll("select.cbctl").forEach(ctl=>{
+    const arg=(curCmdDef().args||[]).find(a=>a.name===ctl.dataset.arg); if(!arg||(arg.type!=="creature"&&arg.type!=="room")) return;
+    const cur=ctl.value; const fresh=ctlFor(arg); ctl.innerHTML=fresh.innerHTML;
+    if([...ctl.options].some(o=>o.value===cur)) ctl.value=cur;
+  });
+}
+function runCmdBar(){
+  const def=curCmdDef(), args={};
+  $("cbArgs").querySelectorAll(".cbctl").forEach(ctl=> args[ctl.dataset.arg]=ctl.value);
+  let obs; try{ obs=def.run(args); }catch(e){ obs="錯誤："+(e&&e.message||e); }
+  $("cbLog").textContent = obs!=null?String(obs):"(已執行)";
+}
+/* 遠端：Claude/外部 POST /api/world-command → 此處輪詢執行並回報；同時回填 snapshot */
+function runCommand(cmd, args){ const d=WORLD_COMMANDS.find(x=>x.cmd===cmd); if(!d) return "未知指令："+cmd; return d.run(args||{}); }
+function pushSnapshot(){
+  const arr=[]; crEls.forEach(el=>{ const c=el._c; if(!c) return;
+    arr.push({name:c.name, region:c.region, x:Math.round(el._x), y:Math.round(el._y), s:c.s,
+      sick:!!c.sick, sleeping:!!c.sleeping, elder:!!c.elder, lonely:!!c.lonely,
+      confidence:c.confidence, power:c.power, related:c.related}); });
+  fetch(API_BASE+"/api/world-snapshot",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({creatures:arr})}).catch(()=>{});
+}
+let cmdSince=0;
+async function pollCommands(){
+  try{
+    const r=await fetch(API_BASE+"/api/world-commands?since="+cmdSince,{cache:"no-store"});
+    if(r.ok){ const j=await r.json(); cmdSince=j.last_id||cmdSince;
+      for(const c of (j.commands||[])){ let ok=true, obs=null;
+        try{ obs=runCommand(c.cmd,c.args); }catch(e){ ok=false; obs=String(e&&e.message||e); }
+        fetch(API_BASE+"/api/world-result",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:c.id,ok,observation:obs})}).catch(()=>{});
+      }
+    }
+  }catch(e){}
+  pushSnapshot();
+}
+
+/* ── 動畫迴圈（wander / sleep / work / sick / 幽靈飄）──────────────── */
+function tick(ts){
+  const t = ts/1000;
+  crEls.forEach((el)=>{
+    const c = el._c; if(!c) return;
+    // 位移軸（互斥）：拖曳中 / 指令釘住 / 放開後 settle 3s → 凍在原地
+    if(el._dragging || el._pinned || t < (el._settleUntil||0)){
+      el._wasSettling = !el._dragging && !el._pinned;   // 標記「因 settle 而凍」→ 結束時平滑帶回家
+      el.style.transform=`translate(${el._x-c.s/2}px,${el._y-c.s}px)`; return;
+    }
+    if(el._wasSettling){                                 // settle 剛結束：以放開位置為起點，讓 wander lerp 平滑回家（不瞬移）
+      el._wasSettling=false; el._wox=el._x-c.slotX; el._woy=el._y-c.slotY; el._wnext=0;
+    }
+    if(c.sick && autoOn && !healing.has(c.name) && !autoHealTried.has(c.name)){ sickWalk(c,el,t); return; }   // 壞記憶自走診所
+    if(el._building){ stepBuild(c, el, t); return; }   // ⑤ 蓋房子：走到工地敲打（活動軸，優先於 wander）
+    if(el._visiting){ stepVisit(c, el, t); return; }   // ④ 跨區串門子：位移軸新狀態（優先於 wander；與 talking 可疊加）
+    let ox=0, oy=0;
+    const talking = t < (el._talkUntil||0);              // 活動軸（疊加）：對話中暫停 wander 前進，僅保留原地呼吸晃動
+    if(c.sleeping){ oy=4; }
+    else if(c.sick){ ox=Math.sin(t*22+c.phase)*1.6; }
+    else { if(autoOn && !talking) wander(c,el,t); ox=(el._wox||0)+Math.sin(t*1.4+c.phase)*1.5; oy=(el._woy||0)+Math.sin(t*1.8+c.phase)*2; }
+    el._x = c.slotX + ox; el._y = c.slotY + oy;
+    el.style.transform=`translate(${el._x-c.s/2}px,${el._y-c.s}px)`;
+  });
+  ghostEls.forEach((el)=>{
+    if(el._gx===undefined) return;
+    el._gx += el._gvx; if(el._gx<10||el._gx>innerWidth-30) el._gvx*=-1;
+    el._gy += Math.sin(t*0.6 + el._gx*0.01)*0.15;
+    el.style.transform=`translate(${el._gx}px,${el._gy}px)`;
+  });
+  checkDialogue(t);
+  requestAnimationFrame(tick);
+}
+
+/* ── 自主漫步：偶爾在房內挑新目標、緩步漂移（純前端、零 LLM 成本）─────────── */
+// 漫步狀態存在持久的 el（跨 refresh 存活），非 ephemeral 的 c（每 POLL_MS 重建）→ 不再每 5s 彈回原位
+function wander(c,el,t){
+  if(el._wox===undefined){ el._wox=0; el._woy=0; el._wtx=0; el._wty=0; el._wnext=0; }
+  if(t > el._wnext){                                    // 到換目標時間 → 房內隨機挑新偏移
+    const RX = c.active ? 70 : 36, RY = 26;             // 活躍者漫步範圍較大
+    el._wtx = (Math.random()*2-1)*RX;
+    el._wty = (Math.random()*2-1)*RY;
+    if(c.roomMinX!=null){                               // 夾在房間框內（slot+偏移不出房）
+      el._wtx = Math.max(c.roomMinX-c.slotX, Math.min(c.roomMaxX-c.slotX, el._wtx));
+      el._wty = Math.max(c.roomMinY-c.slotY, Math.min(c.roomMaxY-c.slotY, el._wty));
+    }
+    el._wnext = t + 3 + Math.random()*5;                // 3~8s 換一次目標
+  }
+  el._wox += (el._wtx - el._wox)*0.02;                  // 緩步 lerp 朝目標
+  el._woy += (el._wty - el._woy)*0.02;
+}
+
+/* ── ④ 跨區串門子位移（位移軸新狀態；只動 el._x/_y，c.region 不變）─────────────
+   going：lerp 去他區中心 → 到站 crossInject（一次） → staying：作客遊蕩到 stayUntil/until → back：lerp 回原 slot → 清 _visiting 接回 wander。
+   與 talking 可疊加：對話中暫停前進、僅原地呼吸（同活動軸語義），講完續行。*/
+function stepVisit(c, el, t){
+  const v=el._visiting;
+  if(t < (el._talkUntil||0)){                            // talking 疊加：暫停 lerp，原地呼吸
+    el._x += Math.sin(t*1.6+c.phase)*0.5; el._y += Math.sin(t*2.0+c.phase)*0.6;
+    el.style.transform=`translate(${el._x-c.s/2}px,${el._y-c.s}px)`; return;
+  }
+  if(v.phase==="going"){
+    el._x += (v.tx-el._x)*0.03; el._y += (v.ty-el._y)*0.03;
+    const dx=v.tx-el._x, dy=v.ty-el._y;
+    if(dx*dx+dy*dy < 900){ v.phase="staying"; v.stayUntil=t+(isFast()?ENGINE.VISIT_STAY_FAST:ENGINE.VISIT_STAY_SLOW); crossInject(v, c); }  // 到站注入（一次）
+  } else if(v.phase==="staying"){
+    el._x += Math.sin(t*1.4+c.phase)*0.7; el._y += Math.cos(t*1.6+c.phase)*0.7;   // 作客遊蕩
+    if(t>=v.stayUntil || t>=v.until) v.phase="back";
+  } else {                                                // back：歸位原 slot（c 每 POLL_MS 重建→用最新 slot）
+    const hx=c.slotX, hy=c.slotY;
+    el._x += (hx-el._x)*0.03; el._y += (hy-el._y)*0.03;
+    const dx=hx-el._x, dy=hy-el._y;
+    if(dx*dx+dy*dy < 400){ el._visiting=null; el._wox=el._x-c.slotX; el._woy=el._y-c.slotY; el._wnext=0; }  // 接回 wander（不瞬移）
+  }
+  el.style.transform=`translate(${el._x-c.s/2}px,${el._y-c.s}px)`;
+}
+
+/* ── ⑤ 蓋房子位移（活動軸；只動 el._x/_y）：going→走到工地 applyBuild(一次)+🔨台詞 → working 敲打小停 → back 歸位 ── */
+function stepBuild(c, el, t){
+  const v=el._building;
+  if(t < (el._talkUntil||0)){ el._x += Math.sin(t*1.6+c.phase)*0.5; el._y += Math.sin(t*2.0+c.phase)*0.6; el.style.transform=`translate(${el._x-c.s/2}px,${el._y-c.s}px)`; return; }
+  if(t >= v.until && v.phase!=="back"){ v.phase="back"; }                       // 逾時強制歸位
+  if(v.phase==="going"){
+    el._x += (v.tx-el._x)*0.045; el._y += (v.ty-el._y)*0.045;
+    const dx=v.tx-el._x, dy=v.ty-el._y;
+    if(dx*dx+dy*dy < 900){
+      if(!v.applied){ v.applied=true; const line=applyBuild(v.rkey, c.name); if(line) bubbleAtEl(el, line, 2400); }
+      v.phase="working"; v.workUntil=t+1.8;
+    }
+  } else if(v.phase==="working"){
+    el._x += Math.sin(t*9+c.phase)*1.6; el._y += Math.cos(t*7+c.phase)*1.0;     // 敲打小抖
+    if(t>=v.workUntil) v.phase="back";
+  } else {
+    const hx=c.slotX, hy=c.slotY;
+    el._x += (hx-el._x)*0.045; el._y += (hy-el._y)*0.045;
+    const dx=hx-el._x, dy=hy-el._y;
+    if(dx*dx+dy*dy < 400){ el._building=null; el._wox=el._x-c.slotX; el._woy=el._y-c.slotY; el._wnext=0; }
+  }
+  el.style.transform=`translate(${el._x-c.s/2}px,${el._y-c.s}px)`;
+}
+
+/* 生病生物自主走向診所，到院觸發自動 L1（healReal 內有 healing 鎖 + autoHealTried 防重觸/騷擾）*/
+function sickWalk(c, el, t){
+  const ss=scene.getBoundingClientRect(), r=$("clinic").getBoundingClientRect();
+  const tx=r.left-ss.left+r.width/2, ty=r.top-ss.top+r.height/2;
+  el._x += (tx-el._x)*0.012 + Math.sin(t*20+c.phase)*1.0;   // 緩步趨近 + 病懨懨小抖
+  el._y += (ty-el._y)*0.012;
+  el.style.transform=`translate(${el._x-c.s/2}px,${el._y-c.s}px)`;
+  if((tx-el._x)*(tx-el._x)+(ty-el._y)*(ty-el._y) < 1000) healReal(c, true);   // 到診所 → 自動 L1
+}
+
+/* ── 對話觸發：兩隻「真接觸」才開講（同房漫步 or 跨區串門子訪客皆可）。
+   並發池 activeChats/MAX_CHATS（共用同一個後端）+ 每隻講完冷卻，避免黏在一起反覆觸發。 ── */
+let lastBubble = 0;
+const CONTACT_F = 0.55;     // 接觸閾值：距離² < (a.s+b.s)² × 此
+const CHAT_COOLDOWN = 8;    // 講完冷卻秒數
+function eligibleForChat(el, t){                          // 可被接觸觸發：非拖曳中、未在對話、非沉睡（冷卻在 checkDialogue 內判，手動撮合可破冷卻）
+  const c=el._c;
+  return !!c && !el._dragging && !el._building && t >= (el._talkUntil||0) && !c.sleeping;
+}
+function checkDialogue(t){
+  if(t - lastBubble < 1.6) return;                        // 節流（不在此擋池滿 → 才能偵測「池滿時的手動撮合」並給回饋）
+  const list=[]; crEls.forEach(el=>{ if(eligibleForChat(el,t)) list.push(el); });
+  let pa=null, pb=null, bd=1e9, drop=false;
+  for(let i=0;i<list.length;i++) for(let j=i+1;j<list.length;j++){
+    const ae=list[i], be=list[j], a=ae._c, b=be._c;
+    const dx=ae._x-be._x, dy=ae._y-be._y, d=dx*dx+dy*dy;
+    if(d >= (a.s+b.s)*(a.s+b.s)*CONTACT_F || d>=bd) continue;
+    const isDrop = ae._justDropped||be._justDropped;       // 使用者剛拖放造成的接觸 → 最高優先、無視冷卻
+    if(isDrop || ((t>=(ae._chatCdUntil||0)) && (t>=(be._chatCdUntil||0)))){ bd=d; pa=ae; pb=be; drop=isDrop; }
+  }
+  if(!pa) return;
+  if(chatPoolFull()){ if(drop){ bubbleAtEl(pa, "（等我聊完這場…）", 1600); lastBubble=t; } return; }  // 池滿：手動撮合至少給回饋，證明接觸有被偵測
+  sayPair(pa._c, pb._c, pa); lastBubble=t;
+}
+/* 每隻生物的對話記憶（環形緩衝，留最近 5 句；★存持久 el 不存 c）。dir：→ 我說的 / ← 對方說的 */
+function pushChat(el, dir, other, text){
+  if(!el || !text) return;
+  (el._chatLog || (el._chatLog=[])).push({dir, other, text});
+  if(el._chatLog.length>5) el._chatLog.shift();
+}
+/* ── 對話 session（#3）：雙方輪流講、帶上下文接續、依耦合性續談、第2句後「我還要忙一下」中斷機率逐輪拉升 ── */
+const MAX_TURNS = 4;            // 硬上限調短（單一後端序列：對話越短 → 鎖越快釋放 → 全場輪流開講、不卡死一對）
+const INTERRUPT_BASE = 0.18;    // 雙方各講一次後的基礎中斷機率（調降 → 少冒「下次再說」、對話多撐到 3~4 句）
+const INTERRUPT_RAMP = 0.10;    // 每多講一句累加的中斷機率
+const BUSY_LINES = ["我還要忙一下，回頭聊～","先去做點事，下次再說！","啊、我有事得忙了","改天再續，我先走囉"];
+const sleep = ms => new Promise(r=>setTimeout(r, ms));
+function cannedFor(a,b){        // 罐頭備援（LLM 忙線/逾時/失敗）：分享/家園向短句，依關係挑
+  const related = a.related.includes(b.name)||b.related.includes(a.name);
+  let lines;
+  if(a.sick||b.sick) lines=["我最近狀況不太好…","你還好嗎？","撐著點，會好起來的"];
+  else if(related) lines=["我們常一起出現呢","這件事我也記得！","跟你聊總有共鳴"];
+  else if(a.elder||b.elder) lines=["我見過不少事…","這讓我想起以前","聽我說個經驗吧"];
+  else if(a.type&&a.type===b.type) lines=["我們守著同類的東西","你都記得些什麼？","原來你也顧這塊"];
+  else lines=["我在想一件事…","你對什麼好奇呢？","我記得一個小細節","我們這個家想蓋成怎樣？"];
+  return lines[Math.floor(t1()*lines.length)];
+}
+function couplingOf(a,b){       // 談話耦合性 0..1：關係越近越想繼續聊（→ 中斷機率乘上 (1.3-耦合)）
+  const related = a.related.includes(b.name)||b.related.includes(a.name);
+  let v = related ? 0.9 : (a.region===b.region ? 0.6 : 0.4);
+  if(a.type&&a.type===b.type) v = Math.max(v, 0.7);
+  if(a.sick||b.sick) v += 0.15;                                  // 有病號 → 多關心幾句
+  return Math.min(1, v);
+}
+function pickTopic(a,b){        // 整場對話固定一個主題 → 接續才有方向
+  const roomA = a.region==="core" ? ".claude 核心腦區" : ((a.region||"").replace("project:","")+" 腦區");
+  const home = `你們住的「${roomA}」這個家，想一起蓋成、發展成什麼樣子`;
+  const dev=regionDev.get(a.region), building = dev && ((dev.styles||[]).some(s=>(s.dev||0)<100) || (dev.proposals||[]).some(p=>!p.direction_locked));
+  if(building && Math.random()<0.6) return home;   // 自家正在發展 → 多聊「家要蓋成什麼樣」
+  return [`分享彼此記得的事與經驗`, `各自（依守備範圍）感興趣、好奇的東西`, home][Math.floor(Math.random()*3)];
+}
+function sayPair(a,b,ae){       // 入口：接觸/指令觸發 → 起一場對話 session（池滿則婉拒、給罐頭回饋）
+  if(chatPoolFull()){ if(ae) bubbleAtEl(ae, cannedFor(a,b), 2000); return; }
+  const be = crEls.get(b.uid);
+  activeChats++;                // 占用並發池一槽（runConversation.finally 釋放，與 ++ 必配對）
+  runConversation(a,b,ae,be).catch(()=>{}).finally(()=>{
+    activeChats--;
+    const u=(performance.now()/1000)+CHAT_COOLDOWN; ae._chatCdUntil=u; if(be) be._chatCdUntil=u;   // 散場後雙方冷卻
+  });
+}
+async function runConversation(a,b,ae,be){
+  const coupling = couplingOf(a,b), topic = pickTopic(a,b);
+  const history=[];                                             // {who, text} 往返全紀錄 → 餵 LLM 接續
+  const lockBoth=(sec)=>{ const u=(performance.now()/1000)+sec; ae._talkUntil=u; if(be) be._talkUntil=u; };  // 全程鎖住雙方移動
+  let sp=a, ls=b, sEl=ae, lEl=be;                               // speaker / listener 輪替
+  for(let turn=1; turn<=MAX_TURNS; turn++){
+    lockBoth(12);                                               // 先鎖足等 LLM（9s 逾時）
+    const bub = bubbleAtEl(sEl, "💭…", 0);
+    let line=null; try{ line = await creatureChat(sp, ls, history, topic); }catch{}
+    const text = line || cannedFor(sp, ls);
+    updateBubble(bub, sEl, text, 3600); lockBoth(4.0);
+    history.push({who:sp.name, text});
+    if(line){ pushChat(sEl,"→",ls.name,text); pushChat(lEl,"←",sp.name,text); }   // 只記 LLM 真實輸出進記憶卡
+    if(line && sp.region===ls.region) contributeEnv(sEl, "對談");  // #1 同區對談 → 建立共識(誰參與蓋這個家)，實體 dev 由蓋房子負責
+    [sp,ls]=[ls,sp]; [sEl,lEl]=[lEl,sEl];                       // 換人講
+    await sleep(2400);                                          // 留時間讀這句
+    if(turn>=2){                                                // 雙方至少各講一次後 → 依耦合性 + 逐輪拉升的機率決定是否「忙了，先散」
+      const interrupt = Math.min(0.92, (INTERRUPT_BASE + INTERRUPT_RAMP*(turn-1)) * (1.3 - coupling));
+      if(Math.random() < interrupt){
+        bubbleAtEl(sEl, BUSY_LINES[Math.floor(Math.random()*BUSY_LINES.length)], 2600);
+        lockBoth(2.4); await sleep(900); break;                 // 接話者道別 → 散場
+      }
+    }
+  }
+}
+function t1(){ return (performance.now()%1000)/1000; }
+function bubbleAtEl(el, text, ttl=1800){
+  const c=el._c;
+  const b=document.createElement("div"); b.className="bubble"; b.textContent=text;
+  b.style.left=el._x+"px"; b.style.top=(el._y-c.s-4)+"px"; scene.appendChild(b);
+  if(ttl>0) b._timer=setTimeout(()=>b.remove(), ttl);   // ttl=0 → 持久（等 LLM 回應再 updateBubble）
+  return b;
+}
+function updateBubble(b, el, text, ttl){
+  if(!b || !b.isConnected){ bubbleAtEl(el, text, ttl); return; }
+  const c=el._c;
+  b.textContent=text; b.style.left=el._x+"px"; b.style.top=(el._y-c.s-4)+"px";  // 重定位（生物可能已移動）
+  if(b._timer) clearTimeout(b._timer);
+  b._timer=setTimeout(()=>b.remove(), ttl);
+}
+
+/* ── 生物 LLM 對話（設定的 Ollama 後端，經 :3848 代理；async + fallback）──────── */
+function descOf(c){
+  const stage = c.confidence.includes("固")?"成熟[固]":c.confidence.includes("觀")?"成長[觀]":"新生[臨]";
+  const kind  = c.type==="episodic"?"情境回憶":"知識原子";
+  const room  = c.region==="core"?".claude 核心":c.region.replace("project:","");
+  return `${kind}，${stage}，住在「${room}」腦區`;
+}
+/* 個性：依「核心負責的記憶」（類別×年資×當下狀態）給每隻生物鮮明人設，注入對話 sys */
+function personaOf(c){
+  const n = (c.name||"").toLowerCase();
+  let job;                                                  // 守備範圍：依 atom 類別 → 化為「可分享的經驗領域」（非對立性格）
+  if(c.type==="episodic")                       job="一段情境回憶，愛回味當時發生的事";
+  else if(/architecture/.test(n))               job="掌管系統架構的記憶，記得整體怎麼搭起來的";
+  else if(/^decisions/.test(n))                 job="收著各種權衡與決策，知道當初為何這樣選";
+  else if(/^feedback/.test(n))                  job="存著做事的教訓與規矩，記得踩過哪些坑";
+  else if(/^toolchain|^cc-|^codex|^electron|^gdoc/.test(n)) job="記著工具與實戰細節，知道哪一招好用";
+  else if(/^workflow/.test(n))                  job="記著流程與順序，清楚事情該怎麼推進";
+  else if(/^memory|^atom/.test(n))              job="管著記憶的分類與索引，曉得東西都收在哪";
+  else if(/^preferences|^user/.test(n))         job="記著主人的習慣與喜好";
+  else                                          job="一顆盡責的知識原子，守著自己那塊";
+  const age = c.confidence.includes("固") ? "老成篤定、講起來頭頭是道" :
+              c.confidence.includes("觀") ? "漸有心得、還在累積" : "剛冒出來、對什麼都好奇";
+  let mood = "";                                            // 當下心境：狀態旗標
+  if(c.sick)        mood = "你現在不太舒服，講話有點虛。";
+  else if(c.lonely) mood = "你有點寂寞，很想找人說說話。";
+  else if(c.elder)  mood = "你資深穩重，樂於分享經驗。";
+  return `你是「${job}」，${age}。${mood}`;
+}
+/* 單句生成：帶整段 history（己方=assistant、對方=user）→ LLM 接續回應；話題固定由 pickTopic 傳入 */
+async function creatureChat(sp, ls, history, topic){
+  const sys = "你是『腦內世界』裡的一隻記憶生物。" + personaOf(sp)
+    + `你正在和夥伴「${ls.name}」（${descOf(ls)}）聊天，話題是：${topic}。`
+    + "請用繁體中文講『一句』口語、自然、能回應對方並推進話題的短台詞（不超過25字）。語氣溫和友善、是在交流不是抬槓互嗆。只輸出台詞本身，不要旁白、不要思考過程、不要引號。";
+  const msgs = [{role:"system", content:sys}];
+  if(history.length===0){
+    msgs.push({role:"user", content:`（「${ls.name}」靠了過來，想跟你聊「${topic}」。）你先開個話頭。`});
+  } else {
+    for(const h of history) msgs.push({role: h.who===sp.name ? "assistant" : "user", content:h.text});
+    if(history[history.length-1].who===sp.name) msgs.push({role:"user", content:`（「${ls.name}」看著你，等你說下去。）`});
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(()=>ctrl.abort(), 9000);   // 9s 逾時 → fallback 罐頭
+  try{
+    const r = await fetch(API_BASE + "/api/creature-chat", {
+      method:"POST", headers:{"Content-Type":"application/json"}, signal:ctrl.signal,
+      body: JSON.stringify({ model:CHAT_MODEL, think:false, options:{num_predict:64, temperature:0.9}, messages:msgs })
+    });
+    if(!r.ok){ if(!creatureChat._warned){ creatureChat._warned = true; console.warn("[world] creature-chat backend unavailable (http "+r.status+"); using canned lines"); } return null; }
+    const j = await r.json();
+    return cleanLine(j.content);
+  } finally { clearTimeout(timer); }
+}
+/* 部分模型會洩漏 <|channel>thought<channel|> 類控制 token → 剝除，只留台詞 */
+function cleanLine(s){
+  if(!s) return "";
+  s = String(s).replace(/<\|?[^>]*\|?>/g, " ");        // 去 <|channel|> 類 tag
+  for(let i=0;i<4;i++){                                  // 去開頭洩漏的思考/通道標記（連清幾個）
+    const t = s.replace(/^[\s:>|]*(thought|analysis|channel|final|assistant|思考|分析)\b[\s:>|]*/i, "");
+    if(t===s) break; s=t;
+  }
+  s = s.replace(/[\r\n]+/g," ").replace(/\s{2,}/g," ").trim().replace(/^["「『]+|["」』]+$/g,"").trim();
+  if(s.length>40) s = s.slice(0,40)+"…";                 // 防超長
+  return s;
+}
+
+/* ── 拖曳 ─────────────────────────────────────────────────────────── */
+function bindDrag(el, c0){
+  let sx,sy,ox,oy,moved;
+  el.addEventListener("pointerdown",(e)=>{
+    const c=el._c||c0; if(c.type==="episodic") return;
+    try{ el.setPointerCapture(e.pointerId); }catch{} el._dragging=true; el._visiting=null; el.classList.add("drag");  // 使用者接手 → 取消串門子
+    const p=toScene(e); sx=p.x; sy=p.y; ox=el._x; oy=el._y; moved=false;
+    e.preventDefault();
+  });
+  el.addEventListener("pointermove",(e)=>{
+    if(!el._dragging) return;
+    const c=el._c||c0; const p=toScene(e); el._x=ox+(p.x-sx); el._y=oy+(p.y-sy);
+    if(Math.abs(p.x-sx)+Math.abs(p.y-sy)>4) moved=true;
+    el.style.transform=`translate(${el._x-c.s/2}px,${el._y-c.s}px)`;
+    $("clinic").classList.toggle("hot", overClinic(e));
+  });
+  el.addEventListener("pointerup",(e)=>{
+    if(!el._dragging) return;
+    el._dragging=false; el.classList.remove("drag"); $("clinic").classList.remove("hot");
+    const c=el._c||c0;
+    if(!moved){ showDetail(c); return; }               // 純點擊 → 詳情
+    el._settleUntil=(performance.now()/1000)+3; el._justDropped=true; setTimeout(()=>el._justDropped=false, 1800);  // 放開後 settle 3s 凍住，再平滑漫步回家（非永久釘住）
+    if(overClinic(e)) heal(c);
+  });
+}
+function toScene(e){ const r=scene.getBoundingClientRect(); return {x:e.clientX-r.left, y:e.clientY-r.top}; }
+function overClinic(e){ const r=$("clinic").getBoundingClientRect(); return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom; }
+/* ── 真・自癒：POST /api/heal → 輪詢 job → 誠實呈現（只有 server 回 fixed 才移 .sick）──── */
+const healing = new Set();        // 治療中（防重複觸發）
+const autoHealTried = new Set();  // 自主已試過但需手動/修不好者 → 不再自走診所騷擾
+function heal(c){ healReal(c, false); }                 // 拖入診所 / 指令台 = 手動觸發（含 L2）
+function sparkle(el){ for(let i=0;i<5;i++){ const s=document.createElement("div"); s.className="heal"; s.textContent="✨";
+  s.style.left=(el._x+(i-2)*10)+"px"; s.style.top=el._y+"px"; scene.appendChild(s); setTimeout(()=>s.remove(),1000); } }
+function healReal(c, auto){
+  const el=crEls.get(c.uid); if(!el) return;
+  if(!c.sick){ if(!auto) bubbleAtEl(el,"我沒生病啦～"); return; }
+  if(healing.has(c.name)) return;
+  healing.add(c.name); el.classList.add("healing");
+  bubbleAtEl(el, auto?"覺得不太舒服…去診所":"我去看醫生…", 2200);
+  fetch(API_BASE+"/api/heal/"+encodeURIComponent(c.name)+(auto?"?auto=1":""), {method:"POST"})
+    .then(r=>r.json())
+    .then(j=>{ if(j.job_id) pollHealJob(c, j.job_id, auto); else applyHealResult(c, j, auto); })
+    .catch(()=>{ finishHeal(c); bubbleAtEl(el,"診所沒開…(伺服器未連線)",2600); });
+}
+function finishHeal(c){ healing.delete(c.name); const el=crEls.get(c.uid); if(el) el.classList.remove("healing"); }
+function pollHealJob(c, jobId, auto){
+  let tries=0;
+  const iv=setInterval(()=>{
+    if(++tries>90){ clearInterval(iv); finishHeal(c); const el=crEls.get(c.uid); if(el) bubbleAtEl(el,"治療逾時…",2600); if(auto) autoHealTried.add(c.name); return; }
+    fetch(API_BASE+"/api/heal-job/"+jobId).then(r=>r.json()).then(j=>{
+      if(j.status==="running") return;
+      clearInterval(iv); applyHealResult(c, j.result||{}, auto);
+    }).catch(()=>{ clearInterval(iv); finishHeal(c); });
+  }, 2000);
+}
+function applyHealResult(c, res, auto){
+  const el=crEls.get(c.uid); finishHeal(c); if(!el) return;
+  const act=res.action, fixed=res.fixed, needsHuman=res.needs_human;
+  if(res.error){ bubbleAtEl(el,"治療失敗…",2600); if(auto) autoHealTried.add(c.name); return; }
+  if(fixed && (act==="reverse_ref_fix"||act==="broken_ref_fix")){   // 真痊癒（server 確認）→ 才移 .sick
+    healed.add(c.name); c.sick=false; el.classList.remove("sick","bandaged");
+    sparkle(el); bubbleAtEl(el,"舒服多了，謝謝醫生！");
+  } else if(act==="wake"){ bubbleAtEl(el,"啊…我醒了！",2600);
+  } else if(act==="needs_manual"){ bubbleAtEl(el,"這得醫生親自處理(手動修)…",3000); autoHealTried.add(c.name);
+  } else {   // needs_human / sent_review / missing → 誠實轉診人工，不假裝痊癒
+    el.classList.add("bandaged"); bubbleAtEl(el,"醫生治不好，已轉診人工 🏥➡️👨‍⚕️",3400);
+    if(auto) autoHealTried.add(c.name);
+  }
+}
+
+/* ── 白話身份卡 ───────────────────────────────────────────────────── */
+function stageWord(c){ if(c.confidence.includes("固")) return "成熟可靠"; if(c.confidence.includes("觀")) return "成長中"; return "剛冒出來(暫定)"; }
+function showDetail(c){
+  $("dName").textContent = faceOf(c)+" "+c.name;
+  const typeWord = c.type==="episodic"?"情境回憶":"知識原子";
+  const room = c.region==="core"?".claude 核心":c.region.replace("project:","");
+  let say = `我是一顆<b>${stageWord(c)}</b>的${typeWord}，住在「<b>${room}</b>」腦區。我記得 <b>${c.know}</b> 條知識（共 ${c.lines} 行）。`;
+  if(c.power != null){
+    const n = powerStars(c.power, model.maxPower);
+    say += ` 戰力 <b>${"★".repeat(n)}${"☆".repeat(5-n)}</b>（power ${c.power.toFixed(3)}／樣本數 ${c.powerN ?? 0}；★相對全場最強）。`;
+  }
+  if(c.related.length) say += `我和 <b>${c.related.join("、")}</b> 互相關聯。`;
+  if(c.elder){
+    const bits=[];
+    if(c.readHits) bits.push(`被讀取 ${c.readHits} 次`);
+    if(c.confirmations) bits.push(`跨 session 確認 ${c.confirmations} 次`);
+    if(!bits.length) bits.push(`被引用 ${c.indeg} 次`);
+    say += ` 我很受歡迎（${bits.join("、")}），戴著皇冠👑。`;
+  }
+  if(c.triggers.length) say += ` 當你聊到「${c.triggers.slice(0,6).join("、")}」時我會跳出來幫忙。`;
+  $("dSay").innerHTML = say;
+
+  let st="";
+  if(c.sick) st=`<div class="st sick">🤢 我生病了：${c.sickReason.join("；")}</div>`;
+  else if(c.sleeping) st=`<div class="st sleep">😴 我已經 ${c.daysUsed} 天沒被喚醒了（last_used），在睡覺。</div>`;
+  else if(c.promoting) st=`<div class="st evolve">🆙 我表現不錯，快要從 ${c.promoting.from} 進化成 ${c.promoting.to}！（${c.promoting.reason||""}）</div>`;
+  else st=`<div class="st ok">😀 我很健康${c.daysUsed!=null?`（last_used ${c.daysUsed} 天前）`:""}，最近還有在運作。</div>`;
+  if(c.lonely && !c.sick) st+=`<div class="st sleep">💔 有記憶單戀我（缺反向關聯）。</div>`;
+  $("dStatus").innerHTML = st;
+
+  const chips=$("dChips"); chips.innerHTML="";
+  c.triggers.slice(0,12).forEach(tr=>{ const e=document.createElement("span"); e.className="chip"; e.textContent="#"+tr; chips.appendChild(e); });
+  c.related.forEach(r=>{ const e=document.createElement("span"); e.className="chip"; e.style.borderColor="var(--core)"; e.textContent="↔ "+r; chips.appendChild(e); });
+  $("dContent").textContent=(c.content||"").split("\n").slice(0,50).join("\n");
+
+  const chatLog = (crEls.get(c.uid)||{})._chatLog || [];          // 最近對話（新→舊）：看出剛才跟誰講了什麼
+  $("dChat").innerHTML = chatLog.length
+    ? `<div class="chatttl">💬 最近對話（${chatLog.length}）</div>`+
+      chatLog.slice().reverse().map(m=>`<div class="chatln"><span class="cdir">${m.dir}</span><span class="cwho">${m.other}</span>「${m.text}」</div>`).join("")
+    : "";
+  $("detail").classList.add("show");
+}
+function hideDetail(){ $("detail").classList.remove("show"); }
+function setConn(ok){ $("conn").className="dot "+(ok?"ok":"bad"); $("connTxt").textContent=ok?"已連線 :3848":"無法連線 :3848"; }
+
+/* ── 背景：巨大電子腦（神經元聚成腦輪廓 + 腦溝 + 突觸脈衝）+ Anthropic 暖陶橘 spark 意象 ──────
+   程序生成（無外部圖檔、file:// 即可跑、可改色）。Anthropic 為「致敬向」配色＋放射 spark，非精確商標；
+   要放真 logo 把官方 SVG 疊在 #bg 上即可。可調旋鈕：ACCENT(主色)、節點數、BRAIN 半徑、各 alpha。 */
+const bg=$("bg"), bx=bg.getContext("2d"); let nodes=[];
+const ACCENT="217,119,87";          // Anthropic clay-orange #D97757
+let BRAIN={cx:0,cy:0,rx:1,ry:1,inside:()=>false};
+function brainShape(w,h){
+  const cx=w/2, cy=h*0.46, rx=Math.min(w*0.34,470), ry=Math.min(h*0.30,310);
+  return { cx, cy, rx, ry, inside:(x,y)=>{ const nx=(x-cx)/rx, ny=(y-cy)/ry; return nx*nx+ny*ny<=1; } };
+}
+function resize(){
+  bg.width=innerWidth; bg.height=innerHeight;
+  BRAIN=brainShape(bg.width,bg.height);
+  if(nodes.length===0) for(let i=0;i<72;i++){
+    let x,y; const core=i<52;                          // 多數神經元落在腦輪廓內，讀作「腦由神經元構成」；其餘散成背景塵
+    if(core){ const a=Math.random()*7, r=Math.sqrt(Math.random()); x=BRAIN.cx+Math.cos(a)*BRAIN.rx*r; y=BRAIN.cy+Math.sin(a)*BRAIN.ry*r; }
+    else { x=Math.random()*innerWidth; y=Math.random()*innerHeight; }
+    nodes.push({x,y,vx:(Math.random()-.5)*.10,vy:(Math.random()-.5)*.10,core});
+  }
+  if(model){ layout(); render(); }
+}
+function drawBg(ts){
+  const W=bg.width,H=bg.height;
+  // 底：深炭 + 暖橘核心微光
+  const g=bx.createRadialGradient(BRAIN.cx,BRAIN.cy,60,BRAIN.cx,BRAIN.cy,Math.max(W,H)*0.8);
+  g.addColorStop(0,"#15100d"); g.addColorStop(0.5,"#0b0a0e"); g.addColorStop(1,"#06070b");
+  bx.fillStyle=g; bx.fillRect(0,0,W,H);
+  // Anthropic spark：中心緩轉的放射細線（很淡）
+  bx.save(); bx.translate(BRAIN.cx,BRAIN.cy); const spin=ts/26000;
+  for(let k=0;k<12;k++){ const a=spin+k*Math.PI/6; bx.strokeStyle=`rgba(${ACCENT},0.05)`; bx.lineWidth=1;
+    bx.beginPath(); bx.moveTo(0,0); bx.lineTo(Math.cos(a)*BRAIN.rx*1.5,Math.sin(a)*BRAIN.ry*1.5); bx.stroke(); }
+  bx.restore();
+  // 腦輪廓暈光
+  const halo=bx.createRadialGradient(BRAIN.cx,BRAIN.cy,20,BRAIN.cx,BRAIN.cy,BRAIN.rx);
+  halo.addColorStop(0,`rgba(${ACCENT},0.10)`); halo.addColorStop(1,`rgba(${ACCENT},0)`);
+  bx.fillStyle=halo; bx.beginPath(); bx.ellipse(BRAIN.cx,BRAIN.cy,BRAIN.rx,BRAIN.ry,0,0,7); bx.fill();
+  // 腦溝（gyri）：幾圈微抖波浪弧
+  bx.strokeStyle=`rgba(${ACCENT},0.08)`; bx.lineWidth=1.4;
+  for(let r=0.35;r<1;r+=0.22){ bx.beginPath();
+    for(let a=0;a<=Math.PI*2+0.001;a+=0.18){ const wob=1+0.06*Math.sin(a*6+ts/2000);
+      const x=BRAIN.cx+Math.cos(a)*BRAIN.rx*r*wob, y=BRAIN.cy+Math.sin(a)*BRAIN.ry*r*wob;
+      a===0?bx.moveTo(x,y):bx.lineTo(x,y); }
+    bx.closePath(); bx.stroke(); }
+  // 移動 + 邊界（腦內節點軟禁在輪廓內，其餘整屏反彈）
+  nodes.forEach(n=>{ n.x+=n.vx; n.y+=n.vy;
+    if(n.core){ if(!BRAIN.inside(n.x,n.y)){ n.vx*=-1; n.vy*=-1; n.x+=n.vx*2; n.y+=n.vy*2; } }
+    else { if(n.x<0||n.x>W)n.vx*=-1; if(n.y<0||n.y>H)n.vy*=-1; } });
+  // 突觸連線 + 脈衝
+  for(let i=0;i<nodes.length;i++) for(let j=i+1;j<nodes.length;j++){
+    const a=nodes[i],b=nodes[j],dx=a.x-b.x,dy=a.y-b.y,d=Math.hypot(dx,dy);
+    if(d<150){ const al=1-d/150; bx.strokeStyle=`rgba(${ACCENT},${al*0.16})`; bx.lineWidth=1;
+      bx.beginPath(); bx.moveTo(a.x,a.y); bx.lineTo(b.x,b.y); bx.stroke();
+      const ph=((ts/1400+i*0.13)%1), px=a.x+(b.x-a.x)*ph, py=a.y+(b.y-a.y)*ph;
+      bx.fillStyle=`rgba(255,180,120,${al*0.6})`; bx.beginPath(); bx.arc(px,py,1.4,0,7); bx.fill();
+    }
+  }
+  // 節點（腦內較亮）
+  nodes.forEach(n=>{ bx.fillStyle=n.core?`rgba(${ACCENT},0.7)`:`rgba(${ACCENT},0.3)`; bx.beginPath(); bx.arc(n.x,n.y,n.core?1.8:1.2,0,7); bx.fill(); });
+  requestAnimationFrame(drawBg);
+}
+
+/* ── 啟動 ─────────────────────────────────────────────────────────── */
+addEventListener("resize", resize);
+resize(); requestAnimationFrame(drawBg); requestAnimationFrame(tick);
+loadCatalog().then(refresh); setInterval(refresh, POLL_MS);   // 先載風格目錄再首刷，確保 render 時 ENV_CATALOG 就緒
+buildCmdBar(); setInterval(pollCommands, 2000);   // 指令台 + Command Bus 輪詢
+if(new URLSearchParams(location.search).get("fast")==="1"){ _modeOverride="fast"; setMode("fast"); }   // ?fast=1 加速模式
+setInterval(engineTick, ENGINE.TICK_MS);          // 環境演化引擎（免LLM 推進；guard 內等 ENV_CATALOG/model 就緒）
+</script>
+</body>
+</html>

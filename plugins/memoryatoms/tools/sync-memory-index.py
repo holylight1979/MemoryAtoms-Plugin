@@ -1,0 +1,946 @@
+"""
+sync-memory-index.py — 從 _atom_index.json 自動生成 memory/MEMORY.md
+
+`_atom_index.json` 為機器真相源（SoT）；parse_atom_index 以它為來源，
+`_ATOM_INDEX.md` 為自動生成 mirror，不作解析來源以避 drift。
+
+行為：
+- 讀 `_atom_index.json` 取得所有 atom（按 name 排序、計數）
+- 從每 atom 檔的 H1 第一行抽取「說明」欄
+- **保留人工策展描述**：funnel 建立的 atom H1=裸 kebab-name，H1 caption 會退化成裸名；
+  此時沿用現有 MEMORY.md / 各層 _INDEX.md 較豐富的描述，regen 永不把人寫的描述降級成裸名
+  （精準度：描述性 H1 > 現有人工描述 > 裸名）。僅作用於一般 atom 列。
+- 保留現有「知識庫查閱」段落（自動偵測 `> **知識庫查閱**：` 標記後內容）
+- **realm 雙輸出**：core atom → `MEMORY.md`（@import，全專案）；
+  本地範疇 atom（path 落 `_AIDocs/_atoms/`）→ 側檔 `_local_catalog.md`，僅核心環境由
+  SessionStart hook 注入。MEMORY.md 主表末尾僅留一行指標，外部專案零本地負擔。
+
+寫進檔案的字固定英文、不走語言表（多機同步才不會互相洗成不同語言）；範疇名與卡名是資料，不翻。舊檔的中文表頭照樣讀得懂。
+
+核心區兩種渲染（`hierarchical` 參數；None → workflow/config.json `taxonomy.gate_enabled`）：
+- 平鋪（gate 關，遷移前）：一 atom 一列 `| Atom | Description |`，feedback-* 聚合一列指向 Failures 資料夾。
+- 階層（gate 開）：`| Category | Atoms | Drill down |`，memory/ 下每個 Lv1 一列（Failures 亦為其一），
+  深入指各層 `_INDEX.md`（單葉直指 atom）。**硬規則：memory/ 根下不容平鋪 atom**——
+  `--check` 逐顆印 `flat atom under memory/: <slug>` 並 exit 1、`--write` 拒寫。不設「未分類」表。
+
+per-level `_INDEX.md`：兩根都走（`_AIDocs/_atoms/<階層>/`、`memory/<範疇>/…`），只在
+有子層或 atom≥2 的層生成；memory/ 根層（depth-0）永不生成（根索引就是 MEMORY.md）。
+
+依程式語言篩選的跨範疇視圖 `memory/_by_language/_INDEX.md`：卡片不搬檔、一張可屬多個語言；
+詞庫是 `memory/_meta/taxonomy.json` 的 languages 段（卡名＋Trigger 命中詞，或卡在該語言綁定的範疇
+資料夾）。只收核心層（不含本地範疇與 personal）；有命中才產檔，同時在 MEMORY.md 末尾加一行指標，
+讓每個 session 的 LLM 都知道它在哪。跟各層 _INDEX.md 一起 --check／--write。
+
+模式（皆作用於 MEMORY.md + _local_catalog.md + 各層 _INDEX.md）：
+  --check  drift 偵測，stderr 列出差異，任一檔 drift → exit 1
+  --write  覆寫（無 local atom → 移除殘留側檔；stale _INDEX.md 移除）
+  (default) dry-run，stdout 顯示新內容
+  --hierarchical / --legacy  強制核心區渲染模式（預設讀 config）
+索引讀成 0 筆：磁碟上也沒有卡（新安裝）→ 沒東西可同步，exit 0、不動檔；磁碟上有卡 → exit 1（索引壞了，先重建）。
+
+專案層（`--memory-dir <proj>/.claude/memory`，memory_dir ≠ 全域 memory/）走**另一條路**：
+- 專案 MEMORY.md 常是手寫的分區規則檔 → 不整檔覆寫，只 upsert `<!-- atom-catalog -->…<!-- /atom-catalog -->`
+  marker 區塊（無 marker：`--write` 追加檔尾、`--check` 報 `project catalog block missing` exit 1）；
+  區塊外內容逐字不動；落檔一律 LF（`write_text_lf`）。
+- 區塊內容：`shared/<Lv1>/` 範疇列（同核心 `| Category | Atoms | Drill down |`）＋其他分區（projects/<X>、
+  roles/<r>、personal）計數列＋**尚未歸類的平鋪 shared atom 逐顆列**（過渡；該專案跑完
+  `atom-categorize.py --memory-dir` 遷移後自然消失）。專案層不套「根下不容平鋪」硬規則。
+- 專案層**不**寫 `_local_catalog.md`、不生成任何 `_INDEX.md`（延後）、不跑 doc-counts。
+觸發：`funnel.js syncMemoryIndex(memoryDir)` 在 shared create/replace 後帶 `--memory-dir` 呼叫。
+"""
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import re
+import sys
+from pathlib import Path
+from typing import List, Optional, Set, Tuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib.atom_io import write_index_full  # noqa: E402
+from lib.i18n import t  # noqa: E402
+from lib.edition import layered_config, layered_meta  # noqa: E402  插件版出廠設定、詞表墊底
+from lib.atom_index_json import has_indexable_cards, load_atom_index_json  # noqa: E402
+from lib.atom_locations import (  # noqa: E402
+    CORE_ATOMS_REL,
+    FAILURES_REL,
+    FAILURES_ROOT_NAME,
+    LEGACY_FAILURES_REL,
+    LOCAL_ATOMS_REL,
+    LOCAL_REALM_DEFAULT_DOMAIN,
+    atom_index_row_kind,
+    core_category_segments,
+    is_legacy_failures_path,
+    iter_realm_category_dirs,
+    local_realm_path_segments,
+    path_segments_under,
+)
+
+try:
+    from lib.atom_taxonomy import core_categories as _taxonomy_core_categories  # noqa: E402
+    from lib.atom_taxonomy import gate_enabled as _taxonomy_gate_enabled  # noqa: E402
+except Exception:  # taxonomy 模組缺 → 平鋪模式、範疇純字母序
+    _taxonomy_core_categories = None
+    _taxonomy_gate_enabled = None
+
+# 人讀文件 atom 計數同步（SoT=_atom_index.json）：piggyback 本工具的 atom_write 觸發鏈，
+# 每次 atom 增刪/搬移後靜默把 TECH/_INDEX/DocIndex 的計數標記跟上（見 sync_doc_counts.py）。
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # tools/ for sibling import
+try:
+    import sync_doc_counts  # noqa: E402
+except Exception:
+    sync_doc_counts = None
+
+from lib.project_root import claude_data_dir  # noqa: E402
+
+MEMORY_DIR = claude_data_dir() / "memory"   # 使用者資料根（WG_CLAUDE_DIR 或 ~/.claude），和 hooks 同一支算法
+MEMORY_INDEX_NAME = "MEMORY.md"
+LOCAL_CATALOG_NAME = "_local_catalog.md"  # 本地範疇側檔（hook 僅核心環境注入）
+FLAT_ATOM_MSG = "[sync-memory-index] flat atom under memory/: {slug}"
+
+# 亂碼名稱：名稱含 U+0080–U+00FF（Big5 位元組被當 cp1252 解碼的典型，如 `UIºt¥X`＝`UI演出`）。
+# 寫入端（lib/atom_spec slugify、atom_locations _clean_segment）本就拒收這段字元，樹上出現必是外部工具
+# （手動 svn add 等）帶進來的：目錄與索引列都只警告、跳過，不嘗試修。
+_MOJIBAKE_RE = re.compile(r"[\u0080-\u00ff]")
+
+
+def drop_mojibake_rows(memory_dir: Path, rows: List[Tuple[str, str, str]]) -> List[Tuple[str, str, str]]:
+    """磁碟上名稱疑似亂碼的檔／夾各 stderr 一行；索引列路徑含亂碼段者同樣一行並剔除。"""
+    for p in memory_dir.rglob("*"):
+        if _MOJIBAKE_RE.search(p.name):
+            print(t("cli.sync_memory_index.mojibake", name=p), file=sys.stderr)
+    kept: List[Tuple[str, str, str]] = []
+    for row in rows:
+        if _MOJIBAKE_RE.search(row[1]):
+            print(t("cli.sync_memory_index.mojibake", name=row[1]), file=sys.stderr)
+            continue
+        kept.append(row)
+    return kept
+
+
+def resolve_hierarchical(hierarchical: Optional[bool]) -> bool:
+    """None → config `taxonomy.gate_enabled`（缺/壞 → False）；bool → 照給。"""
+    if hierarchical is not None:
+        return bool(hierarchical)
+    if _taxonomy_gate_enabled is None:
+        return False
+    try:
+        return bool(_taxonomy_gate_enabled())
+    except Exception:
+        return False
+
+
+def _taxonomy_order() -> List[str]:
+    """Lv1 宣告序（taxonomy.json）；不可用 → []（純字母序）。"""
+    if _taxonomy_core_categories is None:
+        return []
+    try:
+        return list(_taxonomy_core_categories())
+    except Exception:
+        return []
+
+
+def parse_atom_index(memory_dir: Path) -> List[Tuple[str, str, str]]:
+    """讀 _atom_index.json，回傳 (atom_name, rel_path, scope) list."""
+    data = load_atom_index_json(memory_dir)
+    rows: List[Tuple[str, str, str]] = []
+    for a in data.get("atoms", []):
+        rows.append((
+            a.get("name", ""),
+            a.get("path", ""),
+            a.get("scope", "global"),
+        ))
+    return rows
+
+
+def extract_atom_caption(atom_path: Path) -> str:
+    """Read first H1 line as caption."""
+    if not atom_path.exists():
+        return ""
+    try:
+        for line in atom_path.read_text(encoding="utf-8-sig").splitlines()[:5]:
+            if line.startswith("# "):
+                return line[2:].strip()
+    except (OSError, UnicodeDecodeError):
+        pass
+    return ""
+
+
+def parse_existing_captions(memory_path: Path) -> dict:
+    """解析現有索引檔（MEMORY.md / _local_catalog.md / 各層 _INDEX.md）的兩欄 atom 表 → {name: caption}。
+
+    用於 regen 時保留人工策展的描述：funnel 建立的 atom H1=裸 kebab-name，
+    extract_atom_caption 會退化成裸名；此處讓 regen 沿用現有較豐富的描述。
+    三欄的範疇表（| Category | Atoms | Drill down |）自然被跳過；feedback-* 聚合列會被收進來但 render 不查它。
+    """
+    caps: dict = {}
+    if not memory_path.exists():
+        return caps
+    try:
+        text = memory_path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return caps
+    for line in text.splitlines():
+        s = line.strip()
+        if not s.startswith("|"):
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if len(cells) != 2:
+            continue
+        name, cap = cells
+        if not name or name == "Atom" or set(name) <= {"-"}:
+            continue  # 跳過表頭 / 分隔列
+        caps[name] = cap
+    return caps
+
+
+def _make_cap(claude_root: Path, existing_caps: dict):
+    def _cap(name: str, rel_path: str) -> str:
+        """H1 caption；退化成裸名/空 → 沿用 existing_caps 中較豐富的人工描述。"""
+        cap = extract_atom_caption(claude_root / rel_path) if rel_path else ""
+        if not cap or cap == name:
+            prev = existing_caps.get(name, "")
+            if prev and prev != name:
+                cap = prev
+        return cap
+    return _cap
+
+
+def _classify_rows(rows: List[Tuple[str, str, str]],
+                   claude_root: Path,
+                   existing_caps: dict | None = None):
+    """分類 atom 列 → (individual, feedback_rows, failures_other, local_atoms)。
+
+    - individual:    一般 global atom 主表行 [(name, caption, rel_path)]
+    - feedback_rows: feedback-* [(name, rel_path)]（平鋪模式聚合一行）
+    - failures_other: Failures 家族內非 feedback-*（獨立行）[(name, caption, rel_path)]
+    - local_atoms:   path 落 _AIDocs/_atoms/ 的 local atom [(name, caption, rel_path, segments)]
+                     （segments=Lv1..Lvn 階層路徑；缺段→[Else]）
+
+    保留策展：一般/local atom 的 H1 caption 退化成裸名/空時，沿用 existing_caps 較豐富的描述
+    （精準度：描述性 H1 > 現有人工描述 > 裸名）。
+    """
+    _cap = _make_cap(claude_root, existing_caps or {})
+    individual: List[Tuple[str, str, str]] = []
+    feedback_rows: List[Tuple[str, str]] = []
+    failures_other: List[Tuple[str, str, str]] = []
+    local_atoms: List[Tuple[str, str, str, List[str]]] = []
+    for name, rel_path, _scope in rows:
+        kind = atom_index_row_kind(rel_path, name)
+        if kind == "personal":
+            continue  # personal 只給本人：不入 MEMORY.md 目錄
+        if kind == "feedback_aggregate":
+            feedback_rows.append((name, rel_path))
+        elif kind == "failures_other":
+            failures_other.append((name, extract_atom_caption(claude_root / rel_path) if rel_path else "", rel_path))
+        elif kind == "local_realm":
+            segs = local_realm_path_segments(rel_path) or [LOCAL_REALM_DEFAULT_DOMAIN]
+            local_atoms.append((name, _cap(name, rel_path), rel_path, segs))
+        else:  # individual
+            individual.append((name, _cap(name, rel_path), rel_path))
+    return individual, feedback_rows, failures_other, local_atoms
+
+
+def _core_category_atoms(rows: List[Tuple[str, str, str]],
+                         claude_root: Path,
+                         existing_caps: dict | None = None):
+    """核心層（非 local）atom 依範疇段建樹用 → (categorized, flat_names)。
+
+    categorized: [(name, cap, rel_path, segs)]，segs 由 core_category_segments 推
+      （memory/<Lv1>/<Lv2>/x.md → ['Lv1','Lv2']；舊址 _AIDocs/Failures/x.md → ['Failures']）。
+    flat_names: 無範疇段的核心 atom（memory/<slug>.md 等）——硬規則違規者，不進樹。
+    """
+    _cap = _make_cap(claude_root, existing_caps or {})
+    categorized: List[Tuple[str, str, str, List[str]]] = []
+    flat: List[str] = []
+    for name, rel_path, _scope in rows:
+        if atom_index_row_kind(rel_path, name) in ("local_realm", "personal"):
+            continue
+        segs = core_category_segments(rel_path)
+        if not segs:
+            flat.append(name)
+            continue
+        categorized.append((name, _cap(name, rel_path), rel_path, segs))
+    return categorized, flat
+
+
+def flat_core_atoms(rows: List[Tuple[str, str, str]]) -> List[str]:
+    """memory/ 根下平鋪（無範疇資料夾）的核心 atom 名（硬規則檢查用）。"""
+    return [name for name, rel_path, _ in rows
+            if atom_index_row_kind(rel_path, name) not in ("local_realm", "personal")
+            and not core_category_segments(rel_path)]
+
+
+# ─── 階層樹（兩根共用：memory/<範疇>、_AIDocs/_atoms/<階層>）────────────────────
+
+
+class _Node:
+    """階層樹節點：該層 atom + 直屬子層。"""
+    __slots__ = ("atoms", "children")
+
+    def __init__(self):
+        self.atoms: List[Tuple[str, str, str]] = []   # (name, cap, rel_path)
+        self.children: dict = {}                       # segname -> _Node
+
+
+def _build_tree(atoms_with_segs) -> _Node:
+    root = _Node()
+    for name, cap, rel_path, segs in atoms_with_segs:
+        node = root
+        for s in segs:
+            node = node.children.setdefault(s, _Node())
+        node.atoms.append((name, cap, rel_path))
+    return root
+
+
+def _subtree_count(node: _Node) -> int:
+    return len(node.atoms) + sum(_subtree_count(c) for c in node.children.values())
+
+
+def _needs_index(node: _Node) -> bool:
+    """該層是否值得生 _INDEX.md（除雞肋：葉層單 atom 無子層→不生廢檔）。"""
+    return bool(node.children) or len(node.atoms) >= 2
+
+
+def _drill_target(node: _Node, rel_dir: str) -> str:
+    """catalog/子層的「深入」指標：有 _INDEX → 指 _INDEX.md；單 atom 葉 → 直指該 atom。"""
+    if _needs_index(node):
+        return f"`{rel_dir}/_INDEX.md`"
+    name, cap, rel_path = node.atoms[0]
+    return f"`{rel_path}`"
+
+
+def _subtree_all_legacy(node: _Node) -> bool:
+    """子樹所有 atom 仍在舊址 _AIDocs/Failures/（遷移前）。"""
+    if any(not is_legacy_failures_path(rp) for _n, _c, rp in node.atoms):
+        return False
+    return all(_subtree_all_legacy(c) for c in node.children.values())
+
+
+# 主表末尾指標（local atom 存在時）：人在任何環境讀 MEMORY.md 仍知本地範疇何在。
+LOCAL_CATALOG_POINTER = (
+    "> Local categories (injected only under ~/.claude): the Lv1 root index is `_local_catalog.md`; drill down through each level's `_INDEX.md`."
+)
+LOCAL_CATALOG_TITLE = "Local Category Catalog (~/.claude only)"
+CORE_INDEX_TITLE = "# Atom Index — Global"
+HIERARCHICAL_NOTE = (
+    "> The hook injects atoms by trigger automatically. Category folders: `memory/<category>/`; drill down through each level's `_INDEX.md`. "
+    "Machine index: `_atom_index.json`"
+)
+
+
+def _render_core_flat(individual, feedback_rows, failures_other, local_atoms) -> str:
+    """平鋪版主表：一 atom 一列；feedback-* 聚合一列 → Failures 資料夾（全在舊址則指舊址）。"""
+    lines = [
+        CORE_INDEX_TITLE,
+        "",
+        "> The hook matches triggers and injects the relevant atoms automatically (full trigger table: `_atom_index.json` / `_ATOM_INDEX.md` mirror).",
+        "",
+        "| Atom | Description |",
+        "|------|------|",
+    ]
+    for name, cap, _ in individual:
+        lines.append(f"| {name} | {cap} |")
+    if feedback_rows:
+        fb_dir = (LEGACY_FAILURES_REL
+                  if all(is_legacy_failures_path(rp) for _n, rp in feedback_rows)
+                  else FAILURES_REL)
+        lines.append(
+            f"| feedback-* | Behavior corrections ({len(feedback_rows)} atoms)"
+            f" → [`{fb_dir}/`](../{fb_dir}/) |"
+        )
+    for name, cap, rel_path in failures_other:
+        lines.append(f"| {name} | {cap} → [`{rel_path}`](../{rel_path}) |")
+    if local_atoms:
+        lines += ["", LOCAL_CATALOG_POINTER]
+    return "\n".join(lines)
+
+
+def _ordered_lv1(names) -> List[str]:
+    """Lv1 列序：taxonomy 宣告序在前（有出現者），其餘字母序接後。"""
+    declared = [c for c in _taxonomy_order() if c in names]
+    rest = sorted(n for n in names if n not in declared)
+    return declared + rest
+
+
+def _render_core_hierarchical(rows, claude_root, existing_caps, local_atoms) -> str:
+    """階層版主表：memory/ 下每個 Lv1 一列（含 Failures）+ 遞迴計數 + 深入指標。平鋪 atom 不進表。"""
+    categorized, _flat = _core_category_atoms(rows, claude_root, existing_caps)
+    tree = _build_tree(categorized)
+    lines = [
+        CORE_INDEX_TITLE,
+        "",
+        HIERARCHICAL_NOTE,
+        "",
+        "| Category | Atoms | Drill down |",
+        "|------|---------|------|",
+    ]
+    for lv1 in _ordered_lv1(tree.children):
+        node = tree.children[lv1]
+        if lv1 == FAILURES_ROOT_NAME and _subtree_all_legacy(node):
+            drill = f"`{LEGACY_FAILURES_REL}/_INDEX.md`"  # 遷移前：手寫舊址索引
+        else:
+            drill = _drill_target(node, f"{CORE_ATOMS_REL}/{lv1}")
+        lines.append(f"| {lv1} | {_subtree_count(node)} | {drill} |")
+    if local_atoms:
+        lines += ["", LOCAL_CATALOG_POINTER]
+    return "\n".join(lines)
+
+
+def render_core_section(rows: List[Tuple[str, str, str]],
+                        claude_root: Path,
+                        existing_caps: dict | None = None,
+                        hierarchical: Optional[bool] = None,
+                        language_view: bool = False) -> str:
+    """Render 核心 atom 索引（主表）— 即 @import 的 MEMORY.md 內容，**不含**本地範疇明細。
+
+    local atom 抽出主表，僅末尾留一行指標（明細在側檔，由 render_local_catalog 產出、
+    hook 在核心環境注入）→ 外部專案零本地負擔。
+    hierarchical=None → 讀 config gate；False 平鋪表；True 範疇表（見模組說明）。
+    language_view=True → 末尾加一行語言視圖指標（視圖有內容才給，見 render_language_view）。
+    """
+    individual, feedback_rows, failures_other, local_atoms = _classify_rows(
+        rows, claude_root, existing_caps)
+    if resolve_hierarchical(hierarchical):
+        text = _render_core_hierarchical(rows, claude_root, existing_caps, local_atoms)
+    else:
+        text = _render_core_flat(individual, feedback_rows, failures_other, local_atoms)
+    return text + "\n\n" + LANGUAGE_VIEW_POINTER if language_view else text
+
+
+# ─── 依程式語言篩選的跨範疇視圖（memory/_by_language/_INDEX.md）────────────────
+#
+# 卡片實體只在一個範疇資料夾；這份視圖只列指標，一張卡可同時屬多個語言。詞庫在
+# memory/_meta/taxonomy.json 的 languages 段（單一來源）。檔名沿用 `_INDEX.md`，所以
+# .gitattributes 的 `memory/**/_INDEX.md` 合併驅動、vcs-sync 與 hooks 的索引檔名單都直接認得；
+# 放在 `_` 前綴資料夾 → 不被當範疇層、不進 existing_index_files 的 stale 判定（由本段自管）。
+# 每張語言表的表頭第一欄是語言名 → 合併驅動以表頭為鍵時各表不撞鍵。
+
+LANGUAGE_VIEW_DIR = "_by_language"
+LANGUAGE_VIEW_POINTER = (
+    "> To filter across categories by programming language (Python, C#, JS...), see `_by_language/_INDEX.md` "
+    "(cards are not moved and a card can belong to several languages; the term lists are in the languages section of `_meta/taxonomy.json`)."
+)
+_LANG_SPLIT_RE = re.compile(r"[-_]+")
+
+
+def load_language_rules(memory_dir: Path) -> List[Tuple[str, List[re.Pattern], List[str]]]:
+    """`<memory_dir>/_meta/taxonomy.json` 的 languages 段 → [(語言, 詞的 regex, 綁定範疇資料夾)]，宣告序。
+
+    檔不存在（測試用的暫存記憶樹）→ []，不出聲；檔在但段壞 → stderr 一行並回 []（視圖不產、不擋其他索引）。
+    詞尾 `*` 前綴比對、其餘整詞；邊界只看英數字（中文緊貼也算邊界）。
+    """
+    path = layered_meta("taxonomy.json", memory_dir)   # 資料根那棵：插件版沒有就用出廠表；其他記憶樹照舊看自己的
+    if not path.exists():
+        return []
+    try:
+        langs = json.loads(path.read_text(encoding="utf-8-sig")).get("languages") or {}
+        rules = []
+        for lang, info in langs.items():
+            if lang.startswith("_"):
+                continue
+            pats = []
+            for term in info.get("terms", []):
+                term = str(term).lower()
+                body = re.escape(term.rstrip("*")).replace(r"\ ", " ")
+                tail = "" if term.endswith("*") else r"(?![a-z0-9])"
+                pats.append(re.compile(rf"(?<![a-z0-9]){body}{tail}"))
+            rules.append((lang, pats, [str(d) for d in info.get("dirs", [])]))
+        return rules
+    except (OSError, ValueError, AttributeError, TypeError) as e:
+        print(t("cli.sync_memory_index.languages_unreadable", error=repr(e)), file=sys.stderr)
+        return []
+
+
+def _triggers_by_path(memory_dir: Path) -> dict:
+    """_atom_index.json → {rel_path: [trigger…]}（parse_atom_index 只回三欄，語言判定另讀）。"""
+    data = load_atom_index_json(memory_dir)
+    return {a.get("path", ""): list(a.get("triggers") or []) for a in data.get("atoms", [])}
+
+
+def collect_language_view(categorized, rules, triggers_by_path: dict) -> dict:
+    """核心層已分類 atom → {語言: [(rel_path, caption)]}（只留有卡的語言，宣告序）。"""
+    groups: dict = {}
+    for name, cap, rel_path, segs in categorized:
+        text = _LANG_SPLIT_RE.sub(" ", " ".join([name] + triggers_by_path.get(rel_path, [])).lower())
+        for lang, pats, dirs in rules:
+            if any(d in segs for d in dirs) or any(p.search(text) for p in pats):
+                groups.setdefault(lang, []).append((rel_path, cap or name))
+    return {lang: sorted(groups[lang]) for lang, _p, _d in rules if lang in groups}
+
+
+def render_language_view(groups: dict) -> str:
+    """語言視圖全文；groups 空 → ""（caller 移除殘留檔、MEMORY.md 不放指標）。"""
+    if not groups:
+        return ""
+    lines = [
+        "# memory — Filter by programming language (cross-category view)",
+        "",
+        "> Auto-generated (tools/sync-memory-index.py); `_`-prefixed files are not atoms, do not edit by hand. Cards stay in their category folders; "
+        "this view only lists paths, and a card can belong to several languages.",
+        "> How it decides: the card name or Trigger matches a term in the languages section of `memory/_meta/taxonomy.json`, or the card is in a "
+        "category folder bound to that language. Core layer memory/ only, no local categories or personal. After changing the terms run `sync-memory-index.py --write`.",
+        "",
+        "| Language | Atoms |",
+        "|------|---------|",
+    ]
+    lines += [f"| {lang} | {len(items)} |" for lang, items in groups.items()]
+    for lang, items in groups.items():
+        lines += ["", f"## {lang}", "", f"| {lang} | Description |", "|------|------|"]
+        lines += [f"| `{rel_path}` | {cap} |" for rel_path, cap in items]
+    return "\n".join(lines)
+
+
+def sync_language_view_file(lang_path: Path, lang_view: str) -> Optional[str]:
+    """--write 落地語言視圖：有內容 → 整檔覆寫；空 → 刪檔並刪空資料夾。回錯誤字串（None=成功）。"""
+    if lang_view:
+        lang_path.parent.mkdir(parents=True, exist_ok=True)
+        r = write_index_full(lang_path, lang_view + "\n", source="tool:sync-memory-index")
+        return None if r.ok else str(r.error)
+    try:
+        lang_path.unlink()
+        lang_path.parent.rmdir()
+    except OSError:
+        pass   # 檔本來就不在，或資料夾裡還有別的東西：都不是錯
+    return None
+
+
+def render_local_catalog(rows: List[Tuple[str, str, str]],
+                         claude_root: Path,
+                         existing_caps: dict | None = None) -> str:
+    """Render 本地範疇 catalog（側檔 _local_catalog.md）— 僅核心環境由 SessionStart hook 注入。
+
+    **只輸出 Lv1 根 + 遞迴計數 + drill 指標**（always-load 維持 O(根數)、不隨 atom 量膨脹；
+    深層由各層 `_INDEX.md` 按需 drill-down）。無 local atom → 回 ""（caller 移除殘留側檔）。
+    """
+    _ind, _fb, _fo, local_atoms = _classify_rows(rows, claude_root, existing_caps)
+    if not local_atoms:
+        return ""
+    tree = _build_tree(local_atoms)
+    lines = [
+        f"# {LOCAL_CATALOG_TITLE}",
+        "",
+        "> Files live under `_AIDocs/_atoms/<hierarchy path>/`; still indexed in `_atom_index.json` (scope=global). "
+        "**Injected only when cwd is under ~/.claude**, so outside projects carry no cost. Drill down through each level's `_INDEX.md`.",
+        "",
+        "| Category root | Atoms | Drill down |",
+        "|--------|---------|------|",
+    ]
+    for root_name in sorted(tree.children):
+        node = tree.children[root_name]
+        rel_dir = f"{LOCAL_ATOMS_REL}/{root_name}"
+        lines.append(f"| {root_name} | {_subtree_count(node)} | {_drill_target(node, rel_dir)} |")
+    return "\n".join(lines)
+
+
+# ─── 專案層 catalog（marker 區塊 upsert；根＝memory/shared/）────────────────────
+
+PROJECT_SHARED_REL = f"{CORE_ATOMS_REL}/shared"
+PROJECT_CATALOG_BEGIN = "<!-- atom-catalog -->"
+PROJECT_CATALOG_END = "<!-- /atom-catalog -->"
+PROJECT_CATALOG_MISSING_MSG = "[sync-memory-index] project catalog block missing (run --write to append)"
+PROJECT_CATALOG_NOTE = (
+    "> Category directory (auto-generated, do not edit by hand): `atom_write(scope=shared, mode=create)` must be given `domain` → "
+    "`shared/<Lv1>/`; file flat shared atoms with the memory system's `tools/atom-categorize.py plan|apply "
+    "--memory-dir <this directory>`; machine index `_atom_index.json`."
+)
+
+
+def is_project_memory_dir(memory_dir: Path) -> bool:
+    """專案層判定：`<proj>/.claude/memory`（父夾名 `.claude` 且不是 ~/.claude 本尊）。
+
+    測試常以 `--memory-dir <tmp>/memory` 驗**全域**渲染（父夾非 `.claude`）→ 仍走全域路；
+    只有真正的專案記憶樹才走 marker 區塊路。
+    """
+    try:
+        md = memory_dir.resolve()
+        return md.parent.name == ".claude" and md != MEMORY_DIR.resolve()
+    except OSError:
+        return False
+
+
+def _project_groups(rows: List[Tuple[str, str, str]], claude_root: Path,
+                    existing_caps: dict | None = None):
+    """專案 index 列 → (shared 範疇 atom [(name,cap,rel,segs)], 平鋪 shared [(name,cap,rel)],
+    其他分區計數 {label: n})。分區 label：projects/<X>、roles/<r> 取兩段，其餘取首段。"""
+    _cap = _make_cap(claude_root, existing_caps or {})
+    categorized: List[Tuple[str, str, str, List[str]]] = []
+    flat: List[Tuple[str, str, str]] = []
+    partitions: dict = {}
+    for name, rel_path, _scope in rows:
+        segs = path_segments_under(rel_path, PROJECT_SHARED_REL)
+        if rel_path.startswith(PROJECT_SHARED_REL + "/"):
+            if segs:
+                categorized.append((name, _cap(name, rel_path), rel_path, segs))
+            else:
+                flat.append((name, _cap(name, rel_path), rel_path))
+            continue
+        psegs = path_segments_under(rel_path, CORE_ATOMS_REL)
+        if not psegs:
+            label = "(memory root)"
+        elif psegs[0] in ("projects", "roles") and len(psegs) >= 2:
+            label = f"{psegs[0]}/{psegs[1]}"
+        else:
+            label = psegs[0]
+        partitions[label] = partitions.get(label, 0) + 1
+    return categorized, flat, partitions
+
+
+def render_project_catalog(rows: List[Tuple[str, str, str]], claude_root: Path,
+                           existing_caps: dict | None = None) -> str:
+    """專案層 catalog 區塊（不含 marker）：shared/<Lv1>/ 範疇列 + 其他分區列 + 平鋪 shared 逐顆列。"""
+    categorized, flat, partitions = _project_groups(rows, claude_root, existing_caps)
+    tree = _build_tree(categorized)
+    lines = [
+        PROJECT_CATALOG_NOTE,
+        "",
+        "| Category | Atoms | Drill down |",
+        "|------|---------|------|",
+    ]
+    for lv1 in _ordered_lv1(tree.children):
+        node = tree.children[lv1]
+        rel_dir = f"{PROJECT_SHARED_REL}/{lv1}"
+        if _subtree_count(node) == 1 and not node.children:
+            drill = f"`{node.atoms[0][2]}`"
+        else:
+            drill = f"`{rel_dir}/`"   # 專案層不生成 _INDEX.md：指目錄
+        lines.append(f"| {lv1} | {_subtree_count(node)} | {drill} |")
+    for label in sorted(partitions):
+        lines.append(f"| {label} | {partitions[label]} | `{CORE_ATOMS_REL}/{label}/` |")
+    if flat:
+        lines += ["", "| Uncategorized (flat in shared/) | Description |", "|------|------|"]
+        for name, cap, _rel in sorted(flat):
+            lines.append(f"| {name} | {cap} |")
+    return "\n".join(lines)
+
+
+def upsert_project_catalog(text: str, block: str) -> Tuple[str, bool]:
+    """把 catalog 區塊 upsert 進專案 MEMORY.md 全文（LF 正規化後的 text）。回 (新文, 原本有 marker)。
+
+    有 marker → 只換兩 marker 之間；無 marker → 追加檔尾（空檔則先補 H1）。區塊外文字不動。
+    """
+    wrapped = f"{PROJECT_CATALOG_BEGIN}\n{block}\n{PROJECT_CATALOG_END}"
+    i = text.find(PROJECT_CATALOG_BEGIN)
+    j = text.find(PROJECT_CATALOG_END)
+    if i >= 0 and j > i:
+        return text[:i] + wrapped + text[j + len(PROJECT_CATALOG_END):], True
+    base = text.rstrip("\n")
+    if not base.strip():
+        base = "# Atom Index — Project"
+    return base + "\n\n" + wrapped + "\n", False
+
+
+_CONFIG_PATH = claude_data_dir() / "workflow" / "config.json"   # 設定是資料
+
+
+def _eol_auto_enabled(cfg_path: Optional[Path] = None) -> bool:
+    """workflow/config.json `eol.auto_normalize_project`（缺／壞 → True）。"""
+    cfg_path = _CONFIG_PATH if cfg_path is None else cfg_path
+    try:
+        cfg = layered_config(cfg_path)
+        return bool((cfg.get("eol") or {}).get("auto_normalize_project", True))
+    except Exception:
+        return True
+
+
+def _auto_project_eol(memory_dir: Path) -> None:
+    """專案模式 --write 後的漏斗尾端：記憶樹轉 LF＋VCS 屬性（git .gitattributes 區塊／svn eol-style）。
+    這裡是「每次 atom 寫入」的必經之路，所以專案樹不必再靠人貼 prompt。失敗浮訊號、不改 rc（索引已寫好）。"""
+    try:
+        spec = importlib.util.spec_from_file_location("normalize_eol", Path(__file__).with_name("normalize-eol.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        rep = mod.auto_project_eol(memory_dir)
+    except Exception as e:  # noqa: BLE001
+        print(f"[sync-memory-index] eol normalize failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return
+    if rep.get("error"):
+        print(f"[sync-memory-index] eol normalize failed: {rep['error']}", file=sys.stderr)
+    attrs = rep.get("attrs") or {}
+    tail = {"git": f"git .gitattributes {'ok' if attrs.get('ok') else 'FAIL'}",
+            "svn": f"svn propset {attrs.get('set', 0)} (already {attrs.get('already', 0)})"}.get(rep.get("vcs"), "no vcs")
+    print(f"[sync-memory-index] eol: converted {rep.get('converted', 0)}, {tail}")
+
+
+def _run_project_mode(args, memory_dir: Path, claude_root: Path, memory_path: Path,
+                      rows: List[Tuple[str, str, str]]) -> int:
+    """專案層：只動 MEMORY.md 的 marker 區塊；不碰 _local_catalog.md / _INDEX.md / doc-counts。
+    --write 成功（含已 up to date）後接 _auto_project_eol（專案樹 LF 自動化掛點）。"""
+    existing_caps = parse_existing_captions(memory_path)
+    block = render_project_catalog(rows, claude_root, existing_caps)
+    if memory_path.exists():
+        with open(memory_path, "r", encoding="utf-8-sig", newline="") as f:
+            raw = f.read()
+    else:
+        raw = ""
+    cur = raw.replace("\r\n", "\n").replace("\r", "\n")
+    new_text, had_marker = upsert_project_catalog(cur, block)
+
+    if args.check:
+        if not had_marker:
+            print(PROJECT_CATALOG_MISSING_MSG, file=sys.stderr)
+            return 1
+        if cur.strip() != new_text.strip():
+            print("[sync-memory-index] MEMORY.md project catalog drift detected", file=sys.stderr)
+            return 1
+        return 0
+
+    if args.write:
+        if had_marker and cur == new_text:
+            print(f"[sync-memory-index] {memory_path} project catalog up to date")
+        else:
+            r = write_index_full(memory_path, new_text, source="tool:sync-memory-index")
+            if not r.ok:
+                print(f"[sync-memory-index] write failed (project MEMORY.md): {r.error}", file=sys.stderr)
+                return 1
+            print(f"[sync-memory-index] wrote project catalog block → {memory_path}"
+                  f"{'' if had_marker else ' (appended; no marker before)'}")
+        if not getattr(args, "no_eol", False) and _eol_auto_enabled():
+            _auto_project_eol(memory_dir)
+        return 0
+
+    print(f"{PROJECT_CATALOG_BEGIN}\n{block}\n{PROJECT_CATALOG_END}")
+    return 0
+
+
+def render_level_index(node: _Node, rel_dir: str, hierarchical: Optional[bool] = None) -> str:
+    """Render 單層 `_INDEX.md`：本層 atom（名+說明）＋直屬子層（名+遞迴計數 drill）。"""
+    note = ("> Category index for this level (auto-generated; `_`-prefixed files are not atoms)."
+            if resolve_hierarchical(hierarchical) else
+            "> Local category index for this level (auto-generated; `_`-prefixed files are not atoms).")
+    lines = [f"# {rel_dir} — Category index", "", note]
+    if node.atoms:
+        lines += ["", "## Atoms at this level", "", "| Atom | Description |", "|------|------|"]
+        for name, cap, _ in sorted(node.atoms):
+            lines.append(f"| {name} | {cap} |")
+    if node.children:
+        lines += ["", "## Sub-levels", "", "| Sub-level | Atoms | Drill down |", "|------|---------|------|"]
+        for cn in sorted(node.children):
+            child = node.children[cn]
+            lines.append(f"| {cn} | {_subtree_count(child)} | {_drill_target(child, f'{rel_dir}/{cn}')} |")
+    return "\n".join(lines)
+
+
+def collect_per_level_files(rows: List[Tuple[str, str, str]],
+                            claude_root: Path,
+                            existing_caps: dict | None = None,
+                            hierarchical: Optional[bool] = None) -> dict:
+    """走兩根的階層樹 → {abs _INDEX.md path: content}（僅 _needs_index 的層；按需，除雞肋）。
+
+    memory/ 根層（depth-0）不生成——根索引就是 MEMORY.md；舊址 _AIDocs/Failures/ 的 atom
+    不在 memory/ 之下，跳過（其 _INDEX.md 為手寫）。
+    """
+    mode = resolve_hierarchical(hierarchical)
+    _ind, _fb, _fo, local_atoms = _classify_rows(rows, claude_root, existing_caps)
+    categorized, _flat = _core_category_atoms(rows, claude_root, existing_caps)
+    core_atoms = [a for a in categorized if not is_legacy_failures_path(a[2])]
+    out: dict = {}
+
+    def walk(node: _Node, root_rel: str, segs: List[str]) -> None:
+        if segs and _needs_index(node):
+            rel_dir = "/".join([root_rel] + segs)
+            out[claude_root / rel_dir / "_INDEX.md"] = render_level_index(node, rel_dir, mode)
+        for cn in sorted(node.children):
+            walk(node.children[cn], root_rel, segs + [cn])
+
+    walk(_build_tree(local_atoms), LOCAL_ATOMS_REL, [])
+    walk(_build_tree(core_atoms), CORE_ATOMS_REL, [])
+    return out
+
+
+def existing_index_files(claude_root: Path, memory_dir: Path) -> Set[Path]:
+    """磁碟現存、由本工具管轄的 _INDEX.md：_AIDocs/_atoms/** ∪ memory/<範疇>/**。
+
+    只掃 iter_realm_category_dirs 認可的範疇資料夾——`memory/_reference/**`、手寫的
+    `_AIDocs/Failures/_INDEX.md` 等永不被視為 stale。
+    """
+    def _managed(root: Path) -> Set[Path]:
+        # rglob 會鑽進 `_reference/`、`_distant/` 等 `_` 前綴子夾——那些不是範疇層、
+        # 其 _INDEX.md 是手寫參考索引，不歸本工具管（否則 --write 會把它當 stale 刪掉）
+        return {
+            p for p in root.rglob("_INDEX.md")
+            if not any(part.startswith("_") for part in p.relative_to(root).parts[:-1])
+        }
+
+    found: Set[Path] = set()
+    local_atoms_dir = claude_root / LOCAL_ATOMS_REL
+    if local_atoms_dir.is_dir():
+        found |= _managed(local_atoms_dir)
+    for cat_dir in iter_realm_category_dirs(memory_dir):
+        found |= _managed(cat_dir)
+    return found
+
+
+KNOWLEDGE_BLOCK_MARKER = "> **知識庫查閱**："
+
+
+def split_existing(memory_path: Path) -> Tuple[str, str]:
+    """Split existing MEMORY.md into (atom_section, knowledge_block).
+    knowledge_block 從 marker 那行開始（含），到檔尾。
+    """
+    if not memory_path.exists():
+        return "", ""
+    text = memory_path.read_text(encoding="utf-8-sig")
+    idx = text.find(KNOWLEDGE_BLOCK_MARKER)
+    if idx < 0:
+        return text, ""
+    head = text[:idx].rstrip() + "\n"
+    tail = text[idx:]
+    return head, tail
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--write", action="store_true")
+    parser.add_argument("--memory-dir", type=Path, default=MEMORY_DIR)
+    parser.add_argument("--no-eol", action="store_true",
+                        help=t("cli.sync_memory_index.no_eol"))
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--hierarchical", dest="hierarchical", action="store_true", default=None,
+                      help=t("cli.sync_memory_index.hierarchical"))
+    mode.add_argument("--legacy", dest="hierarchical", action="store_false",
+                      help=t("cli.sync_memory_index.legacy"))
+    args = parser.parse_args()
+
+    memory_dir: Path = args.memory_dir
+    claude_root = memory_dir.parent
+    memory_path = memory_dir / MEMORY_INDEX_NAME
+    local_catalog_path = memory_dir / LOCAL_CATALOG_NAME
+    hierarchical = resolve_hierarchical(args.hierarchical)
+
+    rows = drop_mojibake_rows(memory_dir, parse_atom_index(memory_dir))
+    if not rows:
+        if not has_indexable_cards(memory_dir):   # 還沒有卡（新安裝）：空索引是對的，沒東西可同步，檔案一個都不動
+            print(t("cli.sync_memory_index.no_cards", dir=memory_dir))
+            return 0
+        print("[sync-memory-index] _atom_index.json empty or missing", file=sys.stderr)
+        return 1
+
+    # 專案層：marker 區塊 upsert（見模組說明）；全域層維持下方雙輸出＋各層 _INDEX.md。
+    if is_project_memory_dir(memory_dir):
+        return _run_project_mode(args, memory_dir, claude_root, memory_path, rows)
+
+    # caption preserve 跨多檔：MEMORY.md + 側檔 + 兩根各層 _INDEX.md（人工策展描述名稱不重疊）。
+    existing_caps = parse_existing_captions(memory_path)
+    existing_caps.update(parse_existing_captions(local_catalog_path))
+    cur_index_files = existing_index_files(claude_root, memory_dir)
+    for idx in sorted(cur_index_files):
+        existing_caps.update(parse_existing_captions(idx))
+
+    # 硬規則：階層模式下 memory/ 根不容平鋪 atom（平鋪模式不查——遷移前 49 顆本來就在根下）。
+    flat = flat_core_atoms(rows) if hierarchical else []
+    for slug in flat:
+        print(FLAT_ATOM_MSG.format(slug=slug), file=sys.stderr)
+
+    # 語言視圖：詞庫跟著資料根的 taxonomy.json；沒有任何語言命中 → 不產檔、MEMORY.md 不放指標。
+    lang_path = memory_dir / LANGUAGE_VIEW_DIR / "_INDEX.md"
+    categorized_core, _flat_names = _core_category_atoms(rows, claude_root, existing_caps)
+    lang_rules = load_language_rules(memory_dir)
+    lang_view = render_language_view(
+        collect_language_view(categorized_core, lang_rules, _triggers_by_path(memory_dir)) if lang_rules else {})
+
+    core_section = render_core_section(rows, claude_root, existing_caps, hierarchical,
+                                       language_view=bool(lang_view))
+    _old_head, knowledge_tail = split_existing(memory_path)
+    new_core = core_section + "\n\n" + knowledge_tail if knowledge_tail else core_section + "\n"
+
+    local_catalog = render_local_catalog(rows, claude_root, existing_caps)
+    new_local = (local_catalog + "\n") if local_catalog else ""
+
+    # per-level _INDEX.md：新生成集 vs 磁碟現存（差集＝stale，須移除/標 drift）。
+    new_index_files = collect_per_level_files(rows, claude_root, existing_caps, hierarchical)
+    stale_index_files = cur_index_files - set(new_index_files)
+
+    if args.check:
+        drift = bool(flat)
+        cur_core = memory_path.read_text(encoding="utf-8-sig") if memory_path.exists() else ""
+        if cur_core.strip() != new_core.strip():
+            print("[sync-memory-index] MEMORY.md drift detected", file=sys.stderr)
+            drift = True
+        cur_local = local_catalog_path.read_text(encoding="utf-8-sig") if local_catalog_path.exists() else ""
+        if cur_local.strip() != new_local.strip():
+            print("[sync-memory-index] _local_catalog.md drift detected", file=sys.stderr)
+            drift = True
+        for abs_path, content in new_index_files.items():
+            cur = abs_path.read_text(encoding="utf-8-sig") if abs_path.exists() else ""
+            if cur.strip() != content.strip():
+                print(f"[sync-memory-index] _INDEX.md drift: {abs_path}", file=sys.stderr)
+                drift = True
+        for abs_path in stale_index_files:
+            print(f"[sync-memory-index] stale _INDEX.md: {abs_path}", file=sys.stderr)
+            drift = True
+        cur_lang = lang_path.read_text(encoding="utf-8-sig") if lang_path.exists() else ""
+        if cur_lang.strip() != lang_view.strip():
+            print(t("cli.sync_memory_index.language_drift", path=lang_path), file=sys.stderr)
+            drift = True
+        if sync_doc_counts is not None:
+            dc_drift, dc_msgs = sync_doc_counts.sync(claude_root, write=False)
+            for m in dc_msgs:
+                print(m, file=sys.stderr)
+            drift = drift or dc_drift
+        return 1 if drift else 0
+
+    if args.write:
+        if flat:
+            print(t("cli.sync_memory_index.refuse_flat", count=len(flat)), file=sys.stderr)
+            return 1
+        r1 = write_index_full(memory_path, new_core, source="tool:sync-memory-index")
+        if not r1.ok:
+            print(f"[sync-memory-index] write failed (MEMORY.md): {r1.error}", file=sys.stderr)
+            return 1
+        if new_local:
+            r2 = write_index_full(local_catalog_path, new_local, source="tool:sync-memory-index")
+            if not r2.ok:
+                print(f"[sync-memory-index] write failed (_local_catalog.md): {r2.error}", file=sys.stderr)
+                return 1
+        else:
+            try:
+                local_catalog_path.unlink()
+            except FileNotFoundError:
+                pass
+        for abs_path, content in new_index_files.items():
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            r = write_index_full(abs_path, content + "\n", source="tool:sync-memory-index")
+            if not r.ok:
+                print(f"[sync-memory-index] write failed ({abs_path}): {r.error}", file=sys.stderr)
+                return 1
+        for abs_path in stale_index_files:
+            try:
+                abs_path.unlink()
+            except FileNotFoundError:
+                pass
+        err = sync_language_view_file(lang_path, lang_view)
+        if err:
+            print(f"[sync-memory-index] write failed ({lang_path}): {err}", file=sys.stderr)
+            return 1
+        print(f"[sync-memory-index] wrote {memory_path}"
+              f"{' + ' + str(local_catalog_path) if new_local else ' (no local; removed side catalog)'}"
+              f"{f' + {len(new_index_files)} _INDEX.md' if new_index_files else ''}"
+              f"{f' (-{len(stale_index_files)} stale)' if stale_index_files else ''}")
+        if sync_doc_counts is not None:
+            _dc_drift, dc_msgs = sync_doc_counts.sync(claude_root, write=True)
+            for m in dc_msgs:
+                print(m, file=sys.stderr)
+        return 0
+
+    print(new_core)
+    if new_local:
+        print("\n# ── _local_catalog.md ──\n")
+        print(new_local)
+    for abs_path, content in new_index_files.items():
+        print(f"\n# ── {abs_path} ──\n")
+        print(content)
+    if lang_view:
+        print(f"\n# ── {lang_path} ──\n")
+        print(lang_view)
+    return 0
+
+
+if __name__ == "__main__":
+    rc = main()
+    if "--check" in sys.argv[1:]:   # 哨兵由程式自己印：部位表量尺不必接 echo，和別的驗證串在同一行也算數
+        print(f"MEMORY_INDEX_CHECK {'PASS' if rc == 0 else 'FAIL'}")
+    sys.exit(rc)

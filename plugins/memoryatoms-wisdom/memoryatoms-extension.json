@@ -1,0 +1,12 @@
+{
+  "name": "wisdom",
+  "description": "Reflection stats: records how each session went and shows at most two [Self-awareness] reminders at session start",
+  "python": {
+    "path": ["hooks"],
+    "on": {
+      "UserPromptSubmit": "wisdom_plugin:on_prompt",
+      "SessionStart": "wisdom_plugin:on_session_start",
+      "SessionEnd": "wisdom_plugin:on_session_end"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "memoryatoms-codex",
+  "description": "Codex integration: /codex second opinion and build delegation, plus Codex Companion background review and acceptance judge.",
+  "version": "6.1.1",
+  "author": {
+    "name": "holylight"
+  },
+  "dependencies": [
+    "memoryatoms"
+  ],
+  "license": "GPL-3.0-only"
+}

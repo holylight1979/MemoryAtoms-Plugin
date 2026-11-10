@@ -1,0 +1,16 @@
+{
+ "ext.workflow-nudge.parallel_batch_words": "batch words",
+ "ext.workflow-nudge.parallel_connectors": "connectors×{count}",
+ "ext.workflow-nudge.parallel_cross_target_verbs": "cross-target verbs",
+ "ext.workflow-nudge.parallel_multiple_files": "multiple files×{count}",
+ "ext.workflow-nudge.parallel_multiple_targets": "multiple targets",
+ "ext.workflow-nudge.parallel_plural_quantifiers": "plural quantifiers",
+ "ext.workflow-nudge.parallel_single_file": "single file-2",
+ "ext.workflow-nudge.parallel_suggest": "[Parallel:Suggest] This prompt has parallel signals ({hints}, score={score}). Consider splitting it into ≥2 sub-agents dispatched together in one message to speed it up. If it should not be split, explain why in your reply.",
+ "ext.workflow-nudge.research_codebase_line": "[Research:Fanout] Local codebase lookup detected ({hints}). Dispatch ≥2 `Explore` agents in the same message to search separately (give each a different naming convention or directory slice); no WebSearch and no keyword-expansion stage needed.",
+ "ext.workflow-nudge.research_knowledge_domain": "knowledge domain×{count}",
+ "ext.workflow-nudge.research_knowledge_line": "[Research:Fanout] Knowledge-lookup request detected ({hints}). Use a two-stage fan-out instead of answering in a single thread:\n  Stage A keyword expansion (1-2 agents, report a plain keyword list only): synonyms of the terms + cross-language equivalents + broader/narrower concepts + common misnomers; one track searches the web to confirm the terms the field actually uses.\n  Stage B parallel search (all Stage A keywords, dispatch ≥2 agents in the same message): one track scans the atomic memory store/_AIDocs (existing conclusions first; if found, do not search again), one track uses WebSearch/WebFetch for the latest outside knowledge.\n  Stage A→B is a real sequential dependency (B needs A's keywords), so keep A light; the parallelism belongs inside B. If fan-out does not fit, say why.",
+ "ext.workflow-nudge.research_local_locators": "local locators×{count}",
+ "ext.workflow-nudge.research_lookup_verbs": "lookup verbs×{count}",
+ "ext.workflow-nudge.research_named_files": "named files×{count}"
+}

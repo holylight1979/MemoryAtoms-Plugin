@@ -1,0 +1,17 @@
+{
+ "ext.coordination.ask_peer_first": "可用 SendMessage 先問對方、",
+ "ext.coordination.bash_check_failed": "[Guardian:Coord] Bash 預警異常（fail-open）：{error}",
+ "ext.coordination.claude_not_found": "找不到 claude 執行檔（CLAUDE_CODE_EXECPATH 與 PATH 都沒有）",
+ "ext.coordination.conflict_warning": "⚠️ [Guardian:CoordWarn] 另一個活躍 session（{who}）也改過此檔：{path}（最近 {peer_at}，共 {peer_count} 次）。共用工作樹下後寫覆蓋前寫、無自動合併——請先確認不互踩（{hint}必要時與使用者確認分工），收尾 staging 只揀自己的檔、勿 git add -A。",
+ "ext.coordination.git_finalize_warning": "⚠️ [Guardian:CoordWarn] 偵測到全域型 git 收尾指令，且同一工作樹有其他活躍 session 留有改動紀錄：{listed}（對方可能已提交、也可能還沒——state 不追 VCS 狀態，{ask}先 git status 查證）。git add -A / reset --hard 會掃走或沖掉他人未提交的修改——請改用選擇性 staging（git add <自己的檔>），reset/clean 前先與使用者確認。",
+ "ext.coordination.late_collision": "⚠️ [Guardian:CoordWarn] 寫後偵測：session {who} 於 60 秒內也寫過 {path}（{peer_at}）。兩邊幾乎同時首寫、寫前互看不見，請檢查是否覆蓋了對方的內容{hint}。",
+ "ext.coordination.late_collision_hint": "（{hint}）",
+ "ext.coordination.list_separator": "、",
+ "ext.coordination.log_write_failed": "[Guardian:Coord] observation log 寫入失敗（不影響功能）：{error}",
+ "ext.coordination.peer_files": "{who}（{count} 檔）",
+ "ext.coordination.peer_hint": "可用 SendMessage 傳給 `{name}` 協調；",
+ "ext.coordination.peer_named": "`{name}`，{short_id}",
+ "ext.coordination.peer_names_unavailable": "[Guardian:Coord] 查不到對方 session 名稱（claude agents --json 失敗），警告只附短 id：{error}",
+ "ext.coordination.pre_tool_use_failed": "[Guardian:Coord] pre_tool_use 檢查異常（fail-open）：{error}",
+ "ext.coordination.scan_failed": "[Guardian:Coord] 衝突掃描異常（fail-open）：{error}"
+}

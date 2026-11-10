@@ -1,0 +1,83 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/codex_companion.py"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/codex_companion.py"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Bash|ExitPlanMode|EnterPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/codex_companion.py"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/codex_companion.py",
+              "rewake"
+            ],
+            "timeout": 300,
+            "async": true,
+            "asyncRewake": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/codex_companion.py"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,367 @@
+"""
+handlers/user_prompt_submit.py — UserPromptSubmit hook handler（orchestrator）
+
+拆為四個子模組，本檔收斂為串聯呼叫：
+- ups_gates.run_pre_gates — detect 段（evasion 追蹤 / user decision gate / long_die /
+  hot cache / atom-write guard）
+- ups_context.build_context — context build 段（session context / wisdom /
+  parallel 建議 / AIDocs / JIT）
+- ups_search.collect_matched_atoms — search pipeline 段（trigger / BM25 /
+  vector / supersedes / ACT-R 排序）
+- ups_inject.assemble_injection — injection assemble 段（hot/cold / budget /
+  related spread / 效用晉升提示）
+
+檢索與注入只看使用者打的字（ups_search.retrieval_query；/continue 接交接單前段）；整則是背景通知就不檢索、不注入
+（harness_text.non_human_kind），前置閘與收尾記帳照跑；整則是其他 session 的訊息就用訊息正文檢索（harness_text.peer_message_text）。
+
+本檔保留收尾職責：blind-spot reporter、fix escalation、evasion 舉證、
+handoff 提醒、failure-triggered extraction、topic tracking、sync reminders、
+turn_injected 歸因記錄、atom-debug summary、budget 截斷輸出。
+"""
+
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any, Dict, List
+
+from wg_core import (
+    _ensure_state, _estimate_tokens, _now_iso, write_state,
+    output_json, output_nothing, cap_hook_output, append_guard_log,
+    _atom_debug_log, _atom_debug_error, WORKFLOW_DIR, v6_enabled, coding_turn,
+    DEFAULTS as CORE_DEFAULTS,  # config 缺鍵時的預設只認 wg_core 那一份
+)
+import i18n  # lib/（wg_core 已放進 sys.path）：給人看的提示走語言表
+from harness_text import IDE_TAG_NAMES, non_human_kind, peer_message_text, strip_harness_blocks, user_typed_text  # lib/（wg_core 已把它放進 sys.path）
+from wg_atoms import (
+    classify_intent,
+    compute_token_budget,
+    _truncate_context_by_activation,
+    _update_topic_tracker,
+)
+from wg_extraction import _maybe_spawn_failure_extraction
+from handlers.ups_gates import run_pre_gates
+from handlers.ups_context import build_context
+from handlers.ups_search import INJECT_GUARD_LOG, collect_matched_atoms, retrieval_query
+from handlers.ups_inject import assemble_injection, reconcile_injection_after_trim
+import wg_hook_timing as _hook_timing
+import wg_plugins
+from wg_ups_timeout import check_ups_cancelled
+from wg_hook_timing import degraded as _hook_degraded, lap as _hook_lap
+
+
+def _ups_output(lines: List[str]) -> str:
+    return json.dumps(cap_hook_output({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "\n".join(lines)}}),
+                      ensure_ascii=False)
+
+
+def _fallback_output(lines: List[str]) -> str:
+    """背景鬧鐘代送（到上限 95% 還沒送出）：當下已備好的注入＋一行說明；state 這次沒寫回、哨兵留著（下一則會告警）。"""
+    return _ups_output([*lines, i18n.t("hook.user_prompt_submit.guardian_hooktiming_userpromptsubmit_was")])
+
+
+# ─── UPS 被 kill 哨兵：偵測上輪注入被 harness timeout 砍掉 ────────────────────
+
+
+def _ups_sentinel_path(session_id: str) -> Path:
+    return WORKFLOW_DIR / "ups-sentinel" / f"{session_id}.json"
+
+
+def _ups_sentinel_check_and_arm(
+    session_id: str, state: Dict[str, Any], lines: List[str]
+) -> None:
+    """UPS 開頭 touch 哨兵檔、正常結尾清除（_ups_sentinel_clear）。本輪見殘留哨兵
+    ＝上輪 UPS 未跑完（harness timeout 砍掉 / hook 例外中斷）→ 該輪記憶注入缺失
+    ——過去完全靜默，本哨兵讓它浮出（可觀測性鐵律）。fail-open。"""
+    if not session_id:
+        return
+    try:
+        p = _ups_sentinel_path(session_id)
+        if p.exists():
+            info: Dict[str, Any] = {}
+            try:
+                info = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+            lines.append(
+                i18n.t("hook.user_prompt_submit.guardian_ups_sentinel_previous", turn_seq=info.get('turn_seq', '?'), at=info.get('at', '?'))
+            )
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps({
+                "turn_seq": int(state.get("turn_seq", 0)) + 1,
+                "at": _now_iso(),
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        newline="\n")
+    except Exception:
+        pass
+
+
+def _ups_sentinel_clear(session_id: str) -> None:
+    if not session_id:
+        return
+    try:
+        p = _ups_sentinel_path(session_id)
+        if p.exists():
+            p.unlink()
+    except Exception:
+        pass
+
+
+def evasion_ask(ev: Dict[str, Any]) -> str:
+    """上輪退避旗標（Stop detect_evasion 記的 phrase／context_excerpt／hint）→ 舉證要求：明說先處理這件再做新請求，
+    判準直接寫出來、不點卡名（點了也送不到）。"""
+    return (i18n.t("hook.user_prompt_submit.guardian_evasion_last_turn", phrase=ev.get('phrase', ''), context_excerpt=ev.get('context_excerpt', '')[:200], hint=ev.get('hint') or ''))
+
+
+def handle_user_prompt_submit(
+    input_data: Dict[str, Any], config: Dict[str, Any]
+) -> None:
+    session_id = input_data.get("session_id", "")
+    state = _ensure_state(session_id, input_data, config)
+    if not state:
+        output_nothing()
+        return
+
+    # 規則 PROMPT_REOPENS_DONE：收尾或 SessionEnd 設的 done 只說上一回合收得乾淨；新的一則話開工 → 改回 working，
+    # 收尾的同步提醒與底部一般提醒才看得到這一回合的改動。SessionEnd 一起留的 ended_at 也拿掉（續接中的 session 不算已結束，
+    # 面板清理不會當成結束一分鐘就刪）。syncing（同步進行中）、merged（轉址）不動。當場寫回：後面檢索、注入逾時被砍也不留舊的 done
+    if state.get("phase") == "done":
+        state["phase"] = "working"
+        state.pop("ended_at", None)
+        write_state(session_id, state)
+
+    prompt = input_data.get("prompt", "")
+    # 只剔最外層是 IDE 的區塊（其餘內容留給檢索與注入）；巢狀與交錯照樣看所有 harness 標籤判斷，
+    # 所以權威判斷再對它取 user_typed_text，和直接對原文取的結果相同
+    clean_prompt = strip_harness_blocks(prompt, only=IDE_TAG_NAMES).strip()
+    prompt_lower = clean_prompt.lower()
+    lines: List[str] = []
+
+    # 規則 UPS_CANCEL_WARN_NEXT_HOOK：上一則的注入被 Claude Code 逾時丟掉（這則工具批次沒報到的才在這裡報）；報了就清哨兵，下面不重報
+    ups_warn, ups_user_msg = check_ups_cancelled(state, session_id, str(input_data.get("transcript_path") or ""), "user_prompt_submit")
+    if ups_warn:
+        lines.append(ups_warn)
+
+    # 被 kill 哨兵：見上輪殘留 → 告警；隨即 arm 本輪（正常結尾 clear）
+    _ups_sentinel_check_and_arm(session_id, state, lines)
+
+    # fallback state 重建告警（_ensure_state 標旗，此處消費一次）——
+    # 原 state 遭 TTL 清除 / SessionStart 未跑，已重建最小 atom_index。
+    if state.pop("_fallback_state_rebuilt", None):
+        idx = state.get("atom_index", {})
+        lines.append(
+            i18n.t("hook.user_prompt_submit.guardian_state_was_rebuilt", global_n=len(idx.get('global', [])), project=len(idx.get('project', [])))
+        )
+
+    # config.json 解析失敗告警（load_config 標旗；一 session 一次）
+    if config.get("_config_parse_failed") and not state.get("_config_warned"):
+        state["_config_warned"] = True
+        lines.append(
+            i18n.t("hook.user_prompt_submit.guardian_config_workflow_config")
+        )
+
+    # 分段計時（wg_hook_timing）：累計過上限 80% → 降級，脈絡、檢索與注入組裝這次不跑；
+    # 前置閘、收尾記帳與寫 state 照做。到 95% 還沒送出 → 背景鬧鐘代送已備好的 lines。
+    _hook_timing.set_fallback(lambda: _fallback_output(lines))
+
+    v6 = v6_enabled(config)     # 關＝只送 9e476fd0 就有的注入與提示
+
+    # 寫碼守門開：版控口令判「這批 push 完了沒」要掃 transcript（ups_gates.order_spent）：記下路徑，口令閘與下一則訊息用
+    if v6 and input_data.get("transcript_path"):
+        state["order_transcript"] = str(input_data["transcript_path"])
+
+    # ─── Detect 段：前置閘（evasion 追蹤 / user decision gate / long_die / atom-write guard）
+    run_pre_gates(
+        session_id, state, config, clean_prompt, prompt_lower, lines
+    )
+    _hook_lap("前置閘")
+
+    # 規則 NON_HUMAN_PROMPT_NO_INJECT：整則是背景任務通知、或沒有正文的同伴閒置／送達通知（剔掉這些區塊後沒有使用者打的字）→
+    # 脈絡段、記憶檢索、注入組裝這次不跑（前置閘、退避舉證、修復升級、收尾記帳照做），留帳 event=skip_inject。
+    # 夾著使用者打的字就照常注入，查詢只用使用者打的字（retrieval_query）。
+    # 規則 PEER_MESSAGE_INJECT_FROM_BODY：其他 session 的訊息是這個 session 的工作來源 → 用訊息正文檢索，留帳 event=peer_query；
+    # 正文只當查詢：使用者原話（typed）、意圖、口令都不吃它。
+    typed = user_typed_text(prompt)
+    non_human = non_human_kind(prompt)
+    peer_text = peer_message_text(prompt) if non_human == "peer" else ""
+    skip_reason = "" if peer_text else non_human
+    if peer_text:
+        append_guard_log(INJECT_GUARD_LOG, {
+            "session_id": session_id, "event": "peer_query",
+            "turn_seq": int(state.get("turn_seq", 0)) + 1, "chars": len(peer_text),
+        })
+        query = peer_text
+    elif skip_reason:
+        append_guard_log(INJECT_GUARD_LOG, {
+            "session_id": session_id, "event": "skip_inject", "reason": skip_reason,
+            "turn_seq": int(state.get("turn_seq", 0)) + 1, "chars": len(prompt),
+        })
+        query = ""
+    else:
+        query = retrieval_query(session_id, typed, clean_prompt,
+                                str((state.get("session") or {}).get("cwd") or input_data.get("cwd") or ""))
+    query_lower = query.lower()
+
+    # ─── Context build 段：wisdom / parallel / AIDocs / JIT
+    # budget_total 是整包 additionalContext 的上限；最終裁切量的是整包 lines（卡片加其他提示行），所以用總額。
+    # 原文與查詢文字取大：一般回合查詢是原文的一部分、額度照原文；/continue 的查詢接了交接單、比原文長。
+    # 同伴訊息只照正文算：harness 的包裝不是內容，不該把額度墊高一級。
+    budget_total = compute_token_budget(query) if peer_text else max(compute_token_budget(prompt), compute_token_budget(query))
+    if not (_hook_degraded() or skip_reason):
+        build_context(
+            session_id, state, config, query, clean_prompt, query_lower,
+            budget_total, lines,
+        )
+        _hook_lap("脈絡")
+
+    # 意圖前移（A0.1）：注入前就知道這回合要做什麼；十鍵見 wg_atoms.INTENT_PATTERNS。
+    # 意圖是「使用者要做什麼」的權威判斷，只吃使用者本人打的字（user_typed_text：剔掉同伴訊息、背景通知等 harness 區塊）；
+    # 整則沒有使用者的字 → 沿用上一則判的意圖（同伴信、通知正文裡的「重構」不改意圖；G7 等值閘據此擋）
+    turn_intent = classify_intent(typed) if typed else (state.get("turn_intent") or "general")
+    state["turn_intent"] = turn_intent
+    if not (v6 and coding_turn(state, config)):    # 規則 CODING_TURN_ONLY：不是寫碼回合寫碼守門不送（記憶注入照舊）
+        _hook_timing.quiet()                       # 不寫計時帳；新的使用者回合起點：拿掉寫碼回合標記
+        _hook_timing.mark_coding(session_id, False)
+
+    # ─── Search pipeline 段：候選收集（trigger/BM25/vector）+ supersedes + ACT-R 排序
+    # ─── Injection assemble 段：hot/cold + budget + related spread + 效用晉升提示
+    # 已降級或非使用者訊息：這則不檢索、不注入（intent 同 collect_matched_atoms 的取法：本則已判的 turn_intent）
+    already_injected = state.get("injected_atoms", [])
+    matched_with_dir: list = []
+    newly_injected: List[str] = []
+    atom_source_dirs: Dict[str, Path] = {}
+    intent = turn_intent
+    if not (_hook_degraded() or skip_reason):
+        (
+            matched_with_dir, atom_source, all_atoms,
+            sem_atoms, section_hints, alias_injected_projects, intent,
+            caches,
+        ) = collect_matched_atoms(
+            session_id, state, config, query, query_lower, lines
+        )
+        if not _hook_lap("檢索"):
+            newly_injected, atom_source_dirs = assemble_injection(
+                session_id, state, config,
+                matched_with_dir, all_atoms, already_injected,
+                atom_source, section_hints, lines,
+                caches=caches, prompt=query,
+            )
+            _hook_lap("注入組裝")
+
+    # Fix Escalation Protocol
+    # 規則 RETRY_COUNTS_RERUN_CYCLES：輪數到門檻才提示，訊息帶每輪的重跑指令與紅案
+    from wg_release_rules import fix_escalation_text
+    fix_esc = fix_escalation_text(state)
+    if fix_esc and not state.get("fix_escalation_warned", False):
+        state["fix_escalation_warned"] = True
+        state["fix_escalation_triggered"] = True
+        lines.append(fix_esc)
+
+    # Evasion 上輪命中 → 注入舉證要求，放在這則注入最前面（排在其他注入後面時模型只做新請求、不理舉證）
+    ev = state.get("evasion_flag")
+    if ev:
+        lines.insert(0, evasion_ask(ev))
+        state["evasion_flag"] = None
+
+    # 這句話的意圖交給插件接（通知、同伴訊息沿用上一則的意圖，不再重提）
+    if not non_human:
+        lines.extend(wg_plugins.emit("UserPromptSubmit.intent", intent=intent, state=state, config=config,
+                                     session_id=session_id))
+
+    # Failure-triggered extraction
+    _maybe_spawn_failure_extraction(
+        session_id, state, config, clean_prompt, lines
+    )
+
+    # 使用者糾正訊號：跨 turn 計數（wg_friction），達門檻由 Stop 的 Deep Post-Mortem 消費
+    try:
+        from wg_friction import record_correction
+        record_correction(state, session_id, clean_prompt, config)
+    except Exception as e:
+        _atom_debug_error("ups:friction", e)
+        print(i18n.t("hook.user_prompt_submit.guardian_correction_correction_word", etype=type(e).__name__, error=e), file=sys.stderr)
+    # Topic tracking
+    _update_topic_tracker(state, prompt, intent, newly_injected)
+
+    # Sync reminders
+    mod_count = len(state.get("modified_files", []))
+    kq_count = len(state.get("knowledge_queue", []))
+    sync_kw = config.get("sync_keywords", CORE_DEFAULTS["sync_keywords"])
+    prompt_has_sync = any(kw in prompt for kw in sync_kw)
+
+    # 同步數字只留 stderr 一行、不進 chat：記憶卡由 vcs-sync 背景自動上，程式檔的版控交代在收尾檢核 (g)；
+    # statusline（tools/statusline.py）常駐顯示改檔／佇列數（零 token）。
+    if prompt_has_sync and (mod_count > 0 or kq_count > 0):
+        print(f"[Guardian] Sync context: {mod_count} files modified, {kq_count} knowledge items pending.", file=sys.stderr)
+
+    # ─── 最終裁切 → 以「實際送出」結算注入記帳 ───
+    # 所有 lines 生產者都在上面；這裡裁切一次，之後不再動 lines。
+    _hook_lap("收尾提示")
+    if lines:
+        lines = _truncate_context_by_activation(lines, budget_total, atom_source_dirs, config)
+    delivered = reconcile_injection_after_trim(session_id, state, config, lines)
+    if _hook_degraded():
+        lines.append(_hook_timing.degrade_note())             # 裁切之後才加：這一行不能被預算裁掉
+
+    # per-turn 注入記錄（每 turn 覆寫）：只存「本 turn 實際送出」的 atom + 檔路徑，
+    # 供 Stop 做注入→使用→結果 (α,β) 歸因。被最終裁切丟掉的不算注入。
+    # 無注入 turn → 覆寫為 []（清上一 turn）。
+    state["turn_injected"] = [
+        {"name": nm, "path": str(atom_source_dirs[nm] / f"{nm}.md")}
+        for nm in delivered if nm in atom_source_dirs
+    ]
+    # 單調遞增 turn 序號 → Stop 端 per-turn 一次性歸因守門（防 blocked turn 重複計）。
+    state["turn_seq"] = int(state.get("turn_seq", 0)) + 1
+    # turn 起點的重試計數快照：Stop 的 outcome 只看本 turn 增量（累計值留給 FixEscalation）。
+    state["wisdom_retry_turn_base"] = int(state.get("wisdom_retry_count", 0) or 0)
+
+    write_state(session_id, state)
+
+    # atom-debug summary
+    if (config or {}).get("atom_debug", False):
+        prompt_preview = re.sub(r"<[^>]+>", "", prompt[:300]).strip()[:120] if prompt else ""
+        total_tok = 0
+        summary_parts = []
+        _ATOM_BLOCK_RE = re.compile(r"^\[Atom:(\S+)\](?:\s*\(related\))?\n")
+        for line_item in lines:
+            tok = _estimate_tokens(line_item)
+            total_tok += tok
+            am = _ATOM_BLOCK_RE.match(line_item)
+            if am:
+                aname = am.group(1)
+                is_related = "(related) " if "(related)" in line_item[:60] else ""
+                src = f"memory/{aname}.md"
+                for (n, rp, _), bd in matched_with_dir:
+                    if n == aname and rp:
+                        src = rp
+                        break
+                summary_parts.append(i18n.t("hook.user_prompt_submit.injected_tok", src=src, is_related=is_related, tok=tok))
+            else:
+                first = line_item.split("\n", 1)[0][:120]
+                if line_item.count("\n") > 1:
+                    n_lines = line_item.count("\n") + 1
+                    summary_parts.append(i18n.t("hook.user_prompt_submit.lines_tok", first=first, n_lines=n_lines, tok=tok))
+                else:
+                    summary_parts.append(f"  {first} (~{tok} tok)")
+        injection_body = (
+            i18n.t("hook.user_prompt_submit.prompt_injection_summary_items", prompt_preview=prompt_preview, count=len(lines), total_tok=total_tok)
+            + ("\n".join(summary_parts) if summary_parts else "NONE")
+        )
+        _atom_debug_log("注入", injection_body, config)
+
+    # 走到這裡＝本輪 UPS 完整跑完 → 拆哨兵（timeout 砍掉時到不了這行，哨兵殘留）
+    _ups_sentinel_clear(session_id)
+
+    _hook_timing.claim_output()
+    if lines:
+        output_json({
+            **({"systemMessage": ups_user_msg} if ups_user_msg else {}),
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": "\n".join(lines),
+            }
+        })
+    else:
+        output_nothing()

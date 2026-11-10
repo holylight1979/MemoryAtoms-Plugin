@@ -1,0 +1,5 @@
+{
+ "ext.statusline.modified": "改{count}",
+ "ext.statusline.queue": "佇{count}",
+ "ext.statusline.read": "讀{count}"
+}

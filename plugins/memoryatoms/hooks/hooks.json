@@ -1,0 +1,199 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/workflow-guardian.py"
+            ],
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/session_start_persona.py"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/workflow-guardian.py"
+            ],
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/workflow-guardian.py"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Write|Edit|Agent|Task|mcp__(plugin_memoryatoms_)?workflow-guardian__(atom_write|atom_retire|knowledge_harvest_report))$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/workflow-guardian.py"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/workflow-guardian.py"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/workflow-guardian.py"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/workflow-guardian.py"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/workflow-guardian.py"
+            ],
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/workflow-guardian.py"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/workflow-guardian.py"
+            ],
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/stop_failure.py"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/workflow-guardian.py"
+            ],
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

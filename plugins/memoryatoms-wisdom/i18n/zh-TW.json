@@ -1,0 +1,6 @@
+{
+ "ext.wisdom.action_architecture": "行動：架構級任務先用 Plan Mode",
+ "ext.wisdom.action_multi_file": "行動：修改 >2 檔時先列清單確認範圍",
+ "ext.wisdom.action_single_file": "行動：修改前先確認理解正確，避免假設",
+ "ext.wisdom.blind_spot_line": "[自知] {task_type} 首次正確率 {rate}。{action}"
+}

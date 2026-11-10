@@ -1,0 +1,612 @@
+{
+  "atom_debug": false,
+  "enabled": true,
+  "coding_guard": {
+    "_doc": "Master switch for the coding guard. On by default and only runs on coding turns; when off, only the processing outside the coding guard runs (memory injection, harvest, vcs-sync, language guard, and so on). To turn it off on one machine, set the environment variable WG_CODING_GUARD=0, or write {\"coding_guard\": {\"enabled\": false}} in workflow/config.local.json (not version-controlled; same-name keys override the shipped value); WG_CODING_GUARD=1 forces it on. Compatibility: the old key v6 ({\"v6\": {\"enabled\": true}}) and the old environment variable WG_V6 are still honored; coding_guard / WG_CODING_GUARD take precedence, and the old ones are only checked when the new ones are not set (enabled is not true) (hooks/wg_core.v6_enabled, coding_guard_opt). coding_turn_only (unset = true): the per-turn guards of the coding guard (evasion detection, deferral gate, wrap-up checklist, hook timing ledger) only start on coding turns (this user turn has already changed a code file with a tool, or made a write whose target cannot be determined; or code was changed in earlier turns and the wrap-up claims completion; keyword intent in the prompt does not count, and doc-only edits or pure Q&A do not count); false falls back to starting them on every turn (hooks/wg_core.coding_turn).",
+    "enabled": true
+  },
+  "stop_gate_max_blocks": 2,
+  "min_files_to_block": 2,
+  "review": {
+    "_doc": "Accounts (AD) allowed to decide pending-review drafts; empty = anyone can decide.",
+    "deciders": []
+  },
+  "roles": {
+    "_doc": "Directory-service (AD) group name -> role. Shipped empty: with an empty map no role comes from groups, and roles come only from personal/<user>/role.md. To use it, fill ad_group_map in workflow/config.local.json according to your own directory's group naming: each key is a piece of text to look for in the group name (the part after <domain>\\), each value is the role it maps to; longer keys are tried first. Example: {\"Engineering\": \"programmer\", \"Design\": \"art\"}.",
+    "ad_group_map": {}
+  },
+  "org_memory": {
+    "repo_url": "",
+    "default_root": "~/CompanyAtomsMem",
+    "_doc": "Organization-layer memory repo (visible to and writable from every project). This file only holds values that are the same company-wide: repo_url and default_root (where --join clones to when no path is given; write a home-relative path starting with ~/, not a drive letter, so it works across machines and operating systems). Whether this machine is connected and where the root is goes in workflow/org-memory.local.json (not version-controlled; filled in by tools/org-memory.py --join / --init; same-name keys override this section); keep enabled / roots at false / [] here. The code only reads roots[0]; more than one is rejected and org is disabled. To write organization knowledge: atom_write scope=org.",
+    "enabled": false,
+    "roots": []
+  },
+  "taxonomy": {
+    "_doc": "Category (taxonomy) write gate for the core layer. gate_enabled=false: during migration (memory/ still has loose files) the hard rules and write rejection are off; set true once migration is done.",
+    "gate_enabled": true,
+    "llm_fallback": {
+      "enabled": false,
+      "max_per_session": 5,
+      "min_confidence": 0.7
+    }
+  },
+  "sync_keywords": [
+    "同步",
+    "sync",
+    "commit",
+    "提交",
+    "結束",
+    "收工"
+  ],
+  "vector_search": {
+    "enabled": true,
+    "embedding_backend": "ollama",
+    "embedding_model": "qwen3-embedding",
+    "fallback_backend": "sentence-transformers",
+    "fallback_model": "BAAI/bge-m3",
+    "ollama_base_url": "http://127.0.0.1:11434",
+    "ollama_llm_model": "qwen3:1.7b",
+    "ollama_backends": {
+      "local": {
+        "base_url": "http://127.0.0.1:11434",
+        "llm_model": "qwen3:1.7b",
+        "embedding_model": "qwen3-embedding",
+        "priority": 3,
+        "think": false,
+        "llm_num_predict": 2048
+      }
+    },
+    "search_top_k": 5,
+    "search_min_score": 0.65,
+    "search_timeout_ms": 3500,
+    "auto_start_service": true,
+    "auto_index_on_change": true,
+    "global_layer": "vector",
+    "bm25_min_score": 7.0,
+    "bm25_top_k": 3,
+    "fusion": "rrf",
+    "rrf_activation_gain": 0,
+    "bm25_gate_max_trigger_hits": 999,
+    "_doc_full_text_min_score": "A vector-found card that would normally get only a one-line pointer (cold) gets its full text when the semantic score of its best-matching section is at least this value; coding turns stay one line. The 0.70 threshold was measured with qwen3-embedding, so re-measure it if the embedding model changes.",
+    "full_text_min_score": 0.70
+  },
+  "write_gate": {
+    "enabled": true,
+    "quality_floor": 0.3,
+    "dedup_score": 0.8,
+    "dedupe_declaration": true,
+    "_doc_dedupe": "Deduplication is judged by the AI: reaching dedup_score no longer rejects the write outright; the candidate cards are returned instead, and the AI must resend with dedupe={verdict: same|supersedes|different, of, why}; same -> append, supersedes -> merged into Supersedes, different -> written as usual, logged as dedupe_declared. The quality score only decides write / do not write (quality_floor; the old ask level is gone). dedupe_declaration=false restores the old behavior (tools/memory-write-gate.py).",
+    "_doc_hub_card_budget": "Hub cards (kind_hint=hub, a title containing \"導讀\" (hub), or all five sections present) have a fixed knowledge budget of 4096 bytes; the value lives in lib/hub_card.py HUB_CARD_BUDGET and is not configurable. Ordinary cards use knowledge_budget_bytes (default 3072)."
+  },
+  "_unused_cleanup": "The cleanup / session_awareness / decay settings are only used by memory-audit.py --enforce; the guardian does not read them.",
+  "cross_session": {
+    "enabled": true,
+    "min_score": 0.75,
+    "timeout_seconds": 5
+  },
+  "self_iteration": {
+    "decay_half_life_days": 30,
+    "archive_score_threshold": 0.3,
+    "_doc_auto_commit": "The old keys auto_commit_promotions / auto_push_promotions are superseded by vcs_sync.enabled / vcs_sync.push (after the promotion sweep a vcs-sync worker is spawned); the keys are kept so they can still be read, and vcs_sync is the actual switch.",
+    "auto_commit_promotions": true,
+    "auto_push_promotions": true,
+    "oscillation_window": 3,
+    "oscillation_threshold": 2,
+    "review_interval": 6,
+    "_doc_rut_file_whitelist": "File-name whitelist for the same_file_3x rut signal (fnmatch, case-insensitive): indexes, changelogs, and acceptance artifacts are routinely updated many times per session, which is not evidence of surface-level fixing. Used by recall-miss; skipped files are logged to the atom-debug log.",
+    "rut_file_whitelist": [
+      "readme*",
+      "_changelog*",
+      "docindex-*",
+      "*_index*",
+      "memory.md",
+      "_atom_index*",
+      "acceptance-*"
+    ],
+    "forget": {
+      "_doc": "Selective forgetting: archive candidates that are stale, rarely used, and not core-protected are isolated into memory/_distant/ (excluded by sync-atom-index -> not injected; reversible). The default is a dry run (enabled=false or dry_run=true): only _staging/forget-candidates.md is written and nothing is moved. Actual isolation needs enabled=true and dry_run=false.",
+      "enabled": false,
+      "dry_run": true,
+      "isolate_threshold": 0.3
+    }
+  },
+  "usefulness": {
+    "attribution_policy": "v2",
+    "v2_shared_min": 6,
+    "v2_containment_min": 0.0,
+    "_doc": "Closed-loop usefulness (inject -> use -> outcome): Beta-Bernoulli (alpha, beta) + Wilson lower bound + slow decay. The thresholds mirrored between py and js (promote_lb / min_n / wilson_z) are kept in SYNC with lib/atom_access.py and server.js.",
+    "enabled": true,
+    "lexical_overlap_min": 0.18,
+    "rare_token_min": 2,
+    "wilson_z": 1.28,
+    "promote_lb": 0.6,
+    "demote_lb": 0.35,
+    "demote_min_n": 5,
+    "min_n": 3,
+    "fix_min_n": 10,
+    "decay_lambda": 0.97,
+    "distraction_enabled": true,
+    "distraction_weight": 0.5,
+    "embedding_tiebreak": true,
+    "embed_timeout_s": 3.0,
+    "embed_budget_s": 3.0,
+    "stability_gamma": 0.3,
+    "unknown_watch": {
+      "_doc": "Usefulness-attribution telemetry: SessionEnd records the unknown ratio of _detect_turn_outcome (to workflow/outcome_stats.jsonl); if it is above threshold for window consecutive sessions, the next SessionStart surfaces an advisory. This guards against the completion-phrase regex drifting away from the model's output habits, which would silently stall the alpha/beta promotion track. Sessions with fewer than min_turns turns are not counted.",
+      "enabled": true,
+      "threshold": 0.7,
+      "window": 3,
+      "min_turns": 3
+    }
+  },
+  "injection": {
+    "_doc": "Injection-side relevance gate. related_gate only trims related-edge spreading (cards reached purely by following links rather than by matching the prompt, the most likely distractors); cards hit by the main loop (trigger / bm25 / vector) are never touched, so prompt-relevant or new atoms are not cut by mistake.",
+    "related_gate": {
+      "query_gate": "bm25",
+      "query_gate_min": 5,
+      "enabled": true,
+      "skip_demoted": true,
+      "max_related": 6
+    },
+    "_doc_redundancy_gate": "Same-topic deduplication: in the main loop, an atom whose triggers exactly overlap those of an atom already injected in full this turn by at least min_shared_triggers is sent as the header plus the first two knowledge sentences only (an excerpt marked same-topic -> the representative) instead of the whole card. Measured on one development store (8515 pairs), only 4 pairs had 3 or more exact overlaps, and all were truly the same topic; substring overlaps are not counted (noise from generic triggers).",
+    "redundancy_gate": {
+      "enabled": true,
+      "min_shared_triggers": 3
+    },
+    "_doc_truncated_pointer_max": "Final budget trimming (_truncate_context_by_activation) drops rather than truncates: among the atoms sacrificed for going over budget, only the top N by activation keep a one-line pointer; the rest are not injected at all (details go to the atom-debug log, and the trailing budget marker carries the trim statistics).",
+    "truncated_pointer_max": 3
+  },
+  "response_capture": {
+    "enabled": true,
+    "session_end_max_chars": 20000,
+    "session_end_max_items": 5,
+    "per_turn": {
+      "_doc_enabled": "false: no auto-capture drafts are produced (nothing downstream consumes them); failure extraction (failure_extraction) is unaffected. Set true to turn it on.",
+      "enabled": false,
+      "min_new_chars": 500,
+      "max_items": 3,
+      "skip_cross_session": true,
+      "cooldown_seconds": 120
+    },
+    "failure_extraction": {
+      "enabled": true,
+      "cooldown_seconds": 180,
+      "max_items": 2,
+      "strong_keywords": [
+        "又錯了",
+        "沒修好",
+        "還是壞",
+        "修復失敗",
+        "一樣的問題",
+        "又壞了",
+        "怎麼又",
+        "再次失敗",
+        "failed again",
+        "broken again",
+        "still not fixed",
+        "still not working",
+        "same problem"
+      ],
+      "weak_keywords": [
+        "錯了",
+        "不對",
+        "壞了",
+        "失敗",
+        "沒用",
+        "沒效",
+        "不行",
+        "bug",
+        "broken",
+        "failed",
+        "still broken",
+        "same error",
+        "為什麼還",
+        "怎麼還",
+        "反覆",
+        "踩坑",
+        "又踩",
+        "沒生效",
+        "白做了"
+      ],
+      "weak_min_match": 3
+    },
+    "session_end_flush": {
+      "_doc_enabled": "false: at session end, neither spawn the full-transcript extraction worker nor flush auto-capture drafts into [臨] atoms (handlers/session_end.py, hooks/extract-worker.py; when this key is missing the code default is true, so keep it written out). Set true to turn it on.",
+      "enabled": false,
+      "max_atoms": 8
+    }
+  },
+  "userExtraction": {
+    "enabled": true,
+    "tokenBudget": 240
+  },
+  "aidocs": {
+    "_doc": "Per-prompt [Guardian:AIDocs]: points to a doc only when keyword hits reach min_prompt_hits, at most max_prompt_matches entries, and the same doc only once per session; at session start it gives only one line: Read _AIDocs/_INDEX.md.",
+    "min_prompt_hits": 2,
+    "max_prompt_matches": 1
+  },
+  "skill_index": {
+    "_doc": "Keeps the skills/ count in sync with its single source of truth (tools/skill-index.py). With enabled=true: when PostToolUse sees a skills/*/SKILL.md added, removed, or changed, it runs --write to regenerate _skill_index.json and rewrite the <!-- skill-count --> markers in the docs; SessionStart runs --check as a safeguard (actual file count differs from the json count -> advisory). Turn off with enabled:false.",
+    "enabled": true
+  },
+  "lang_guard": {
+    "_doc": "Catches replies drifting into English (hooks/lang_guard.py, a standalone Stop hook). Measures the share of English letters in the assistant's final message (code fences, inline code, URLs, and link targets are stripped first; only user-facing conversation output counts); above the threshold it feeds back to the model through hookSpecificOutput.additionalContext (supported on Stop: injected at the end of the turn, and the conversation continues for one more turn to answer again in Traditional Chinese; turns with stop_hook_active do not trigger it again, which prevents loops). systemMessage is not used: it is shown only to the user and the model cannot read it. Stateless, no flags. Turn off with enabled:false; english_ratio_threshold = threshold for the English share (0-1, English letters / (English letters + CJK)); min_lang_chars = below this many language characters there is no judgment (filters short messages such as \"Done.\").",
+    "enabled": true,
+    "english_ratio_threshold": 0.5,
+    "min_lang_chars": 40
+  },
+  "version_guard": {
+    "_doc": "Warn hook for leftover version-history context (hooks/version_guard.py; the guardian's PostToolUse calls run() in the same process). After Write/Edit it scans the just-written file under ~/.claude; a hit on a high-precision version pattern (V5 Pxx / Sprint / Wave / plan code names / [vN] or [phaseN] prefixes / [Fxx] anchors) -> warn only (systemMessage + stderr), never blocks. Prefers misses over false alarms: vague patterns (bare Phase N / dates / v2.x / change narratives) are deliberately left out. Files where such context belongs (DevHistory / _CHANGELOG / TECH / Architecture / SPEC / plans / verify / _staging) and functional tokens (_migrate_v / SCHEMA_VERSION / protocolVersion) are exempt. Rule: rules/core.md (version and document governance); the single source for the patterns is the atom feedback-live-... . Turn off with enabled:false or mode:off; min_matches = how many hits before it reminds.",
+    "enabled": true,
+    "mode": "warn",
+    "min_matches": 1
+  },
+  "docdrift": {
+    "_doc": "Doc drift (hooks/wg_docdrift.py): when a code file changes without the matching _AIDocs document being updated, a to-do entry is recorded. path_mappings = {path pattern (fnmatch, relative to the project root): [docs]}, empty by default; projects that want it fill it in themselves. self_path_mappings = the mappings for the memory system's own repo, applied only when the changed file is under ~/.claude. When nothing matches, it falls back to keyword matching against the _AIDocs index (keyword_match_threshold). Turn off with enabled:false.",
+    "enabled": true,
+    "path_mappings": {},
+    "self_path_mappings": {},
+    "exclude_patterns": [
+      "_aidocs/",
+      "memory/",
+      "_staging/",
+      ".git/",
+      "node_modules/",
+      "__pycache__/",
+      ".claude/workflow/",
+      "backups/",
+      "debug/",
+      "Logs/"
+    ],
+    "keyword_match_threshold": 2,
+    "max_pending_display": 5
+  },
+  "heal": {
+    "enabled": true,
+    "backend": "ollama",
+    "max_concurrent": 1,
+    "agent_timeout_ms": 180000,
+    "_comment": "Memory self-healing: backend=ollama runs locally, free, one at a time; cloud + max_concurrent>1 allows parallel runs in the cloud (needs an adapter)."
+  },
+  "realm": {
+    "auto_migrate": true,
+    "llm_fallback": {
+      "enabled": false,
+      "max_per_session": 5,
+      "min_confidence": 0.7,
+      "_comment": "For unknown-core atoms the lexicon misses, the SessionEnd sweep asks a local LLM to decide the realm and the hierarchical domain. Infrastructure failure -> defer and leave the atom in place (no wrongful demotion); unsure / low confidence -> Else; local at or above min_confidence -> move it and learn the words. Protected atoms never go to the LLM. enabled=false runs only the deterministic lexicon (including learned words)."
+    }
+  },
+  "deep_postmortem": {
+    "_doc": "Deep post-mortem: on a high-effort failure (wisdom_retry_count>=2 / fix_escalation_triggered, AND a real failure signal: failing_tests / evasion / no completion claim), the Stop gate injects an instruction for Claude to write a full post-mortem with atom_write (what happened / root cause / design rationale / how it works / how to prevent it). Effort only counts retry / fix_esc (both error-gated at the track_retry layer, counted only while a test or lint failure is unresolved), not the number of edits to the same file. deep_postmortem_done is one-shot with its own budget of 1 and does not share stop_gate_max_blocks (sharing would let the other wrap-up gates use up the budget). Turn off with enabled:false.",
+    "enabled": true
+  },
+  "friction": {
+    "_doc": "User-correction signal (wg_friction): UserPromptSubmit matches \"you are going the wrong way\" keywords (不對 / 我說過 / 重來 / 改回來 ...; bug and test-failure words live separately in response_capture.failure_extraction), accumulates state.user_correction_count across turns, and logs each hit to Logs/guard-friction.jsonl. Reaching min_hits makes the Stop-time Deep Post-Mortem treat \"all tests green but corrected all along\" as effort and real failure at the same time. Omitting keywords = use the module's built-in list. Turn off with enabled:false.",
+    "enabled": true,
+    "min_hits": 2
+  },
+  "tool_result_waste": {
+    "_doc": "Tool result size (wg_friction): PostToolUse measures the character count of every tool_response and appends it to workflow/tool-results/<sid>.jsonl (not in state); a single result of oversized_chars or more -> a one-line [Guardian:ToolResultSize] advisory (at most max_advisories_per_session per session) + Logs/guard-tool-result-size.jsonl; SessionEnd aggregates them into one record in Logs/guard-tool-result-stats.jsonl and deletes the temporary file. Turn off with enabled:false.",
+    "enabled": true,
+    "oversized_chars": 20000,
+    "max_advisories_per_session": 3
+  },
+  "aec": {
+    "_doc_scan_report_gate": "false = not submitting the wrap-up checklist (anti_evasion_report) does not block the wrap-up; reports are still accepted (rule CLOSING_RITUAL_SWITCHES).",
+    "scan_report_gate": false
+  },
+  "atom_audit": {
+    "_doc": "Card stance gate (stop.py AtomAudit: asks for a stance on cards that were injected only as a one-line pointer and never read). false = does not block the wrap-up (rule CLOSING_RITUAL_SWITCHES).",
+    "enabled": false
+  },
+  "acceptance_spec": {
+    "_doc": "Acceptance spec registration (hooks/acceptance_spec.py; the guardian's PostToolUse calls run() in the same process): when the AI writes <project root>/.claude/verify/acceptance-<slug>.md, the path is recorded in the sidecar workflow/acceptance-spec/<sid>.json, which the acceptance judge uses to find this task's acceptance criteria. Sends no text to the AI. Turn off with enabled:false.",
+    "enabled": true
+  },
+  "acceptance_regression_hint": {
+    "_doc": "Regression accumulation hint (handlers/stop.py::_acceptance_regression_hint): if the acceptance judge gave a fail/high (enforce-level) verdict in this session, the wrap-up block message carries a suggestion to (a) add test cases and (b) record pattern-type lessons as atoms. Pure piggyback: it never interrupts on its own, once per session, no queue. Turn off with enabled:false.",
+    "enabled": true
+  },
+  "guard": {
+    "smell_gate": {
+      "_doc": "Pre-commit smell gate for git / svn (the pre-commit smell check section of tools/project-smells.py): blocks when the code being committed newly introduces a smell. Thresholds: an anonymous function body over 20 lines blocks, 10 lines or more only reminds (Sonar S1188 anonymous classes 20 lines, S5612 / Checkstyle LambdaBodyLength 10 lines); control-structure nesting of 4 levels or more in a Python function blocks (coding rule \"nesting of 4 or more must be refactored\", Sonar S134 Python 4); existing functions that did not get deeper are not blocked. Disable with enabled=false.",
+      "enabled": true,
+      "anon_body_block_lines": 20,
+      "anon_body_list_lines": 10,
+      "nesting_block_depth": 4
+    },
+    "cross_realm_write": {
+      "_doc": "A session in an external project (cwd outside ~/.claude) writing into the core layer ~/.claude/{skills,tools,hooks,lib,rules}/ -> PreToolUse deny. Core development sessions are not affected. allowlist is a whitelist of path substrings.",
+      "enabled": true,
+      "allowlist": []
+    },
+    "commit_order": {
+      "_doc": "PreToolUse git commit passphrase gate: if this turn's original user text contains none of the keywords -> deny. The programmatic form of the version-control rule in rules/core.md. keywords = the passphrases, generic words only as shipped; to use your own words, write the whole guard.commit_order section (enabled, keywords, exempt_cwd_under_claude_dir) in workflow/config.local.json, because a commit_order section there replaces this one as a whole. exempt_cwd_under_claude_dir (shipped false; a missing key also counts as false) = when set to true in workflow/config.local.json, allow without the passphrase when the commit actually lands in the memory system's own repo (~/.claude itself or one of its git worktrees); the three memory layers are already synced automatically by vcs-sync and have nothing to do with this gate. When it is on, only command shapes whose target is visible are recognized: the whole command is chained with && only, the first segment may be cd <absolute path>, and every other segment is git [-C <literal path>] <add|commit|push|status|diff|log|show|rm|mv|restore> ...; any other form (unknown command segments, ; | or newlines, $( ) or backticks outside single quotes, unquoted heredocs, repo-override arguments or environment variables such as GIT_DIR, paths containing variables) is not exempt and needs the passphrase as usual.",
+      "enabled": true,
+      "exempt_cwd_under_claude_dir": false,
+      "keywords": [
+        "上GIT",
+        "上 GIT",
+        "上傳GIT",
+        "上版",
+        "上SVN",
+        "push to git",
+        "push to svn",
+        "ship it"
+      ]
+    },
+    "verify_batch": {
+      "_doc": "PreToolUse verification-batch gate (hooks/wg_verify_batch.py; not governed by the coding-guard switch): when Bash / PowerShell runs pytest (including python -m pytest), run_verify.py, or verify_*.py / test_*.py, it judges two things. (1) A whole-suite run that will take a long time (run_verify.py without arguments, pytest naming no file or only a directory, no scope-narrowing option; AND either the latest receipt for the same command took slow_run_s seconds or more [only self-written receipts record started_at and can be timed; otherwise it counts as unknown] or the tree the command runs has large_suite_files or more test files matching reconcile_gate.verify_case_globs [counting stops at the threshold; state.verify_batch_suite_files caches one entry per root]) requires this turn's original user text to contain one of full_run_keywords (collected the same way as commit_order: turn_prompts; background notifications and sub-agent reports do not count) -> blocked otherwise; a whole-suite run that is not slow (including unknown) is allowed without the passphrase and logged with reason=small (case 006: blocking a small project's pytest that finishes in seconds was a false positive). (2) If the last receipt for the same command was green and no file has changed in this session since -> blocked with \"this batch of changes has already been verified\" (receipts: state verify_receipts and the self-written receipts in workflow/verify-ledger/_runs/; fingerprint: receipt seq against modified_files.last_seq); allowed if the last run was red or files changed since. Each rule blocks at most once per turn; the second time is allowed and logged; both blocks and passes go to Logs/guard-verify_batch.jsonl. Commands it cannot parse (heredoc, eval, bash -c) are left alone. Turn off with enabled:false.",
+      "enabled": true,
+      "full_run_keywords": [
+        "整組",
+        "全量",
+        "全部測試",
+        "run_verify",
+        "full suite",
+        "whole suite",
+        "all tests"
+      ],
+      "slow_run_s": 120,
+      "large_suite_files": 50
+    }
+  },
+  "deferral_gate": {
+    "_doc": "Stop DeferralGate (deferral attribution): when the main task is done (a completion claim, or a commit in this turn) and context usage is at or below max_context_ratio (read from the transcript's real usage; the window settings are context_window_tokens / context_base_overhead_tokens in the auto_handoff section, with the same literal defaults when that section is absent), a wrap-up message that pushes doable work with an object onto the next session / a separate topic / \"not caused by me\" -> blocked back with three choices. min_object_chars = how many characters must remain after removing the deferral phrase for the sentence to count as having an object. The phrase list is in memory/_meta/forbidden-phrases.json categories[deferral-attribution]; a deferral sentence matched by a reasoned \"不做｜...\" (not doing) line is not blocked but logged (rule NOT_DOING_DECLARED, hooks/wg_release_rules.py).",
+    "enabled": true,
+    "max_context_ratio": 0.75,
+    "min_object_chars": 6
+  },
+  "merge_driver": {
+    "_doc": "Two automations for the merge driver of the three index files (handlers/pre_tool_use.py check_merge_driver; advisory only, never denies): auto_install = before Bash / PowerShell runs git pull / merge / rebase / cherry-pick / stash pop, if the driver is not installed on this machine, automatically run python tools/merge-atom-index.py --install (git global config, once per machine); auto_resolve = when running rebase / merge / cherry-pick --continue, commit, or stash pop while the three index files (MEMORY.md / _ATOM_INDEX.md / _atom_index.json) are unmerged, first run --resolve automatically (semantic merge of the stages, then git add) and then let it through. Turn off: auto_install:false / auto_resolve:false. Inside the hook everything fails open, with a total time limit of 2.5 s.",
+    "auto_install": true,
+    "auto_resolve": true
+  },
+  "eol": {
+    "_doc": "Automatic LF line endings for the project memory tree (<proj>/.claude/memory): after a successful project-mode --write of tools/sync-memory-index.py (the end of the funnel of every atom write), normalize-eol.auto_project_eol is called: files in the tree are converted to LF; git projects get a marked block in .gitattributes (eol=lf + merge=atomindex for the three index files); svn projects get svn propset svn:eol-style LF on versioned text files. The first run touches the whole tree, later runs touch nothing, and the changes ride along with the next memory commit. Turn off with auto_normalize_project:false or --no-eol.",
+    "auto_normalize_project": true
+  },
+  "sync_reminder": {
+    "_doc": "Stop sync gate. unpushed=true: also blocks when the files changed in this session are committed but the repo is ahead of upstream (\"上GIT\" = commit + push in one go). Roots whose live lock is held by the vcs-sync worker skip the unpushed check.",
+    "enabled": true,
+    "max_reminders": 1,
+    "unpushed": true
+  },
+  "harvest": {
+    "_doc": "Stop gate for harvesting knowledge when a phase is done. A completion claim, AND real activity (turn_seq at least min_turns, or files changed in this session, or accessed_files at least min_accessed), AND at least min_turns_between turns since the last validated harvest -> requires a knowledge_harvest_report call. Missing this section = the whole mechanism is off.",
+    "enabled": true,
+    "min_turns": 3,
+    "min_accessed": 5,
+    "min_turns_between": 3
+  },
+  "provenance": {
+    "_doc": "Atom provenance: PostToolUse adds `- Source:` (a session pointer) and `- Quote:` (the user's original words, at most quote_max_chars characters) to a just-written atom; backfill = when SessionStart sees a new transcript, it runs tools/atom-provenance-backfill.py --apply detached to fill in older atoms (grade A gets the original sentence, grade B the source); anti_rot_days = the weekly health check fills in the original sentence for atoms whose session source is older than this many days and still has no Quote, before the transcript gets cleaned up. Missing this section = everything on.",
+    "enabled": true,
+    "quote_max_chars": 200,
+    "anti_rot_days": 25,
+    "backfill": {
+      "enabled": true
+    }
+  },
+  "vcs_sync": {
+    "_doc": "Silent background version control for the memory folders (hooks/vcs-sync-worker.py). Triggers: a validated harvest, SessionEnd. root_pathspecs are relative to ~/.claude, project_pathspecs to the project root; root_extra_pathspecs (files with count markers that change along with atom writes, such as TECH.md) and org_extra_pathspecs (relative to the organization-layer repo root, for example weekly usage screenshots) are non-memory paths that are pushed and pulled automatically as well. git only adds / commits these pathspecs; if the history waiting to be pushed contains non-memory commits, it does not push and leaves a marker. svn adds file by file with exclude applied, then commits. exclude contains memory/_meta/**: settings files such as taxonomy / forbidden-phrases do not go through the automatic memory commit; they ship with the code. A fresh install by tools/install.py turns this off in workflow/config.local.json (\"vcs_sync\": {\"enabled\": false}); upgrades keep whatever the machine had. To turn it on, see Install.md \"Background sync\".",
+    "enabled": true,
+    "push": true,
+    "root_pathspecs": [
+      "memory",
+      "_AIDocs/_atoms"
+    ],
+    "project_pathspecs": [
+      ".claude/memory"
+    ],
+    "root_extra_pathspecs": [
+      "TECH.md",
+      "_AIDocs/_INDEX.md"
+    ],
+    "org_extra_pathspecs": [
+      "usage-snapshots"
+    ],
+    "exclude": [
+      "**/*.access.json",
+      "memory/_meta/**"
+    ],
+    "timeout_s": 60,
+    "pull": {
+      "enabled": true,
+      "fetch_timeout_s": 20,
+      "_doc": "Automatic pull for the memory layer (in the worker, after commit and before push): fetch -> memory-only incoming changes are synced by ref + pathspec; incoming changes that include code are fast-forwarded (ff-only) only when the whole tree is clean; diverged histories are rebased in an isolated worktree (the three index files are resolved automatically by the merge driver). Not affected by the push switch."
+    }
+  },
+  "overview_hub": {
+    "equivalence": {
+      "_doc": "Equivalence and hot-path wrap-up gate (handlers/stop.py Equivalence Gate; rules REFACTOR_NEEDS_EQUIVALENCE / PERF_HOT_PATH_NEEDS_MEASURE in wg_release_rules): when the intent of the user's original words is refactor / perf and code files changed in this turn, a completion claim needs receipts for the three kinds of equivalence proof (PRESERVE_CHECK PASS, --mutation order / side_effect / boundary) or a line \"等值證法｜不適用｜<reason>\" (equivalence proof | not applicable), plus an answer \"熱路徑｜是／否｜...\" (hot path | yes / no); answering yes needs a measurement receipt or \"量測｜不做｜<reason>\" (measurement | not doing). Logged to Logs/guard-equivalence.jsonl. enabled=false turns the whole gate off.",
+      "enabled": true
+    },
+    "_doc": "OverviewHub variables. Merge order: root-layer defaults < this section < <org root>/.claude/overview-hub.json < <project root>/.claude/overview-hub.json; nested objects are deep-merged, arrays are taken whole. Unknown keys are errors (Edit is always blocked, except for OverviewHub's own settings file and the parts table, which are allowed with a warning); retired keys (hub_config.RETIRED_KEYS) only warn once and are not errors, and writing dry_run / deny_parts explicitly does not let them through either. The whole section only applies while the coding guard is on. readonly_paths (globs relative to that layer's root; **/ also matches zero levels) are always blocked on a hit (OVERVIEW_READONLY_PATHS); the read ledger records which files each part has read (part_files_read, used by the question gate ASK_OVERVIEW_BEFORE_DECISION). smells_report (relative to the project root, or absolute; json / jsonl / md table): the smell gate treats every file listed in the report as an old smell for the whole file. max_card_chars: the character limit of the Depends recall map. authority_map: {file-name pattern (fnmatch): map path}; when a doc file that matches is read and the map is not empty -> injected once per session. Depends recall: if a file that was read is a path: target of some card's depends index (or under that directory) -> a one-line pointer per card, each card once per session. verify_chains: {part: {runtime_gate, pre, run, collect, cleanup}} is only shape-checked; no code reads it at the moment. Each path_bases entry must be an existing directory and none may contain another; eol_policy is one of lf / crlf / per-file-head; encoding keys must pass codecs.lookup. New keys must be added to HUB_DEFAULTS in lib/hub_config.py at the same time.",
+    "enabled": true,
+    "max_card_chars": 6000,
+    "path_bases": [],
+    "vcs_roots": [],
+    "commit_encoding": "utf-8",
+    "source_encodings": [
+      "utf-8"
+    ],
+    "eol_policy": "per-file-head",
+    "PYTHONIOENCODING": "utf-8",
+    "readonly_paths": [],
+    "smells_report": "",
+    "authority_map": {},
+    "verify_chains": {}
+  },
+  "overview_scaffold": {
+    "_doc": "Build the parts table from scratch (tools/overview-map-scaffold.py). scaffold_ignore: top-level directories that do not get a row; layers: {layer name: [directory names or globs]}, empty = everything is a single layer; scaffold_default_lv1: the Lv1 for skeleton cards, which must be an existing core or project Lv1 (the tool never creates a new one). Dry run by default; --write writes files; cards are written first and the table last; a failure is not rolled back, and rerunning continues where it stopped.",
+    "scaffold_ignore": [
+      ".git",
+      ".svn",
+      "node_modules",
+      "obj",
+      "bin",
+      "Library",
+      "Temp",
+      "__pycache__",
+      ".claude",
+      "_AIDocs"
+    ],
+    "layers": {},
+    "scaffold_default_lv1": "設計通則"
+  },
+  "refix_churn": {
+    "_doc": "Gauge for repeated fixes to the same file (lib/refix_churn.py; shared by tools/refix-churn.py and the hot-spot scan of the parts table). fix_patterns: a commit counts as a fix if any line of its message matches (regex, case-insensitive; Chinese at word level, questions do not count); refix_window_days: the pairing window in days; refix_since_days: how many days to look back; refix_min_fixes: the minimum number of fixes before a file is listed; refix_exclude: path regexes (memory, indexes, tables); refix_exclude_msg: message regexes (harvest and memory commits); refix_same_commit_pairs: whether the same file listed twice in one commit counts twice.",
+    "fix_patterns": [
+      "\\bfix(?:e[sd]|ing)?\\b",
+      "\\bbugfix\\b",
+      "\\bhotfix\\b",
+      "\\bbug\\b",
+      "修正(?![^。；;！!\n]*[嗎？?])",
+      "修復(?![^。；;！!\n]*[嗎？?])",
+      "修好(?![^。；;！!\n]*[嗎？?])",
+      "修補(?![^。；;！!\n]*[嗎？?])",
+      "壞了(?![^。；;！!\n]*[嗎？?])",
+      "壞掉(?![^。；;！!\n]*[嗎？?])",
+      "錯誤(?![^。；;！!\n]*[嗎？?])"
+    ],
+    "refix_window_days": 14,
+    "refix_since_days": 60,
+    "refix_min_fixes": 2,
+    "refix_exclude": [
+      "(^|/)\\.claude/memory/",
+      "^memory/",
+      "(^|/)_AIDocs/_atoms/",
+      "_ATOM_INDEX\\.md$",
+      "_atom_index\\.json$",
+      "(^|/)MEMORY\\.md$",
+      "(^|/)_INDEX\\.md$",
+      "(^|/)_local_catalog\\.md$",
+      "overview-map\\.md$",
+      "overview-hub\\.json$"
+    ],
+    "refix_exclude_msg": [
+      "knowledge harvest",
+      "\\[memory\\]",
+      "\\batom\\b"
+    ],
+    "refix_same_commit_pairs": false
+  },
+  "verify_ledger": {
+    "_doc": "Verification ledger (hooks/wg_verify_ledger.py): PostToolUse collects sentinels from Bash / PowerShell output (<NAME>_CHECK PASS|FAIL|DONE, and measurement-type <NAME> DONE k=v) plus the exit code, writes them to workflow/verify-ledger/<sid>.jsonl (gitignored), and adds them to state verify_receipts[sid] (cap 50); it only records when there is a sentinel or the command is a test command; sub-agents (agent_id) are recorded separately in <sid>.agents.jsonl and not in the main ledger. Each receipt records env = the scope-narrowing variables inherited at launch (PYTEST_ADDOPTS, PYTHONOPTIMIZE); when Stop accepts a receipt, they are combined with environment assignments inside the command to get the effective values, and old receipts without an env field do not count as evidence. sentinel_regex lets existing tools be mapped without changing their output: each entry is {regex (MULTILINE; may carry a (?P<verdict>) named group), name, verdict_map{substring: PASS|FAIL|DONE}, pytest_summary (optional)}; the whole matched span is examined, and when several keys match, FAIL wins; ordinary rules compare by substring (a custom sentinel `CUSTOM_FAIL 1 item` is judged as fail); rules marked pytest_summary:true (only the two built-in PYTEST rules) compare the full status word of each \"number status\" group (xfailed / xpassed are not failed / passed; error matches errors), and a group only counts when its count is non-zero, so the pytest summaries `1 passed, 1 error in 0.1s` and `1 error in 0.1s` are FAIL and `5 passed, 2 skipped, 1 xfailed in 3.2s` is PASS / DONE (the two PYTEST rules have the same regex and give the same result); the regex must capture the whole statistics up to ` in `, because capturing only the leading `N passed` misses a later error. vcs_budget_s is the overall deadline of vcs_snapshot (each subprocess at most 1 s, rev cached for 60 s per root, uncommitted hashes use os.stat only, checked every 10 files, at most 200 files). ledger_sources is not read by any code. Turn off with enabled:false.",
+    "enabled": true,
+    "sentinel_regex": [
+      {
+        "regex": "^(?:=+ )?(?P<verdict>\\d+ (?:passed|failed|errors?|skipped|xfailed|xpassed|warnings?|deselected|rerun)(?:, \\d+ [a-z]+)*) in \\d",
+        "name": "PYTEST",
+        "verdict_map": {
+          "failed": "FAIL",
+          "error": "FAIL",
+          "passed": "PASS",
+          "xpassed": "PASS"
+        },
+        "pytest_summary": true
+      },
+      {
+        "regex": "^(?:=+ )?(?P<verdict>\\d+ (?:passed|failed|errors?|skipped|xfailed|xpassed|warnings?|deselected|rerun)(?:, \\d+ [a-z]+)*) in \\d",
+        "name": "PYTEST_MEASURE",
+        "verdict_map": {
+          "failed": "FAIL",
+          "error": "FAIL",
+          "passed": "DONE",
+          "xpassed": "DONE"
+        },
+        "pytest_summary": true
+      }
+    ],
+    "vcs_budget_s": 1.5
+  },
+  "reconcile_gate": {
+    "_doc": "Reconciliation gate of the Stop-time coding check (right after TestFailGate; the main session, SubagentStop, and the judge's Stop share _verify_gates): checks wrap-up claims against verification receipts (accepted by hooks/wg_verify_ledger.py; commands parsed by lib/self_receipt.py). The claim is read from the last sentence (preferring last_assistant_message from the hook input) and judged clause by clause (contrast words start a new clause; negations and questions are excluded; reports of what a third party said do not count). (a) Claiming a fix needs a PASS from the same tree that is later than every matching changed file, not limited to this turn (an earlier turn's PASS counts as long as no code file was changed in this session afterwards; changes by sub-agents and writes whose target cannot be determined count as changes; after a change a new PASS is needed, and the block message names the changed file; matching = the command contains the changed file's name, the corresponding test_ / verify_ file, a whole-suite verification or a part gauge, or a qualifying self-written receipt for that part); (b) claiming a measurement needs a DONE that can serve as evidence or a qualifying self-written receipt; (c) claiming to have tried needs an exec_tools call in this turn; (v) moving a directory that contains code files needs scan and sampling receipts made after the move; (e) AEC already emitted: (j) empty / path does not exist -> blocked, (k) empty string -> blocked (\"無\" (none) is allowed). Case files = code files matching verify_case_globs (compared relative to the project root); a file changed and then restored to its original content does not count as a code change. max_blocks_per_turn = the per-turn budget shared by (a)(b)(c)(v) and the gauge gate (does not consume stop_gate_max_blocks); how it lets things through once the budget is used up, and how sub-agents and headless runs wrap up, is defined by hooks/handlers/stop.py and hooks/wg_release.py. The claim word lists are fixed_claim / measured_claim / tried_claim in forbidden-phrases.json. Turn off with enabled:false.",
+    "enabled": true,
+    "_doc_block_letters": "Which item letters the coding check blocks while the coding guard is off (rule RECONCILE_BLOCK_LETTERS; unlisted items are still judged but only printed to stderr). While the coding guard is on, delivery is decided only by RULE_MODE in hooks/wg_release_rules.py ((a) still blocks), not by this field; do not maintain two separate versions.",
+    "block_letters": [
+      "a"
+    ],
+    "max_blocks_per_turn": 2,
+    "exec_tools": [
+      "Bash",
+      "PowerShell"
+    ],
+    "code_exts": [
+      ".py",
+      ".pyw",
+      ".js",
+      ".mjs",
+      ".cjs",
+      ".ts",
+      ".tsx",
+      ".jsx",
+      ".cs",
+      ".lua",
+      ".c",
+      ".h",
+      ".cc",
+      ".cpp",
+      ".cxx",
+      ".hpp",
+      ".hh",
+      ".java",
+      ".kt",
+      ".kts",
+      ".go",
+      ".rs",
+      ".rb",
+      ".php",
+      ".swift",
+      ".m",
+      ".mm",
+      ".scala",
+      ".dart",
+      ".vue",
+      ".svelte",
+      ".ps1",
+      ".psm1",
+      ".bat",
+      ".cmd",
+      ".sh",
+      ".bash",
+      ".sql",
+      ".gd",
+      ".shader",
+      ".hlsl",
+      ".glsl"
+    ],
+    "verify_case_globs": [
+      "**/verify/**",
+      "**/tests/**",
+      "**/test/**",
+      "**/__tests__/**",
+      "**/*.tests/**",
+      "**/test_*",
+      "**/*_test.*",
+      "**/*_tests.*",
+      "**/*.test.*",
+      "**/*.spec.*",
+      "**/test.*",
+      "**/tests.*",
+      "**/conftest.py"
+    ]
+  },
+  "chain_breaker": {
+    "_doc": "Chain breaker (runs only while the coding-guard master switch is on; when that is off, the master switch rules; judgment in hooks/wg_chain.py, ledger and snapshot restore in lib/chain_store.py): within one user turn, a gate blocks or records a debt -> the AI acts -> a gate blocks or records a debt again; this is recorded as a chain. When the same gate fires for the max_same_gate-th time (only counting firings where the AI acted after seeing the block message in between; calls sent in parallel in one reply count as one step; verbatim retries are left to that gate's own block limit), the chain is stopped. Depth (gate -> fix -> gate -> fix -> third gate) is still counted and listed in the history table; only with depth_alarm on does reaching max_depth also stop it (off by default: three independent gates each blocking once is not a chain). After stopping, the remaining gates of this turn only record and do not block; in an interactive session, tools other than reading and asking pause first, the wrap-up sends the chain history table, and the AI is asked to use AskUserQuestion to give the user three choices (revert the chain's changes / trust later AI review and continue / let this turn through); when no one can answer (headless, sub-agents), it does not pause, finishes as usual, and attaches the table to the wrap-up report. The ledger is Logs/chain-<session>.jsonl; before each file in a chain segment is changed, a snapshot is saved to workflow/chain-snap/<session>/ (not saved, with the reason recorded, beyond snapshot_max_bytes or once this segment already has snapshot_max_files), and choosing revert writes the files back one by one, up to restore_retries attempts per file; SessionEnd deletes this session's snapshots plus other sessions' snapshots and ledgers untouched for 7 days. enabled not set = off; turn off with enabled:false.",
+    "enabled": true,
+    "depth_alarm": false,
+    "max_depth": 2,
+    "max_same_gate": 2,
+    "snapshot_max_bytes": 5000000,
+    "snapshot_max_files": 200,
+    "restore_retries": 3
+  },
+  "tool_selftests": [],
+  "_doc_tool_selftests": "Tool self-tests run one by one by the weekly health check (tools/health-weekly.py): each entry is {name, cmd, expected: PASS|FAIL|DONE, sentinel?: sentinel name, runtime_gate?: command, timeout_s?}. Only the sentinel on the last non-empty output line counts; with a non-zero exit, expected PASS / DONE is always red and only expected=FAIL is green; a non-zero runtime_gate -> skipped, not red. cmd is split with shlex after backslashes are turned into forward slashes. Example: {\"name\": \"my-tool\", \"cmd\": \"python -X utf8 tools/my-tool.py --selftest\", \"expected\": \"PASS\", \"timeout_s\": 30}",
+  "depends_coverage_min": 0,
+  "_doc_depends_coverage_min": "Weekly health check threshold for Depends coverage (atoms with a path-type Depends / all atoms); below it is a yellow light. 0 = only reported, not judged."
+}

@@ -1,0 +1,12 @@
+{
+  "name": "memoryatoms-wisdom",
+  "description": "Reflection stats: records how each session went and shows at most two self-awareness lines at session start.",
+  "version": "6.1.1",
+  "author": {
+    "name": "holylight"
+  },
+  "dependencies": [
+    "memoryatoms"
+  ],
+  "license": "GPL-3.0-only"
+}

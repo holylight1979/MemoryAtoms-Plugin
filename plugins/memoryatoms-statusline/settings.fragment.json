@@ -1,0 +1,8 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "\"{{PYTHON}}\" \"{{CODE_ROOT}}/extensions/statusline/tools/statusline.py\"",
+    "padding": 0,
+    "refreshInterval": 10
+  }
+}

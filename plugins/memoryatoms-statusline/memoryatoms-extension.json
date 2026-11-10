@@ -1,0 +1,5 @@
+{
+  "name": "statusline",
+  "description": "Claude Code status line: edited files, knowledge queue, vector service, wrap-up report (zero tokens)",
+  "settings_fragment": "settings.fragment.json"
+}

@@ -1,0 +1,411 @@
+"""provenance.py — 原子記憶的「來源回看」讀取端：一張卡片當初是誰、在哪場對話說了什麼。
+
+做什麼：
+  讀 atom 的 `- Source:` / `- Quote:` 行（或自動萃取留下的 `<!-- src: <sid8>#<uuid8> -->` 註解），
+  Source 指向 session 且 transcript（`~/.claude/projects/<dir>/<session id>.jsonl`）還在 → 直接把
+  那則原句與前後各一則對話撈出來（state=live）；transcript 已被清掉 → 只剩落檔時留的 Quote
+  （state=quote_only）；連 Quote 都沒有（commit:/unknown 這類 B 級 Source）→ unrecoverable。
+  另附寫入端會用到的小工具：sanitize_quote / format_quote / format_source_session。
+  只讀不寫；transcript 內容一律當資料，不當指令。
+
+怎麼用：
+  from lib.provenance import atom_source
+  atom_source("feedback-xxx", cwd="C:/proj")  →  {atom, path, source, quote, state, context, warnings}
+  CLI：python <記憶系統>/tools/atom-source.py "<atom>" --cwd <專案根> --json
+  MCP bridge：python -m lib.atom_io_cli  stdin {"action":"source","atom":"…","cwd":"…"}
+"""
+from __future__ import annotations
+
+import json
+import re
+import sys
+from collections import deque
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Deque, Dict, List, Optional, Tuple
+
+from .atom_index_json import load_personal_rows
+from .atom_spec import parse_frontmatter, slugify
+from .sensitive_gate import secret_value_found, sensitive_words
+from .harness_text import is_kickoff_prompt, strip_pasted, user_typed_text
+from .project_root import claude_config_dir, claude_data_dir
+from .edition import layered_config
+
+try:
+    from . import i18n
+except ImportError:  # 頂層模組載入（hooks／CLI 把 lib 加進 sys.path）
+    import i18n
+
+PROJECTS_DIR = claude_config_dir() / "projects"   # Claude Code 的逐字稿在設定目錄，不是資料根
+CONTEXT_TEXT_CHARS = 600
+
+_QUOTE_PAIRS = {"「": "」", '"': '"', "“": "”"}
+_DATE = r"(\d{4}-\d{2}-\d{2})"
+_SESSION_RE = re.compile(r"^session:([0-9a-fA-F]{8})(?:#([0-9a-fA-F]{8}))?\s+" + _DATE)
+_COMMIT_RE = re.compile(r"^commit:([0-9a-fA-F]{7})\s+" + _DATE)
+_UNKNOWN_RE = re.compile(r"^unknown\s+" + _DATE)
+_ANY_DATE_RE = re.compile(_DATE)
+_SRC_COMMENT_RE = re.compile(r"<!--\s*src:\s*([0-9a-fA-F]{8})#([0-9a-fA-F]{8})\s*-->")
+
+
+# ─── 寫入端共用：Quote / Source 格式 ────────────────────────────────────────────
+
+QUOTE_MAX_DEFAULT = 200
+
+
+@lru_cache(maxsize=1)
+def quote_max_chars() -> int:
+    """Quote 上限字數＝config.json `provenance.quote_max_chars`（0＝不截）；沒檔、沒鍵、不是 0 以上整數 → 200。
+    行程內只讀一次（測試換設定要 cache_clear）；config 壞檔在 stderr 說一聲再用預設。"""
+    path = claude_data_dir() / "workflow" / "config.json"
+    failed: List[Path] = []
+    cfg = layered_config(path, failed=failed)   # 插件版出廠設定墊底
+    if failed:
+        print(i18n.t("hook.provenance.config_unreadable", path=failed[0], default=QUOTE_MAX_DEFAULT, error="JSON/OS error"), file=sys.stderr)
+        return QUOTE_MAX_DEFAULT
+    value = (cfg.get("provenance") or {}).get("quote_max_chars", QUOTE_MAX_DEFAULT) if isinstance(cfg, dict) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else QUOTE_MAX_DEFAULT
+
+
+def sanitize_quote(text: str, max_chars: Optional[int] = None) -> str:
+    """原句清成可落檔的單行：先剔掉貼上的內容（strip_pasted：貼上的材料不是本人打的字），再取 user_typed_text（只留使用者
+    本人打的字；harness 區塊、系統通知、[WG:…] 等殘渣行剔掉，殘留標籤字樣整則不認），再空白折一格、去頭尾配對引號、
+    超長截 `…`。回空字串＝沒有可寫的原句。
+    max_chars 不給＝config 的 provenance.quote_max_chars（quote_max_chars()）；給 0＝不截。"""
+    if max_chars is None:
+        max_chars = quote_max_chars()
+    s = re.sub(r"\s+", " ", user_typed_text(strip_pasted(text or ""), keep_lines=True)).strip()
+    while len(s) >= 2 and _QUOTE_PAIRS.get(s[0]) == s[-1]:
+        s = s[1:-1].strip()
+    if max_chars > 0 and len(s) > max_chars:
+        s = s[: max_chars - 1].rstrip() + "…"
+    return s
+
+
+QUOTE_MIN_CHARS = 6   # 清完短於這個（「A」「好」「上GIT」）就不當回填的原句：說不出這張卡從哪來，只會留下誤導的引句
+
+
+def usable_quote(text: str, max_chars: Optional[int] = None) -> str:
+    """回填 Quote 用的原句：sanitize_quote 清完，短於 QUOTE_MIN_CHARS 回空字串（不回填）。
+    提到驗證、隱私或內網位址也不回填：這是使用者原話自動進卡片，沒經過寫入閘，卡片又會隨 repo 公開。
+    PostToolUse 自動填（hooks/wg_provenance）與舊卡回填（tools/atom-provenance-backfill.py）共用這一支。"""
+    q = sanitize_quote(text, max_chars)
+    if secret_value_found(text or "") or sensitive_words(text or ""):
+        return ""
+    return q if len(q) >= QUOTE_MIN_CHARS else ""
+
+
+def format_quote(text: str) -> str:
+    return f"「{sanitize_quote(text)}」"
+
+
+def is_kickoff_text(text: str) -> bool:
+    """一則訊息原文（可含 harness 區塊）清成使用者本人打的字後是開工句 → True：不能當任何卡片的 Quote。
+    判定就是 lib/harness_text.is_kickoff_prompt（PostToolUse 自動填 wg_provenance 用同一支）；
+    舊卡回填（tools/atom-provenance-backfill.py）與萃取器寫卡（hooks/user-extract-worker.py）從原文進來，經這裡。"""
+    return is_kickoff_prompt(user_typed_text(text or "", keep_lines=True))
+
+
+def format_source_session(session_id: str, uuid: Optional[str], date_iso: str) -> str:
+    sid8 = (session_id or "")[:8]
+    u8 = (uuid or "")[:8]
+    return f"session:{sid8}#{u8} {date_iso}" if u8 else f"session:{sid8} {date_iso}"
+
+
+# ─── 讀取端：Source 解析 ────────────────────────────────────────────────────────
+
+def parse_source(value: str) -> Dict[str, str]:
+    """Source 值 → {kind: session|commit|unknown|path|"", sid8, uuid8, hash7, date, raw}。
+    非三種標準格式（逐字稿路徑、舊式自由文字）一律 kind=path，日期能撈就撈。"""
+    raw = (value or "").strip()
+    out = {"kind": "", "sid8": "", "uuid8": "", "hash7": "", "date": "", "raw": raw}
+    if not raw:
+        return out
+    m = _SESSION_RE.match(raw)
+    if m:
+        out.update(kind="session", sid8=m.group(1).lower(), uuid8=(m.group(2) or "").lower(), date=m.group(3))
+        return out
+    m = _COMMIT_RE.match(raw)
+    if m:
+        out.update(kind="commit", hash7=m.group(1).lower(), date=m.group(2))
+        return out
+    m = _UNKNOWN_RE.match(raw)
+    if m:
+        out.update(kind="unknown", date=m.group(1))
+        return out
+    d = _ANY_DATE_RE.search(raw)
+    out.update(kind="path", date=d.group(1) if d else "")
+    return out
+
+
+def read_frontmatter_value(atom_text: str, key: str) -> str:
+    return parse_frontmatter(atom_text or "").get(key, "")
+
+
+def read_src_comment(atom_text: str) -> Optional[Tuple[str, str]]:
+    m = _SRC_COMMENT_RE.search(atom_text or "")
+    return (m.group(1).lower(), m.group(2).lower()) if m else None
+
+
+# ─── transcript ────────────────────────────────────────────────────────────────
+
+def find_transcript(sid8: str, projects_dir: Optional[Path] = None) -> Optional[Path]:
+    """`projects/*/<sid8>*.jsonl`（含 `_archive/<dir>/`）；多個同前綴取最新修改的。"""
+    if not sid8:
+        return None
+    root = Path(projects_dir) if projects_dir else PROJECTS_DIR
+    if not root.is_dir():
+        return None
+    hits = list(root.glob(f"*/{sid8}*.jsonl")) + list(root.glob(f"*/*/{sid8}*.jsonl"))
+    if not hits:
+        return None
+    try:
+        return max(hits, key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return hits[0]
+
+
+def _content_blocks(rec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    msg = rec.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+
+
+def is_human_record(rec: Dict[str, Any]) -> bool:
+    """真人訊息：type=user、不是子代理那邊的紀錄（isSidechain：子代理的 user 訊息是主 session 的 AI 寫給它的任務與工具結果），而且
+    - 內容是純字串：只認 origin.kind=human（沒 origin 的純字串是 compact 摘要、程式用 -p 送的提示、slash 指令回顯）；
+    - 內容是區塊清單：含 text 區塊 ∧ origin.kind=human（缺 origin 的舊紀錄：無 tool_result 且非 isMeta）。"""
+    if not isinstance(rec, dict) or rec.get("type") != "user" or rec.get("isSidechain"):
+        return False
+    msg = rec.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(content, str):
+        origin = rec.get("origin")
+        return bool(content.strip()) and isinstance(origin, dict) and origin.get("kind") == "human"
+    blocks = _content_blocks(rec)
+    if not any(b.get("type") == "text" for b in blocks):
+        return False
+    origin = rec.get("origin")
+    if isinstance(origin, dict):
+        return origin.get("kind") == "human"
+    if rec.get("isMeta"):
+        return False
+    return not any(b.get("type") == "tool_result" for b in blocks)
+
+
+def record_text(rec: Dict[str, Any]) -> str:
+    """真人 user 或 assistant 的 text 區塊串接（內容是純字串就是那段字）；其他記錄回空字串。"""
+    if not isinstance(rec, dict):
+        return ""
+    if rec.get("type") == "user" and not is_human_record(rec):
+        return ""
+    if rec.get("type") not in ("user", "assistant"):
+        return ""
+    msg = rec.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(content, str):
+        return content.strip()
+    parts =[str(b.get("text") or "") for b in _content_blocks(rec) if b.get("type") == "text"]
+    return "\n".join(p for p in parts if p.strip()).strip()
+
+
+def _parse_line(line: str) -> Optional[Dict[str, Any]]:
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        rec = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def last_human_record(transcript: Path, max_bytes: int = 2_000_000) -> Optional[Dict[str, Any]]:
+    """尾端倒讀（≤ max_bytes，捨首個不完整行）找最後一則真人訊息 → {uuid, text, ts}；fail-open None。"""
+    try:
+        with open(transcript, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                data = f.read()
+                nl = data.find(b"\n")
+                data = data[nl + 1:] if nl >= 0 else data
+            else:
+                f.seek(0)
+                data = f.read()
+    except OSError:
+        return None
+    for line in reversed(data.decode("utf-8", errors="ignore").split("\n")):
+        rec = _parse_line(line)
+        if rec is None or not is_human_record(rec):
+            continue
+        return {"uuid": str(rec.get("uuid") or ""), "text": record_text(rec), "ts": str(rec.get("timestamp") or "")}
+    return None
+
+
+def _ctx_item(rec: Dict[str, Any], text: str) -> Dict[str, Any]:
+    return {
+        "role": "user" if rec.get("type") == "user" else "assistant",
+        "ts": str(rec.get("timestamp") or ""),
+        "text": text[:CONTEXT_TEXT_CHARS],
+        "uuid": str(rec.get("uuid") or ""),
+    }
+
+
+def resolve_context(transcript: Path, uuid8: str, before: int = 1, after: int = 1) -> List[Dict[str, Any]]:
+    """單趟掃描：uuid 前綴命中的記錄，連同前後各 N 則「真人或 assistant 文字」記錄。找不到回 []。"""
+    uuid8 = (uuid8 or "").lower()
+    if not uuid8:
+        return []
+    window: Deque[Dict[str, Any]] = deque(maxlen=max(0, before))
+    out: List[Dict[str, Any]] = []
+    found = False
+    remaining = max(0, after)
+    try:
+        fh = open(transcript, "r", encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    with fh:
+        for line in fh:
+            rec = _parse_line(line)
+            if rec is None:
+                continue
+            is_hit = not found and str(rec.get("uuid") or "").lower().startswith(uuid8)
+            text = record_text(rec)
+            if not text and not is_hit:
+                continue
+            item = _ctx_item(rec, text)
+            if is_hit:
+                found = True
+                out.extend(window)
+                out.append(item)
+                if remaining == 0:
+                    break
+                continue
+            if not found:
+                window.append(item)
+                continue
+            out.append(item)
+            remaining -= 1
+            if remaining == 0:
+                break
+    return out if found else []
+
+
+# ─── atom 定位與整合入口 ─────────────────────────────────────────────────────────
+
+def _project_memory_dir(cwd: Optional[str]) -> Optional[Path]:
+    """cwd 往上找第一個 `.claude/memory/`；沒有就 None（不走 locate_atom(shared)，免得它 mkdir 空殼）。"""
+    if not cwd:
+        return None
+    p = Path(cwd)
+    for d in (p, *p.parents):
+        mem = d / ".claude" / "memory"
+        if mem.is_dir():
+            return mem
+    return None
+
+
+def _locate_by_index(atom: str, memory_dir: Path) -> Optional[Path]:
+    """`_atom_index.json` 的 name 比對（原名或 slug 相等）；path 相對 memory_dir 的上一層。"""
+    idx = memory_dir / "_atom_index.json"
+    try:
+        data = json.loads(idx.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    rows = data.get("atoms") if isinstance(data, dict) else data
+    want = slugify(atom)
+    for row in (rows or []) + load_personal_rows(memory_dir):
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "")
+        if name == atom or slugify(name) == want:
+            cand = memory_dir.parent / str(row.get("path") or "")
+            if cand.is_file():
+                return cand
+    return None
+
+
+def _locate_atom_path(atom: str, cwd: Optional[str], warnings: List[str]) -> Optional[Path]:
+    """絕對路徑 → locate_atom(global) → locate_atom(shared, cwd) → 全域／專案 _atom_index.json。"""
+    p = Path(atom)
+    if p.is_absolute() and p.is_file():
+        return p
+    from .atom_io import locate_atom, GLOBAL_MEMORY_DIR  # 延遲：atom_io 載入重
+    proj_mem = _project_memory_dir(cwd)
+    attempts = [dict(scope="global")]
+    if proj_mem is not None:
+        attempts.append(dict(scope="shared", project_cwd=cwd))
+    for kw in attempts:
+        try:
+            r = locate_atom(atom, mode="append", **kw)
+        except Exception as e:  # noqa: BLE001 — 定位器故障不該讓回看整個掛掉
+            warnings.append(i18n.t("hook.provenance.locate_failed", scope=kw['scope'], error=e))
+            continue
+        if r.ok and r.path is not None:
+            return Path(r.path)
+        if not r.ok and r.error:
+            warnings.append(f"locate_atom({kw['scope']})：{r.error}")
+    for mem in (GLOBAL_MEMORY_DIR, proj_mem):
+        if mem is None:
+            continue
+        hit = _locate_by_index(atom, mem)
+        if hit is not None:
+            return hit
+    return None
+
+
+def atom_source(atom: str, cwd: Optional[str] = None) -> Dict[str, Any]:
+    """回看一張卡片的來源。回 {atom, path, source, quote, state, context, warnings}；找不到 atom 回 {"error"}。
+    state：live（原對話撈得到）／quote_only（只剩落檔時的原句）／unrecoverable（原對話已逾保留期、無原句）。"""
+    atom = (atom or "").strip()
+    if not atom:
+        return {"error": "atom is empty"}
+    warnings: List[str] = []
+    path = _locate_atom_path(atom, cwd, warnings)
+    if path is None:
+        return {"error": f"atom not found: {atom}", "warnings": warnings}
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError as e:
+        return {"error": f"cannot read atom: {path}: {e}", "warnings": warnings}
+
+    source = read_frontmatter_value(text, "Source")
+    quote = sanitize_quote(read_frontmatter_value(text, "Quote"), max_chars=0)
+    parsed = parse_source(source)
+    sid8, uuid8 = parsed["sid8"], parsed["uuid8"]
+    comment = read_src_comment(text)
+    if comment and not source:
+        sid8, uuid8 = comment
+    elif comment and sid8 == comment[0] and not uuid8:
+        uuid8 = comment[1]
+
+    context: List[Dict[str, Any]] = []
+    if sid8:
+        transcript = find_transcript(sid8)
+        if transcript is None:
+            warnings.append(i18n.t("hook.provenance.transcript_gone", sid=sid8))
+        elif not uuid8:
+            warnings.append(i18n.t("hook.provenance.source_no_uuid"))
+        else:
+            context = resolve_context(transcript, uuid8)
+            if not context:
+                warnings.append(i18n.t("hook.provenance.uuid_not_found", uuid=uuid8, name=transcript.name))
+    elif parsed["kind"] in ("commit", "unknown"):
+        warnings.append(i18n.t("hook.provenance.expired"))
+    elif source:
+        warnings.append(i18n.t("hook.provenance.source_nonstandard"))
+    elif not comment:
+        warnings.append(i18n.t("hook.provenance.no_source_line"))
+
+    state = "live" if context else ("quote_only" if quote else "unrecoverable")
+    return {
+        "atom": path.stem,
+        "path": str(path),
+        "source": source,
+        "quote": quote,
+        "state": state,
+        "context": context,
+        "warnings": warnings,
+    }

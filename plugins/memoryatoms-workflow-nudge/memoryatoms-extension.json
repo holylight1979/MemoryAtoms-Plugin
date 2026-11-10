@@ -1,0 +1,28 @@
+{
+  "name": "workflow-nudge",
+  "description": "Working-style nudges: suggests fan-out for research-type requests and parallel sub-agents for several independent tasks",
+  "python": {
+    "path": ["hooks"],
+    "on": {
+      "UserPromptSubmit": "nudge_plugin:on_prompt"
+    }
+  },
+  "config": {
+    "parallel_agents": {
+      "_doc": "The parallel-agents suggestion [Parallel:Suggest] fires only on strong signals: the score maxes out at 7 (conjunctions x2 + batch 2 + cross-target 1 + plural 1 + multiple files 1); ordinary requests land at 2-5, so min_score 6 or higher keeps it from firing on every prompt. max_per_session caps how many times this kind of suggestion appears in one session. The judgment (score_prompt) is unchanged; the thresholds only decide whether to print.",
+      "enabled": true,
+      "min_score": 6,
+      "max_per_session": 2,
+      "cooldown_turns": 3,
+      "min_prompt_chars": 15
+    },
+    "research_fanout": {
+      "_doc": "Detects knowledge-retrieval prompts (look it up / search / I want to know) and injects the two-stage fan-out SOP. When it fires, the parallel_agents suggestion is suppressed to avoid duplicates. Turn off with enabled:false. Fires only on strong signals: min_signal_hits is the threshold on the total of retrieval verbs plus knowledge-domain / local-location / explicit-file hits (a request like \"look up how X is used\" scores 2 and does not fire; \"look up and research the differences between A and B for a selection comparison, and what the official docs say\" is the level that fires); max_per_session caps how many times per session. The judgment (classify) is unchanged.",
+      "enabled": true,
+      "min_signal_hits": 4,
+      "max_per_session": 2,
+      "cooldown_turns": 2,
+      "min_prompt_chars": 5
+    }
+  }
+}

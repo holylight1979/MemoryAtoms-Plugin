@@ -1,0 +1,28 @@
+# Vector service packages, every version pinned. tools/setup-vector.py installs exactly this list into the
+# vector venv (plugin edition: ${CLAUDE_PLUGIN_DATA}/venv) with --only-binary=:all:. requirements.txt stays the
+# loose list the git installer uses.
+#
+# How these pins were chosen: lancedb is the version running on the author's machine (pip show lancedb);
+# the rest is its runtime dependency closure read from that install (importlib.metadata requires, extras
+# dropped, markers kept), and each pin's requires_python checked on https://pypi.org/pypi/<name>/<version>/json.
+# numpy 2.4 needs Python 3.11+, so Python 3.10 gets 2.2.6. overrides is only required below Python 3.12.
+# To re-pin: install the new lancedb in a scratch venv, then `python -m pip freeze` there and copy the lines.
+lancedb==0.29.2
+annotated-types==0.7.0
+colorama==0.4.6; platform_system == "Windows"
+deprecation==2.1.0
+lance-namespace==0.5.2
+lance-namespace-urllib3-client==0.5.2
+numpy==2.4.2; python_version >= "3.11"
+numpy==2.2.6; python_version < "3.11"
+overrides==7.7.0; python_version < "3.12"
+packaging==26.0
+pyarrow==23.0.1
+pydantic==2.12.5
+pydantic-core==2.41.5
+python-dateutil==2.9.0.post0
+six==1.17.0
+tqdm==4.67.3
+typing-extensions==4.15.0
+typing-inspection==0.4.2
+urllib3==2.6.3

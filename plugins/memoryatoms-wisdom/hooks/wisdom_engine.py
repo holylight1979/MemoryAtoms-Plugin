@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""
+wisdom_engine.py — Wisdom Engine
+
+Two forces: Situation Classifier (hard rules), Reflection Engine (sliding window).
+Called by workflow-guardian.py. Cold start = zero tokens.
+
+reflection_metrics.json schema: per task_type stores a sliding window of the last
+  `window_size` (=10) outcomes (not cumulative {correct,total}).
+  _migrate_v211_to_v212() preserves old V2.11 cumulative in `legacy_cumulative`.
+"""
+import os
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List
+
+_LIB_DIR = str(Path(os.environ.get("WG_CORE_ROOT") or Path(__file__).resolve().parents[3]) / "lib")   # 程式碼：資料根算法從本樹載
+if _LIB_DIR not in sys.path:
+    sys.path.insert(0, _LIB_DIR)
+from project_root import claude_data_dir  # noqa: E402
+from i18n import t  # noqa: E402
+
+WISDOM_DIR = claude_data_dir() / "memory" / "wisdom"
+REFLECTION_PATH = WISDOM_DIR / "reflection_metrics.json"
+
+ARCH_KEYWORDS = {"架構", "refactor", "重構", "migrate", "migration", "重寫"}
+
+SCHEMA_VERSION = "2.12"
+DEFAULT_WINDOW_SIZE = 10
+
+
+def _load_json(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return default
+
+
+def _save_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp.replace(path)
+    except OSError as e:
+        print(f"[wisdom] save error {path.name}: {e}", file=sys.stderr)
+        if tmp.exists():
+            tmp.unlink()
+
+
+# ── Schema migration (V2.11 → V2.12) ────────────────────────────────────────
+
+def _is_v211_cumulative(faa_bucket: Any) -> bool:
+    """V2.11 buckets are {"correct": int, "total": int}; V2.12 are {"recent": [...]}."""
+    if not isinstance(faa_bucket, dict):
+        return False
+    return "correct" in faa_bucket or "total" in faa_bucket
+
+
+def _migrate_v211_to_v212(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    """Idempotent migration. Preserves V2.11 cumulative as `legacy_cumulative`."""
+    if metrics.get("schema_version") == SCHEMA_VERSION:
+        return metrics
+
+    legacy: Dict[str, Any] = {}
+    m = metrics.setdefault("metrics", {})
+
+    faa = m.get("first_approach_accuracy", {})
+    if any(_is_v211_cumulative(v) for v in faa.values() if isinstance(v, dict)):
+        legacy["first_approach_accuracy"] = faa
+        m["first_approach_accuracy"] = {
+            "single_file":  {"recent": []},
+            "multi_file":   {"recent": []},
+            "architecture": {"recent": []},
+        }
+
+    oe = m.get("over_engineering_rate", {})
+    if "total_suggestions" in oe or "user_reverted_or_simplified" in oe:
+        legacy["over_engineering_rate"] = oe
+        m["over_engineering_rate"] = {"recent": []}
+
+    sa = m.get("silence_accuracy", {})
+    if "held_back_ok" in sa or "held_back_missed" in sa:
+        legacy["silence_accuracy"] = sa
+        m["silence_accuracy"] = {"recent": []}
+
+    if legacy:
+        legacy["frozen_at"] = datetime.now(timezone.utc).isoformat()
+        metrics["legacy_cumulative"] = legacy
+        # Clear stale V2.11 blind_spots (derived from now-archived cumulative);
+        # next reflect() will recompute from sliding window.
+        metrics["blind_spots"] = []
+
+    metrics["schema_version"] = SCHEMA_VERSION
+    metrics.setdefault("window_size", DEFAULT_WINDOW_SIZE)
+    metrics.setdefault("blind_spots", [])
+    metrics.setdefault("arch_sensitivity_elevated", False)
+    return metrics
+
+
+def _load_metrics() -> Dict[str, Any]:
+    """Load + migrate. Single funnel for all readers/writers."""
+    raw = _load_json(REFLECTION_PATH, _empty_reflection())
+    if not isinstance(raw, dict):
+        raw = _empty_reflection()
+    return _migrate_v211_to_v212(raw)
+
+
+def _append_sliding(lst: List[Any], item: Any, cap: int) -> List[Any]:
+    """Append + trim to last `cap`."""
+    lst.append(item)
+    if len(lst) > cap:
+        del lst[: len(lst) - cap]
+    return lst
+
+
+# ── Force 1: Situation Classifier ─────────────
+
+def classify_situation(prompt_analysis: Dict[str, Any]) -> Dict[str, str]:
+    """Hard rules → approach (direct/confirm/plan) + inject string."""
+    keywords = set(prompt_analysis.get("keywords", []))
+    file_count = prompt_analysis.get("estimated_files", 1)
+    is_feature = prompt_analysis.get("intent", "") == "feature"
+    touches_arch = bool(keywords & ARCH_KEYWORDS)
+
+    metrics = _load_metrics()
+    arch_elevated = metrics.get("arch_sensitivity_elevated", False)
+    plan_threshold = 2 if arch_elevated else 3
+
+    if touches_arch or file_count > plan_threshold:
+        result = {"approach": "plan", "inject": "[情境:規劃] 架構級變更。行動：先 EnterPlanMode 列出影響範圍再動手"}
+    elif file_count > 2 and is_feature:
+        result = {"approach": "confirm", "inject": "[情境:確認] 跨檔修改。行動：先列出要修改的完整檔案清單確認再開始"}
+    else:
+        result = {"approach": "direct", "inject": ""}
+
+    return result
+
+
+# ── Force 2: Reflection Engine (sliding window) ───────────────────────
+
+def _empty_reflection() -> Dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "window_size": DEFAULT_WINDOW_SIZE,
+        "metrics": {
+            "first_approach_accuracy": {
+                "single_file":  {"recent": []},
+                "multi_file":   {"recent": []},
+                "architecture": {"recent": []},
+            },
+            "over_engineering_rate": {"recent": []},
+            "silence_accuracy": {"recent": []},
+        },
+        "arch_sensitivity_elevated": False,
+        "blind_spots": [],
+        "last_reflection": None,
+    }
+
+
+_BLIND_SPOT_ACTIONS = {
+    "single_file": t("ext.wisdom.action_single_file"),
+    "multi_file": t("ext.wisdom.action_multi_file"),
+    "architecture": t("ext.wisdom.action_architecture"),
+}
+
+
+def _ratio(recent: List[Any], key: str = None) -> float:
+    """Compute correct ratio from sliding window. None-safe."""
+    if not recent:
+        return 0.0
+    if key is None:
+        # list of bool
+        return sum(1 for x in recent if x) / len(recent)
+    # list of dict; sum where x[key] is truthy
+    return sum(1 for x in recent if x.get(key)) / len(recent)
+
+
+def get_reflection_summary() -> List[str]:
+    """SessionStart: inject blind spot reminders with actionable guidance."""
+    metrics = _load_metrics()
+    faa = metrics.get("metrics", {}).get("first_approach_accuracy", {})
+    lines = []
+    for tt, b in faa.items():
+        recent = b.get("recent", [])
+        if len(recent) >= 3:
+            rate = _ratio(recent)
+            if rate < 0.7:
+                action = _BLIND_SPOT_ACTIONS.get(tt, "")
+                lines.append(t("ext.wisdom.blind_spot_line", task_type=tt, rate=f"{rate:.0%}", action=action))
+    return lines[:2]
+
+
+def reflect(state: Dict[str, Any]) -> None:
+    """SessionEnd: append outcomes to sliding windows + Bayesian calibration."""
+    metrics = _load_metrics()
+    window = int(metrics.get("window_size", DEFAULT_WINDOW_SIZE))
+    m = metrics.setdefault("metrics", _empty_reflection()["metrics"])
+
+    # ── Determine task type from wisdom_approach + modified_files ──
+    approach = state.get("wisdom_approach", "direct")
+    mod_files = state.get("modified_files", [])
+    file_count = len(set(mf.get("path", "") for mf in mod_files))
+    if approach == "plan":
+        task_type = "architecture"
+    elif file_count <= 1:
+        task_type = "single_file"
+    else:
+        task_type = "multi_file"
+
+    retry_count = int(state.get("wisdom_retry_count", 0))
+    fix_escalation = bool(state.get("fix_escalation_triggered", False))
+
+    # retry calibration:
+    #   - architecture tasks: tolerate 1 retry (plan-mode iteration is by design),
+    #     but fix_escalation_triggered overrides → real failure
+    #   - other tasks: strict, retry_count == 0 means correct
+    if task_type == "architecture":
+        correct = (retry_count <= 1) and (not fix_escalation)
+    else:
+        correct = retry_count == 0
+
+    # ── first_approach_accuracy.recent ──
+    faa = m.setdefault("first_approach_accuracy", {})
+    bucket = faa.setdefault(task_type, {"recent": []})
+    bucket.setdefault("recent", [])
+    _append_sliding(bucket["recent"], bool(correct), window)
+
+    # ── over_engineering_rate.recent: True = retry occurred this session ──
+    oe = m.setdefault("over_engineering_rate", {"recent": []})
+    oe.setdefault("recent", [])
+    _append_sliding(oe["recent"], bool(retry_count > 0), window)
+
+    # ── silence_accuracy.recent: only tracked when approach == direct ──
+    sa = m.setdefault("silence_accuracy", {"recent": []})
+    sa.setdefault("recent", [])
+    if approach == "direct":
+        _append_sliding(
+            sa["recent"],
+            {"approach": "direct", "ok": bool(correct)},
+            window,
+        )
+
+    # ── Blind spot detection (sliding window) ──
+    blind_spots = []
+    for tt, b in faa.items():
+        recent = b.get("recent", [])
+        if len(recent) >= 3:
+            rate = _ratio(recent)
+            if rate < 0.7:
+                blind_spots.append(f"{tt} 首次正確率 {rate:.0%}")
+    metrics["blind_spots"] = blind_spots
+
+    # ── Bayesian: arch sensitivity (sliding window) ──
+    arch_recent = faa.get("architecture", {}).get("recent", [])
+    if len(arch_recent) >= 3:
+        rate = _ratio(arch_recent)
+        if rate < 0.34:
+            metrics["arch_sensitivity_elevated"] = True
+        elif rate >= 0.5:
+            metrics["arch_sensitivity_elevated"] = False
+
+    metrics["last_reflection"] = datetime.now(timezone.utc).isoformat()
+    _save_json(REFLECTION_PATH, metrics)

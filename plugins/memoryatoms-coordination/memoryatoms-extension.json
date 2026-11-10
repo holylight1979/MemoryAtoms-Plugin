@@ -1,0 +1,21 @@
+{
+  "name": "coordination",
+  "description": "Multi-session coordination: warns when another live session edits the same file or is about to finish with git (warns only, never blocks)",
+  "python": {
+    "path": ["hooks"],
+    "on": {
+      "PreToolUse": "coordination_plugin:before_tool",
+      "PreToolUse.warned": "coordination_plugin:warned",
+      "PostToolUse.saved": "coordination_plugin:after_saved"
+    }
+  },
+  "config": {
+    "coordination": {
+      "_doc": "Cross-session conflict warning (hooks/wg_coordination.py). PreToolUse scans modified_files in the state of other live sessions: Write/Edit/NotebookEdit on the same file -> warn only (additionalContext, visible with the tool result next turn, + systemMessage); Bash git add -A / reset --hard while another session has uncommitted changes in the same cwd -> the same kind of warning; PostToolUse adds a 60 s late-collision check. Fails open throughout; logs go to Logs/session-coordination/<sid>.jsonl. enabled turns it off; warn_suppress_min = minutes before warning about the same file again; scan_mtime_window_s = how recently a peer state must have changed to count as live; max_scan_files = the most state files parsed in one scan.",
+      "enabled": true,
+      "warn_suppress_min": 10,
+      "scan_mtime_window_s": 1800,
+      "max_scan_files": 20
+    }
+  }
+}
