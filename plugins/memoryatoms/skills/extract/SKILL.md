@@ -1,6 +1,6 @@
 ---
 name: extract
-description: Manual knowledge extraction: collect knowledge worth keeping from the current conversation, confirm item by item, then write via atom_write.
+description: "Manual knowledge extraction: collect knowledge worth keeping from the current conversation, confirm item by item, then write via atom_write."
 disable-model-invocation: true
 ---
 
@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 > Collect knowledge points from the **current conversation**; after the user confirms, write them with MCP `atom_write`.
 > Global skill, works in any project. Does not depend on Ollama, does not read the transcript, does not call `hooks/extract-worker.py`
-> (the worker is hook-only: it finds the transcript from the stdin session_id / cwd and writes results back to the session state's knowledge_queue - that per-turn pipeline is retired and manual use does not revive it).
+> (the worker is hook-only: it finds the transcript from the stdin session_id / cwd; this skill does not use it).
 
 ---
 

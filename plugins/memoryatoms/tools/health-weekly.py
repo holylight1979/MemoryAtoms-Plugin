@@ -265,6 +265,22 @@ def _hooks_on_path() -> None:
         sys.path.insert(0, hooks_dir)
 
 
+def _extension_freshness(fresh_cut: datetime, sessions_active: bool) -> list[dict]:
+    """開著的擴充回報自己產物新不新（hooks/wg_plugins 插件點 HealthWeekly.freshness）；沒有擴充＝空清單。
+    擴充機制本身載不起來 → 黃燈一行，不無聲。"""
+    try:
+        _hooks_on_path()
+        lib_dir = str(CODE_DIR / "lib")
+        if lib_dir not in sys.path:
+            sys.path.append(lib_dir)
+        import wg_plugins  # noqa: WPS433
+        out = wg_plugins.emit("HealthWeekly.freshness", fresh_cut=fresh_cut, fresh_days=FRESH_DAYS,
+                              sessions_active=sessions_active)
+    except Exception as e:  # noqa: BLE001
+        return [{"yellow": [f"extension freshness checks unavailable: {type(e).__name__}: {e}"]}]
+    return [x for x in out if isinstance(x, dict)]
+
+
 def _run_selftest(st: dict, cwd: Path) -> dict:
     """跑一筆 tool_selftests {name, cmd, expected(PASS|FAIL|DONE), sentinel?, runtime_gate, timeout_s}。
     runtime_gate 非 0 → skipped（環境未就緒屬預期，不算紅）。判定：取 stdout 的**最後一個非空行**當哨兵行
@@ -559,6 +575,29 @@ def _official_block(cli: str | None, run=_claude_p) -> tuple[list[str], list[str
     return lines, yellow
 
 
+def _staging_block(staging: Path, cfg: dict, now: datetime) -> tuple[list[str], list[str]]:
+    """memory/_staging 堆積 → (黃燈, 資訊)。只算頂層 .md／.json（排除 _INDEX.md）；子資料夾是工程工作樹
+    （如 core-cut/ 上千檔），算進去黃燈會永遠亮，改成列名字不計。資料夾不存在 → 資訊一行 0 檔，不報錯。
+    門檻 config staging_hygiene{max_files,max_kb,max_age_days}，任一超過 → 黃燈，否則資訊一行。"""
+    entries = list(staging.iterdir()) if staging.is_dir() else []
+    files = [f for f in entries if f.is_file()
+             and f.suffix.lower() in (".md", ".json") and f.name != "_INDEX.md"]
+    dirs = sorted(d.name + "/" for d in entries if d.is_dir())
+    tail = t("cli.health_weekly.staging_tail", names="、".join(dirs[:5])) if dirs else ""
+    if not files:
+        return [], [t("cli.health_weekly.staging_empty", tail=tail)]
+    total_kb = sum(f.stat().st_size for f in files) / 1024
+    oldest = min(files, key=lambda f: f.stat().st_mtime)
+    age = (now - datetime.fromtimestamp(oldest.stat().st_mtime)).days
+    line = t("cli.health_weekly.staging_line", count=len(files), kb=f"{total_kb:.0f}", age=age,
+             oldest=oldest.name, tail=tail)
+    over = (len(files) > int(cfg.get("max_files", 10)) or total_kb > float(cfg.get("max_kb", 200))
+            or age > int(cfg.get("max_age_days", 30)))
+    if over:
+        return [t("cli.health_weekly.staging_over", line=line)], []
+    return [], [line]
+
+
 def collect() -> dict:
     now = datetime.now()
     red: list[str] = []      # 需處理
@@ -602,6 +641,10 @@ def collect() -> dict:
     info.extend(_instructions_loaded_block())
     # 2d'. config 內建 PYTEST／PYTEST_MEASURE regex 停在舊版（只更新 hooks、沒對 config 的機器）
     yellow.extend(_pytest_regex_block(_load_config()))
+    # 2e. _staging 堆積（清單正本放這裡，沒人封存就一直長）
+    sy, si = _staging_block(MEMORY / "_staging", _load_config().get("staging_hygiene") or {}, now)
+    yellow.extend(sy)
+    info.extend(si)
 
     # 3/4. 索引一致性
     for name, args in (
@@ -679,6 +722,12 @@ def collect() -> dict:
                 red.append(t("cli.health_weekly.stalled", label=label, age=age, days=FRESH_DAYS))
             else:
                 info.append(t("cli.health_weekly.idle_expected", label=label, age=age, days=FRESH_DAYS))
+
+    # 6b. 擴充自己的管線鮮度（插件點 HealthWeekly.freshness：回 {"red": [...], "yellow": [...], "info": [...]}）
+    for found in _extension_freshness(fresh_cut, sessions_active):
+        red += found.get("red") or []
+        yellow += found.get("yellow") or []
+        info += found.get("info") or []
 
     # 7. 來源防腐：Source 指到 session、transcript 還在、距今 ≥ anti_rot_days、尚無 Quote → 搶在 transcript 清掉前補原句
     try:

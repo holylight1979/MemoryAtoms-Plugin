@@ -257,7 +257,8 @@ def detect_evasion(text: str, recent_user_prompts: List[str],
     """Return {phrase, context_excerpt, category, hint} or None.
 
     LLM 介入的入口（規則 NOT_DOING_DECLARED）：命中的那一行若對到一條有理由的「不做｜<哪一件>：<理由>」，
-    或「追蹤｜…」、帶使用者引用的不做行 → 這一處不標（audit 給了就記一筆），繼續看別處；全部都對到 → None。
+    或「追蹤｜…」、帶使用者引用的不做行、帶原因詞的白話說明句（同一行，或另一行帶到命中的詞）→ 這一處不標（audit 給了就記一筆），
+    繼續看別處；全部都對到 → None。
     引號內轉述不算（strip_quoted_spans）；excerpt 取自原文（等長替換索引不位移）。
     """
     if not text:
@@ -271,7 +272,7 @@ def detect_evasion(text: str, recent_user_prompts: List[str],
         if is_claim_line(line):          # 宣稱行是對閘的回答（「非本回合宣稱」），不是退避句
             continue
         cat = evasion_category(phrase)
-        v = not_doing_verdict(line, decls, prompts, cat["exception"])
+        v = not_doing_verdict(line, decls, prompts, cat["exception"], phrase)
         if not v.owed:
             _audit_once(audit, phrase, v)
             continue
@@ -307,7 +308,7 @@ def detect_deferral(
 
     受詞判定＝命中句去掉退縮語與標點後仍 ≥ min_object_chars 字（純「下個 session。」
     這種無受詞的句子不算）。LLM 介入的入口（規則 NOT_DOING_DECLARED）：命中句所在的那一行
-    對到一條有理由的不做行或「追蹤｜…」行 → 這一句不算（audit 給了就記一筆），看下一句。
+    對到一條有理由的不做行、「追蹤｜…」行或白話說明句 → 這一句不算（audit 給了就記一筆），看下一句。
     ``` 程式區塊與 markdown 表格列先剔掉（strip_markdown_blocks）：列舉的字串不是退縮句。
     詞表單一來源 forbidden-phrases.json categories[id=deferral-attribution]。
     """
@@ -333,7 +334,7 @@ def detect_deferral(
             residual = _OBJECT_STRIP_RE.sub("", rest)
             if len(residual) < max(int(min_object_chars), 1):
                 continue
-            v = not_doing_verdict(line, decls, prompts)
+            v = not_doing_verdict(line, decls, prompts, phrase=m.group(0))
             if not v.owed:
                 _audit_once(audit, m.group(0), v)
                 continue
@@ -377,10 +378,10 @@ def deferral_gate_reason(
     if context_ratio > max_ratio:
         return None
     pct = f"~{int(context_ratio * 100)}%" if context_ratio > 0 else i18n.t("hook.wg_evasion.cannot_measured_treated_as")
-    from wg_release_rules import CLOSING_ASK
-    return (
+    from wg_release_rules import CLOSING_ASK, PLAIN_DISCLAIM_ASK
+    return (   # 「追蹤｜」行照教（要寫進追蹤帳本）；「只是描述」那半句只教白話句，不是退避行照收（wg_release_rules.parse_not_doing）
         i18n.t("hook.wg_evasion.deferral_gate", pct=pct, max_pct=int(max_ratio * 100), sentence=det['sentence'], phrase=det['phrase'],
-               closing_ask=CLOSING_ASK, disclaim=i18n.t("hook.wg_evasion.disclaim_word"))   # disclaim 是 wg_release_rules._NOT_EVASION_RE 認的記號（兩語言都認）
+               closing_ask=CLOSING_ASK, plain_disclaim_ask=PLAIN_DISCLAIM_ASK)
     )
 
 

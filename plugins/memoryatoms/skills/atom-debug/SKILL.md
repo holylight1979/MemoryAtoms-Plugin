@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # /memoryatoms:atom-debug — Atom memory debug log switch
 
-> Toggles the atom memory system's injection/extraction debug log. When on, the content of every injection and extraction is written to `~/.claude/Logs/atom-debug-{date}.log`.
+> Toggles the atom memory system's injection/extraction debug log. When on, the content of every injection and extraction is written to `~/.claude/Logs/atom-debug-{YYYY-MM-DD_HH}.log` (one file per hour).
 > Global skill; works in any project.
 
 ---
@@ -42,5 +42,5 @@ Edit the `atom_debug` value in `config.json` with the Edit tool.
 
 Reply with the result:
 
-- **On**: "Atom Debug Log is on. Injection/extraction content will be logged to `~/.claude/Logs/atom-debug-{date}.log`."
+- **On**: "Atom Debug Log is on. Injection/extraction content will be logged to `~/.claude/Logs/atom-debug-{YYYY-MM-DD_HH}.log` (one file per hour)."
 - **Off**: "Atom Debug Log is off."

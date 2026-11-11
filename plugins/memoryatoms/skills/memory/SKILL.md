@@ -73,7 +73,7 @@ Run `tools/memory-audit.py` and `tools/atom-health-check.py` together:
    python "${CLAUDE_PLUGIN_ROOT}/tools/memory-audit.py" [--project-dir $PROJECT_MEM_DIR] [--json]
    ```
    - `layout` error = flat atoms directly under the global `memory/` root (category folders are required) -> `python "${CLAUDE_PLUGIN_ROOT}/tools/atom-categorize.py" plan` (produces a draft), then `apply --map <json>` to file them; do not mv by hand.
-   - For the project layer, `MEMORY.md line count` is only **info** while that project's index still contains flat `shared/<slug>.md` entries (not yet migrated); the 40-line cap applies only after migration (`atom-categorize.py plan|apply --memory-dir $PROJECT_MEM_DIR`). The `<!-- atom-catalog -->` block in the project MEMORY.md is maintained by `sync-memory-index.py --write --memory-dir $PROJECT_MEM_DIR`.
+   - For the project layer, `MEMORY.md line count` is only **info** while that project's index still contains flat `shared/<slug>.md` entries (not yet migrated); the line cap (40 lines for the global layer, 150 for the project layer) applies only after migration (`atom-categorize.py plan|apply --memory-dir $PROJECT_MEM_DIR`). The `<!-- atom-catalog -->` block in the project MEMORY.md is maintained by `sync-memory-index.py --write --memory-dir $PROJECT_MEM_DIR`.
 
 3. **atom-health-check** (2 tools in parallel):
    ```bash

@@ -16,11 +16,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import i18n   # lib/：給人看的提示走語言表
 from wg_core import _now_iso, _atom_debug_error, append_guard_log, next_event_seq
-from wg_lazy_re import lazy_module
+from wg_lazy_re import lazy_func, lazy_module
 from handlers._shared import _is_ephemeral_path, note_ephemeral_skip
 
 _vl = lazy_module("wg_verify_ledger")
 _rr = lazy_module("wg_release_rules")
+_ensure_lf = lazy_func("handlers.post_tool_use_lf", "_ensure_lf")   # LF_AFTER_WRITE（守門家族；補回未知寫入只在守門開時走）
 try:
     # Bash／PowerShell 改檔目標擷取（wg_core）；載不進來就只記 Edit／Write／MultiEdit／NotebookEdit 目標
     from wg_core import write_paths_from_tool as _write_paths_from_tool
@@ -194,6 +195,7 @@ def _recover_unknown_write(state: Dict[str, Any], session_id: str, command: str,
                 continue
             _note_modified(state, session_id, p, tool_name, agent_id, via=uw.VIA)
             noted.append(p)
+            _ensure_lf(p)             # LF_AFTER_WRITE：內嵌 python 寫檔（open(..., 'w')）的 CRLF 主要從這條進來
             _note_launcher(p)         # LAUNCHER_NOT_CODE：內嵌碼寫出來的啟動器也認
         except Exception as e:  # noqa: BLE001
             print(i18n.t("hook.post_tool_use_writes.note_failed", path=p, error=f"{type(e).__name__}: {e}"), file=sys.stderr)

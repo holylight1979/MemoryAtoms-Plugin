@@ -31,7 +31,7 @@ metadata:
 - **Done when**: you hold a concrete path string.
 
 ### Step 2: Classify (run the guard engine)
-- **Action**: `python skills/refile/scripts/refile_classify.py classify "<path>"`
+- **Action**: `python "${CLAUDE_SKILL_DIR}/scripts/refile_classify.py" classify "<path>"`
 - **Done when**: exit 0 and the JSON contains a `verdict` field.
 - **Branching**: follow the verdict table below; only `classify` proceeds to Step 3.
 
@@ -41,7 +41,7 @@ metadata:
 - **Done when**: the target is at its new location (index path updated, or the loose original removed).
 
 ### Step 4: Post-move doc-sync
-- **Action**: `python skills/refile/scripts/refile_classify.py docrefs "<old rel path>"`
+- **Action**: `python "${CLAUDE_SKILL_DIR}/scripts/refile_classify.py" docrefs "<old rel path>"`
 - If `hits` is non-empty, list the docs that need syncing and propose a reference fix for each (fix after user confirmation, or mark as a todo).
 - **Done when**: every hit is listed with a proposed action.
 
@@ -58,14 +58,14 @@ metadata:
 
 | Case | Action |
 |------|--------|
-| Existing indexed atom (`is_indexed_atom=true`) | `python tools/atom-set-realm.py set <stem> --domain "<proposed_domain>"` (done live on the Python side, moves `.access.json` atomically) |
+| Existing indexed atom (`is_indexed_atom=true`) | `python "${CLAUDE_PLUGIN_ROOT}/tools/atom-set-realm.py" set <stem> --domain "<proposed_domain>"` (done live on the Python side, moves `.access.json` atomically) |
 | Loose `.md` with `looks_like_atom=true`, `proposed_realm` ∈ {local, else} | Read the content → create the atom with `atom_write` (`realm=local`, `domain=<proposed_domain>`) → confirm the location → delete the original loose file |
-| `proposed_realm=core` | Treat as a cross-project core atom → create it as a **core** atom with `atom_write` (no realm; **`domain="<Lv1>[/<Lv2>]"` is required**: the closed Lv1 list is in `memory/_meta/taxonomy.json`, lands in `memory/<Lv1>/`; for feedback-* titles, domain = failure topic → `memory/Failures/<topic>/`; if no category fits, do not create an atom). If it is already a core atom, leave it and say no move is needed. To move an existing core atom to another category, use `tools/atom-move.py move <slug> --from memory/<old> --to memory/<new Lv1>[/<Lv2>]` |
+| `proposed_realm=core` | Treat as a cross-project core atom → create it as a **core** atom with `atom_write` (no realm; **`domain="<Lv1>[/<Lv2>]"` is required**: the closed Lv1 list is in `memory/_meta/taxonomy.json`, lands in `memory/<Lv1>/`; for feedback-* titles, domain = failure topic → `memory/Failures/<topic>/`; if no category fits, do not create an atom). If it is already a core atom, leave it and say no move is needed. To move an existing core atom to another category, use `python "${CLAUDE_PLUGIN_ROOT}/tools/atom-move.py" move <slug> --from memory/<old> --to memory/<new Lv1>[/<Lv2>]` |
 | `proposed_realm=defer` | LLM unavailable (infrastructure failure) → **do not move**; tell the user to retry later, or ask them to specify `--domain` manually and then use atom-set-realm |
 | `looks_like_atom=false` (TODO / transcript / prose) | **Do not put it in the atom tree** → suggest moving it to `memory/_staging/` or `_AIDocs/` (plain `mv`), with user confirmation |
 
-- After any **create/move**, run `python tools/sync-memory-index.py --write` to refresh the catalog (the same extra trigger as the SessionEnd sweep).
-- If a multi-segment `domain` lands somewhere other than proposed via `atom_write` (old MCP code routes single-segment only), correct it to the full path with `atom-set-realm.py`.
+- After any **create/move**, run `python "${CLAUDE_PLUGIN_ROOT}/tools/sync-memory-index.py" --write` to refresh the catalog (the same extra trigger as the SessionEnd sweep).
+- If the location `atom_write` reports differs from `proposed_domain`, correct it to the full path with `python "${CLAUDE_PLUGIN_ROOT}/tools/atom-set-realm.py"`.
 
 ## Anti-patterns
 

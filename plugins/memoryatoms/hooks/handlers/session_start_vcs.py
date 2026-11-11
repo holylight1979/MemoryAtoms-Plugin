@@ -10,7 +10,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 from wg_core import (
     CLAUDE_DIR, CODE_DIR, WORKFLOW_DIR, MEMORY_DIR,
@@ -87,7 +87,21 @@ def _maybe_spawn_provenance_backfill(config: Dict[str, Any]) -> int:
         return 0
 
 
-def _unpushed_advisory() -> list:
+def _own_sync_requests(_vs, root, session_id: str) -> int:
+    """`.req/`（含 inflight）裡本 session 自己落的請求數：開場的拉取 worker 剛起、還沒輪到這個 root 取鎖，
+    不是孤兒。讀不到的檔不算自己的（照孤兒報）。"""
+    n = 0
+    for d in (_vs.request_dir(root), _vs.inflight_dir(root)):
+        for p in _vs._json_files(d):
+            try:
+                if json.loads(p.read_text(encoding="utf-8")).get("sid") == session_id:
+                    n += 1
+            except (OSError, ValueError):
+                pass
+    return n
+
+
+def _unpushed_advisory(session_id: str = "", spawn=None) -> list:
     """本地有已 commit 未 push／worker 留下 `.unpushed` 標記的 root → advisory 行（無則回 []）。
     拉側（roots.json 的 last_pull／pulled_commits／pull_error 與 `.behind` 標記）也在這裡報：拉入 N 筆 → 一行提醒
     候選池以本次載入快照為準；`.behind` → 一行理由。pull 欄位與 push 的 last_error 分欄，解除 `.unpushed` 的邏輯不碰它們。
@@ -101,6 +115,8 @@ def _unpushed_advisory() -> list:
     ahead=0 → 已沒有東西待推，不論使用者是補推原 HEAD 還是另開 commit，都算已解決：刪標記並清 roots.json
     的 last_error；查詢失敗 rc≠0 不得當 ahead=0——那是「不知道」，標記照報、不刪）、roots.json 的
     last_error（skip／索引失敗／spawn 失敗）、`.req/` 內無人消費的請求（含 inflight 殘留：worker 沒起或中途死）。
+    給了 session_id：本 session 自己落的請求不算孤兒（開場拉取 worker 逐 root 取鎖，後面的 root 還沒輪到）；本場 worker
+    也在跑的 root 只報「會接手」；其餘孤兒 root 當場用 spawn_vcs_sync（spawn 可注入）補跑一支背景 worker，行裡報 pid 或起不來。
     除了清已解決的標記／last_error 外只讀不寫；單一 root 失敗不影響其他 root——沒有 upstream / 不是 repo /
     git 不在都算正常（查不到 ahead 就不報 ahead）。
     """
@@ -126,6 +142,7 @@ def _unpushed_advisory() -> list:
             return r.returncode == 0, (r.stdout or "").strip()
 
         lines = []
+        recover: List[Tuple[int, str, int, Any]] = []   # (lines 位置, label, 筆數, SyncTarget)
         for root, info in entries:
             vcs = info.get("vcs", "git")
             last_error = info.get("last_error")
@@ -153,6 +170,7 @@ def _unpushed_advisory() -> list:
                         rec = None
                 pending = _vs.pending_requests(root, include_inflight=True) if _vs else 0
                 orphan = pending > 0 and _vs is not None and not _vs.lock_is_live(root)
+                own = _own_sync_requests(_vs, root, session_id) if orphan and session_id else 0
             except Exception as e:
                 _atom_debug_error("session_start:unpushed_advisory:root", e)
                 lines.append(i18n.t("hook.session_start_vcs.unpushed_check_failed_label", label=label, etype=type(e).__name__))
@@ -164,9 +182,26 @@ def _unpushed_advisory() -> list:
                 lines.append(i18n.t("hook.session_start.memory_not_versioned", label=label, reason=reason[:80]))
             elif last_error:
                 lines.append(i18n.t("hook.session_start_vcs.last_sync_incomplete", label=label, err=str(last_error)[:80]))
-            if orphan:
+            foreign = pending - own
+            if orphan and own and foreign > 0:
+                lines.append(i18n.t("hook.session_start_vcs.sync_orphan_handover", label=label, foreign=foreign))
+            elif orphan and not own and session_id:
+                recover.append((len(lines), label, pending,
+                                _vs.SyncTarget(vcs, root, list(info.get("pathspecs") or []))))
+                lines.append("")   # 補跑結果出來再填
+            elif orphan and not own:
                 lines.append(i18n.t("hook.session_start_vcs.sync_orphan", label=label, pending=pending))
             lines.extend(_pull_advisory_lines(_vs, root, label, info))
+        if recover:
+            pid = 0
+            try:
+                pid = int((spawn or _vs.spawn_vcs_sync)(session_id, "", reason="recover",
+                                                          targets=[r[3] for r in recover]) or 0)
+            except Exception as e:
+                _atom_debug_error("session_start:unpushed_advisory:recover", e)
+            for pos, label, n, _t in recover:
+                lines[pos] = (i18n.t("hook.session_start_vcs.sync_orphan_recovered", label=label, pending=n, pid=pid) if pid
+                              else i18n.t("hook.session_start_vcs.sync_orphan_recover_failed", label=label, pending=n))
         return lines
     except Exception as e:
         _atom_debug_error("session_start:unpushed_advisory", e)

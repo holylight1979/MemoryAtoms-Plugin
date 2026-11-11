@@ -87,13 +87,9 @@ Check in parallel:
 curl -s "http://127.0.0.1:$(python "${CLAUDE_PLUGIN_ROOT}/tools/memory-vector-service/starter.py" --print-port)/health" 2>/dev/null
 ```
 
-2. Is Ollama available (needed for LLM judgment):
-```bash
-curl -s http://127.0.0.1:11434/api/tags 2>/dev/null | head -1
-```
+2. Is an LLM backend reachable (needed for LLM judgment): the detector tries the backends in config `vector_search.ollama_backends` in priority order; only if none of them can be reached, use `--dry-run` (list candidates only, no LLM judgment).
 
 - Vector service not running -> suggest `/memoryatoms:vector start` first
-- Ollama not running -> use `--dry-run` (list candidates only, no LLM judgment)
 
 ## Step 2: Run conflict detection
 
@@ -109,12 +105,12 @@ Capture the JSON output.
 
 Parse the detection results. Each conflict group contains:
 - **atom_a** / **atom_b**: the two conflicting atoms
-- **item_a** / **item_b**: the specific entries
-- **relationship**: AGREE / CONTRADICT / EXTEND / UNRELATED
+- **fact_a** / **fact_b**: the specific entries
+- **classification**: AGREE / CONTRADICT / EXTEND / UNRELATED
 - **similarity**: vector similarity score
-- **verdict**: the LLM's explanation
+- CONTRADICT also carries **arbitration** (`winner` / `reason`: which side to keep, and why) and **fast_refute** (true when the newer side has verified-level Evidence while the older side is [固]/[觀]; list it first and rule on it first)
 
-Keep `CONTRADICT` results and any `EXTEND` results worth attention.
+Keep results whose `classification` is `CONTRADICT`, plus any `EXTEND` results worth attention.
 
 ## Step 4: Report
 
@@ -127,10 +123,10 @@ Scanned N atoms, found M conflict candidates, K confirmed contradictions.
 
 ### Contradictions (CONTRADICT)
 1. **{atom_a}** vs **{atom_b}**
-   - A: {summary of item_a}
-   - B: {summary of item_b}
-   - Similarity: {score}
-   - Verdict: {verdict}
+   - A: {summary of fact_a}
+   - B: {summary of fact_b}
+   - Similarity: {similarity}
+   - Arbitration (CONTRADICT only): keep {atom_a or atom_b, as arbitration.winner says} ({arbitration.reason}); mark it fast-refute when fast_refute is true
 
 ### Extensions (EXTEND)
 {same format}

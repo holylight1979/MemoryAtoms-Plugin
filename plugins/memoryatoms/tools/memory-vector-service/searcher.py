@@ -133,7 +133,10 @@ def _compute_final_score(hit: Dict[str, Any], intent: str) -> Dict[str, Any]:
 
     # Type-level bonus
     atom_type = hit.get("atom_type", "semantic")
-    type_bonus = TYPE_INTENT_BONUS.get((atom_type, intent), 0.0)
+    type_bonus = TYPE_INTENT_BONUS.get((atom_type, intent))
+    if type_bonus is None:   # 核心沒定的型：看開著的擴充有沒有登記（登記表 vector.index_dirs[].type_bonus）
+        from config import extension_registrations
+        type_bonus = extension_registrations()["type_bonus"].get((atom_type, intent), 0.0)
 
     # Confidence
     conf = CONFIDENCE_SCORE_MAP.get(hit.get("confidence", ""), 0.5)

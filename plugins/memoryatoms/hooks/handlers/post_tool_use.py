@@ -55,12 +55,13 @@ from handlers._shared import (
 # 拆出去的各件事（各檔檔頭有白話）；入口只留流程。下面幾個名字也是別處（pre_tool_use、session_end、subagent_start）從這裡取的
 from handlers.post_tool_use_subagent import _record_subagent_injection, _SUBAGENT_INJ_CAP  # noqa: F401
 from handlers.post_tool_use_harvest import _apply_harvest, _write_aec_report_file   # 收割回報核對（記憶本體）
-# 守門家族（收尾檢核、搬目錄、紅測與哨兵；插件版不出廠）：名字留在模組上給測試換，呼叫時才載
+# 守門家族（收尾檢核、搬目錄、紅測與哨兵、寫完轉 LF；插件版不出廠）：名字留在模組上給測試換，呼叫時才載
 _collect_aec_evidence = lazy_func("handlers.post_tool_use_aec", "_collect_aec_evidence")
 _note_moved_code_dirs = lazy_func("handlers.post_tool_use_move", "_note_moved_code_dirs")
 _note_move_scan_hits = lazy_func("handlers.post_tool_use_move", "_note_move_scan_hits")
 _track_test_result = lazy_func("handlers.post_tool_use_verify", "_track_test_result")
 _track_sentinels = lazy_func("handlers.post_tool_use_verify", "_track_sentinels")
+_ensure_lf = lazy_func("handlers.post_tool_use_lf", "_ensure_lf")   # LF_AFTER_WRITE：會改使用者檔案的內容（只動換行）
 from handlers.post_tool_use_writes import (
     _VCS_COMMIT_RE, EXEC_TURN_KEYS_CAP, _note_commit, _note_modified, _note_launcher, _note_unknown_write, _note_failed_writes,
 )
@@ -411,11 +412,13 @@ def _record_by_tool(run: _PostRun) -> None:
 
 
 def _record_edit(run: _PostRun) -> None:
-    """改檔（非暫存路徑）：進 modified_files、改檔次數、重試追蹤、跨 session 改寫偵測；再依路徑跑記憶索引、staging 命名、
-    路徑強制、AIDocs 暫時性檔名、DocDrift。"""
+    """改檔（非暫存路徑）：進 modified_files、寫完轉 LF（守門家族）、改檔次數、重試追蹤、跨 session 改寫偵測；
+    再依路徑跑記憶索引、staging 命名、路徑強制、AIDocs 暫時性檔名、DocDrift。"""
     state, session_id, config, input_data = run.state, run.session_id, run.config, run.input_data
     tool_name, file_path, v6 = run.tool_name, run.file_path, run.v6
     _note_modified(state, session_id, file_path, tool_name, str(input_data.get("agent_id") or ""))
+    if run.guard:
+        _ensure_lf(file_path)           # LF_AFTER_WRITE：寫完含 CRLF、repo 對它設 eol=lf → 就地轉 LF；寫碼守門關也照轉
     if v6 and run.guard:
         _note_launcher(file_path)       # LAUNCHER_NOT_CODE：worktree 根的一次性 git 啟動器記標記，收尾不當程式算
 
@@ -585,7 +588,8 @@ def _note_exec_turn(run: _PostRun) -> None:
 
 
 def _note_shell_writes(run: _PostRun, command: str) -> None:
-    """指令的改檔目標進 modified_files；目標不明的記未知寫入；暫存檔不記帳。出錯只進 debug log（這一批後面的目標就不記了）。"""
+    """指令的改檔目標進 modified_files（含 CRLF 的轉 LF）；目標不明的記未知寫入；暫存檔不記帳。
+    出錯只進 debug log（這一批後面的目標就不記了）。"""
     state, session_id, input_data = run.state, run.session_id, run.input_data
     tool_name, tool_input = run.tool_name, run.tool_input
     try:
@@ -596,6 +600,7 @@ def _note_shell_writes(run: _PostRun, command: str) -> None:
                 _note_unknown_write(state, session_id, _p, command, tool_name, _aid, input_data)
             elif _p and not _is_ephemeral_path(_p):
                 _note_modified(state, session_id, _p, tool_name, _aid)
+                _ensure_lf(_p)            # LF_AFTER_WRITE
                 _note_launcher(_p)        # LAUNCHER_NOT_CODE：用 shell 寫出來的啟動器也認；刪掉時標記不動
             elif not (_p and note_ephemeral_skip(state, _p)):    # 暫存檔不記帳；暫存目錄專案第一次說一聲（EPHEMERAL_WRITE_NOTED_ONCE）
                 continue

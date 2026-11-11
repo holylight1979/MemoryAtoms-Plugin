@@ -58,7 +58,7 @@ from typing import Any, Dict, List, Optional
 # 重用 atom_io 的 audit infra（單一稽核日誌）
 from .atom_io import (
     AUDIT_LOG, _gen_audit_id, _audit_log, _atomic_write,
-    GLOBAL_MEMORY_DIR,
+    GLOBAL_MEMORY_DIR, EXTENSION_SOURCE_PREFIX,
 )
 from . import i18n
 
@@ -211,7 +211,8 @@ def _audit(op: str, source: str, atom_path: Path, **extra: Any) -> str:
 
 
 def _validate_source(source: str) -> None:
-    if source not in ACCESS_VALID_SOURCES:
+    if source not in ACCESS_VALID_SOURCES and not (
+            source.startswith(EXTENSION_SOURCE_PREFIX) and len(source) > len(EXTENSION_SOURCE_PREFIX)):
         raise ValueError(f"invalid source for atom_access: {source}")
 
 

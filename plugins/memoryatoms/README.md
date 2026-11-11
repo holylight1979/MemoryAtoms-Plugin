@@ -1,6 +1,6 @@
 # MemoryAtoms
 
-Atomic memory for Claude Code. MemoryAtoms keeps what you and Claude learn as small Markdown cards, puts the cards that fit your prompt in front of Claude on every turn, lets Claude write and search cards through an MCP server, and harvests what a session learned into new cards. It ships with 485 ready-made cards about everyday development work.
+Atomic memory for Claude Code. MemoryAtoms keeps what you and Claude learn as small Markdown cards, puts the cards that fit your prompt in front of Claude on every turn, lets Claude write and search cards through an MCP server, and harvests what a session learned into new cards. It ships with 486 ready-made cards about everyday development work.
 
 繁體中文說明：[README.zh-TW.md](README.zh-TW.md)
 
@@ -28,7 +28,7 @@ If Python is missing, the first prompt of each session shows one `[Guardian:Degr
    - `remote_llm_user`, `remote_llm_password`: only if a remote LLM backend you set up needs a login (see "What it sends"). Leave empty otherwise. The password is masked and kept in your system's secure credential store, not in `settings.json`.
    You can change them later with `/plugin configure`.
 3. Run `/reload-plugins` or restart Claude Code.
-4. The first session start creates the data folder, writes `IDENTITY.md` and `USER.md` from templates, unpacks the 485 shipped cards and builds the index. On the author's machine that first start took about 9 to 17 seconds; later starts take a little over 2 seconds.
+4. The first session start creates the data folder, writes `IDENTITY.md` and `USER.md` from templates, unpacks the 486 shipped cards and builds the index. On the author's machine that first start took about 9 to 17 seconds; later starts take a little over 2 seconds.
 5. The first time Claude writes a card, Claude Code asks your permission for the MCP tool. A plugin cannot pre-approve tools.
 6. Optional: `/memoryatoms:setup-vector` for semantic search (see Downloads).
 

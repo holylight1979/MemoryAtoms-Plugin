@@ -15,7 +15,7 @@ sync-memory-index.py — 從 _atom_index.json 自動生成 memory/MEMORY.md
   本地範疇 atom（path 落 `_AIDocs/_atoms/`）→ 側檔 `_local_catalog.md`，僅核心環境由
   SessionStart hook 注入。MEMORY.md 主表末尾僅留一行指標，外部專案零本地負擔。
 
-寫進檔案的字固定英文、不走語言表（多機同步才不會互相洗成不同語言）；範疇名與卡名是資料，不翻。舊檔的中文表頭照樣讀得懂。
+寫進檔案的固定文字不走語言表，而是照 repo 追蹤的設定 `generated_files.language`（"en"／"zh-TW"，缺＝"en"）從下方 GENERATED_TEXT 選一組：同一個 repo 每台機器一致，多機同步才不會互相洗成不同語言；範疇名與卡名是資料，不翻。兩種語言的表頭讀端都認得。
 
 核心區兩種渲染（`hierarchical` 參數；None → workflow/config.json `taxonomy.gate_enabled`）：
 - 平鋪（gate 關，遷移前）：一 atom 一列 `| Atom | Description |`，feedback-* 聚合一列指向 Failures 資料夾。
@@ -61,7 +61,7 @@ from typing import List, Optional, Set, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.atom_io import write_index_full  # noqa: E402
 from lib.i18n import t  # noqa: E402
-from lib.edition import layered_config, layered_meta  # noqa: E402  插件版出廠設定、詞表墊底
+from lib.edition import generated_language, layered_config, layered_meta  # noqa: E402  插件版出廠設定、詞表墊底
 from lib.atom_index_json import has_indexable_cards, load_atom_index_json  # noqa: E402
 from lib.atom_locations import (  # noqa: E402
     CORE_ATOMS_REL,
@@ -319,16 +319,108 @@ def _subtree_all_legacy(node: _Node) -> bool:
     return all(_subtree_all_legacy(c) for c in node.children.values())
 
 
-# 主表末尾指標（local atom 存在時）：人在任何環境讀 MEMORY.md 仍知本地範疇何在。
-LOCAL_CATALOG_POINTER = (
-    "> Local categories (injected only under ~/.claude): the Lv1 root index is `_local_catalog.md`; drill down through each level's `_INDEX.md`."
-)
-LOCAL_CATALOG_TITLE = "Local Category Catalog (~/.claude only)"
+# 寫進產生檔的固定文字，兩種語言各一組。不放 lib/i18n 的語言表：那張表跟著「這台的介面語言」走（WG_LANG 等），
+# 產生檔卻進版控、多台共用，語言要照 repo 追蹤的設定 generated_files.language 一致決定（lib/edition.generated_language）。
+# en＝出廠；zh-TW＝繁中安裝既有的產生檔文字（逐字保留，重產才不會整份改寫）。
+GENERATED_TEXT = {
+    "en": {
+        # 主表末尾指標（local atom 存在時）：人在任何環境讀 MEMORY.md 仍知本地範疇何在。
+        "local_pointer": "> Local categories (injected only under ~/.claude): the Lv1 root index is `_local_catalog.md`; drill down through each level's `_INDEX.md`.",
+        "local_title": "Local Category Catalog (~/.claude only)",
+        "hierarchical_note": (
+            "> The hook injects atoms by trigger automatically. Category folders: `memory/<category>/`; drill down through each level's `_INDEX.md`. "
+            "Machine index: `_atom_index.json`"),
+        "flat_note": "> The hook matches triggers and injects the relevant atoms automatically (full trigger table: `_atom_index.json` / `_ATOM_INDEX.md` mirror).",
+        "atom_header": "| Atom | Description |",
+        "feedback_row": "Behavior corrections ({count} atoms)",
+        "category_header": "| Category | Atoms | Drill down |",
+        "language_view_pointer": (
+            "> To filter across categories by programming language (Python, C#, JS...), see `_by_language/_INDEX.md` "
+            "(cards are not moved and a card can belong to several languages; the term lists are in the languages section of `_meta/taxonomy.json`)."),
+        "language_view_title": "# memory — Filter by programming language (cross-category view)",
+        "language_view_note": (
+            "> Auto-generated (tools/sync-memory-index.py); `_`-prefixed files are not atoms, do not edit by hand. Cards stay in their category folders; "
+            "this view only lists paths, and a card can belong to several languages."),
+        "language_view_rule": (
+            "> How it decides: the card name or Trigger matches a term in the languages section of `memory/_meta/taxonomy.json`, or the card is in a "
+            "category folder bound to that language. Core layer memory/ only, no local categories or personal. After changing the terms run `sync-memory-index.py --write`."),
+        "language_header": "| Language | Atoms |",
+        "description": "Description",
+        "local_note": (
+            "> Files live under `_AIDocs/_atoms/<hierarchy path>/`; still indexed in `_atom_index.json` (scope=global). "
+            "**Injected only when cwd is under ~/.claude**, so outside projects carry no cost. Drill down through each level's `_INDEX.md`."),
+        "local_header": "| Category root | Atoms | Drill down |",
+        "project_note": (
+            "> Category directory (auto-generated, do not edit by hand): `atom_write(scope=shared, mode=create)` must be given `domain` → "
+            "`shared/<Lv1>/`; file flat shared atoms with the memory system's `tools/atom-categorize.py plan|apply "
+            "--memory-dir <this directory>`; machine index `_atom_index.json`."),
+        "memory_root": "(memory root)",
+        "uncategorized_header": "| Uncategorized (flat in shared/) | Description |",
+        "level_note": "> Category index for this level (auto-generated; `_`-prefixed files are not atoms).",
+        "level_note_local": "> Local category index for this level (auto-generated; `_`-prefixed files are not atoms).",
+        "level_title": "# {rel_dir} — Category index",
+        "level_atoms": "## Atoms at this level",
+        "level_children": "## Sub-levels",
+        "level_children_header": "| Sub-level | Atoms | Drill down |",
+    },
+    "zh-TW": {
+        "local_pointer": "> 本地範疇（僅 ~/.claude 注入）Lv1 根索引見 `_local_catalog.md`，深層 drill 各層 `_INDEX.md`。",
+        "local_title": "本地範疇 Catalog（~/.claude only）",
+        "hierarchical_note": (
+            "> Hook 依 trigger 自動注入 atom；範疇資料夾 `memory/<範疇>/`，深入各層 `_INDEX.md`；"
+            "機器索引 `_atom_index.json`"),
+        "flat_note": "> Hook 自動匹配 trigger 注入相關 atom（完整觸發表見 `_atom_index.json` / `_ATOM_INDEX.md` mirror）。",
+        "atom_header": "| Atom | 說明 |",
+        "feedback_row": "行為校正（{count} atoms）",
+        "category_header": "| 範疇 | atom 數 | 深入 |",
+        "language_view_pointer": (
+            "> 依程式語言（Python、C#、JS…）跨範疇篩選見 `_by_language/_INDEX.md`"
+            "（卡片不搬檔，一張可屬多個語言；詞庫在 `_meta/taxonomy.json` 的 languages 段）。"),
+        "language_view_title": "# memory — 依程式語言篩選（跨範疇視圖）",
+        "language_view_note": (
+            "> 自動生成（tools/sync-memory-index.py），`_` 前綴非 atom，不要手改。卡片實體仍在各範疇資料夾，"
+            "這裡只列路徑；一張卡可同時屬多個語言。"),
+        "language_view_rule": (
+            "> 判定：卡名或 Trigger 命中 `memory/_meta/taxonomy.json` 的 languages 詞庫，或卡片在該語言綁定的"
+            "範疇資料夾。只收核心層 memory/，不含本地範疇與 personal。改詞庫後跑 `sync-memory-index.py --write`。"),
+        "language_header": "| 語言 | atom 數 |",
+        "description": "說明",
+        "local_note": (
+            "> 物理居 `_AIDocs/_atoms/<階層路徑>/`，索引仍在 `_atom_index.json`（scope=global）；"
+            "**只在 cwd∈~/.claude 時注入**，外部專案零負擔。深層進各層 `_INDEX.md`。"
+            "機制見 [[realm-範疇分區機制-v5]]。"),
+        "local_header": "| 範疇根 | atom 數 | 深入 |",
+        "project_note": (
+            "> 範疇目錄（自動生成，勿手編）：`atom_write(scope=shared, mode=create)` 必給 `domain` → "
+            "`shared/<Lv1>/`；平鋪 shared atom 以 `python ~/.claude/tools/atom-categorize.py plan|apply "
+            "--memory-dir <本目錄>` 歸類；機器索引 `_atom_index.json`。"),
+        "memory_root": "(memory 根)",
+        "uncategorized_header": "| 尚未歸類（shared/ 平鋪） | 說明 |",
+        "level_note": "> 階層範疇索引（自動生成，`_` 前綴非 atom）。機制見 [[realm-範疇分區機制-v5]]。",
+        "level_note_local": "> 階層 local 範疇索引（自動生成，`_` 前綴非 atom）。機制見 [[realm-範疇分區機制-v5]]。",
+        "level_title": "# {rel_dir} — 範疇索引",
+        "level_atoms": "## 本層 atom",
+        "level_children": "## 子層",
+        "level_children_header": "| 子層 | atom 數 | 深入 |",
+    },
+}
+
+
+def _gt(key: str, **values) -> str:
+    """產生檔固定文字：依 generated_files.language 取一組（讀不到設定＝en）。"""
+    try:
+        lang = generated_language()
+    except Exception:  # noqa: BLE001  設定讀壞照出廠英文，索引照樣產
+        lang = "en"
+    text = GENERATED_TEXT[lang][key]
+    return text.format(**values) if values else text
+
+
+# 舊名保留給既有呼叫端與測試（出廠英文值）；渲染一律走 _gt。
+LOCAL_CATALOG_POINTER = GENERATED_TEXT["en"]["local_pointer"]
+LOCAL_CATALOG_TITLE = GENERATED_TEXT["en"]["local_title"]
 CORE_INDEX_TITLE = "# Atom Index — Global"
-HIERARCHICAL_NOTE = (
-    "> The hook injects atoms by trigger automatically. Category folders: `memory/<category>/`; drill down through each level's `_INDEX.md`. "
-    "Machine index: `_atom_index.json`"
-)
+HIERARCHICAL_NOTE = GENERATED_TEXT["en"]["hierarchical_note"]
 
 
 def _render_core_flat(individual, feedback_rows, failures_other, local_atoms) -> str:
@@ -336,9 +428,9 @@ def _render_core_flat(individual, feedback_rows, failures_other, local_atoms) ->
     lines = [
         CORE_INDEX_TITLE,
         "",
-        "> The hook matches triggers and injects the relevant atoms automatically (full trigger table: `_atom_index.json` / `_ATOM_INDEX.md` mirror).",
+        _gt("flat_note"),
         "",
-        "| Atom | Description |",
+        _gt("atom_header"),
         "|------|------|",
     ]
     for name, cap, _ in individual:
@@ -348,13 +440,13 @@ def _render_core_flat(individual, feedback_rows, failures_other, local_atoms) ->
                   if all(is_legacy_failures_path(rp) for _n, rp in feedback_rows)
                   else FAILURES_REL)
         lines.append(
-            f"| feedback-* | Behavior corrections ({len(feedback_rows)} atoms)"
+            f"| feedback-* | {_gt('feedback_row', count=len(feedback_rows))}"
             f" → [`{fb_dir}/`](../{fb_dir}/) |"
         )
     for name, cap, rel_path in failures_other:
         lines.append(f"| {name} | {cap} → [`{rel_path}`](../{rel_path}) |")
     if local_atoms:
-        lines += ["", LOCAL_CATALOG_POINTER]
+        lines += ["", _gt("local_pointer")]
     return "\n".join(lines)
 
 
@@ -372,9 +464,9 @@ def _render_core_hierarchical(rows, claude_root, existing_caps, local_atoms) -> 
     lines = [
         CORE_INDEX_TITLE,
         "",
-        HIERARCHICAL_NOTE,
+        _gt("hierarchical_note"),
         "",
-        "| Category | Atoms | Drill down |",
+        _gt("category_header"),
         "|------|---------|------|",
     ]
     for lv1 in _ordered_lv1(tree.children):
@@ -385,7 +477,7 @@ def _render_core_hierarchical(rows, claude_root, existing_caps, local_atoms) -> 
             drill = _drill_target(node, f"{CORE_ATOMS_REL}/{lv1}")
         lines.append(f"| {lv1} | {_subtree_count(node)} | {drill} |")
     if local_atoms:
-        lines += ["", LOCAL_CATALOG_POINTER]
+        lines += ["", _gt("local_pointer")]
     return "\n".join(lines)
 
 
@@ -407,7 +499,7 @@ def render_core_section(rows: List[Tuple[str, str, str]],
         text = _render_core_hierarchical(rows, claude_root, existing_caps, local_atoms)
     else:
         text = _render_core_flat(individual, feedback_rows, failures_other, local_atoms)
-    return text + "\n\n" + LANGUAGE_VIEW_POINTER if language_view else text
+    return text + "\n\n" + _gt("language_view_pointer") if language_view else text
 
 
 # ─── 依程式語言篩選的跨範疇視圖（memory/_by_language/_INDEX.md）────────────────
@@ -419,10 +511,7 @@ def render_core_section(rows: List[Tuple[str, str, str]],
 # 每張語言表的表頭第一欄是語言名 → 合併驅動以表頭為鍵時各表不撞鍵。
 
 LANGUAGE_VIEW_DIR = "_by_language"
-LANGUAGE_VIEW_POINTER = (
-    "> To filter across categories by programming language (Python, C#, JS...), see `_by_language/_INDEX.md` "
-    "(cards are not moved and a card can belong to several languages; the term lists are in the languages section of `_meta/taxonomy.json`)."
-)
+LANGUAGE_VIEW_POINTER = GENERATED_TEXT["en"]["language_view_pointer"]   # 舊名；渲染走 _gt
 _LANG_SPLIT_RE = re.compile(r"[-_]+")
 
 
@@ -476,19 +565,17 @@ def render_language_view(groups: dict) -> str:
     if not groups:
         return ""
     lines = [
-        "# memory — Filter by programming language (cross-category view)",
+        _gt("language_view_title"),
         "",
-        "> Auto-generated (tools/sync-memory-index.py); `_`-prefixed files are not atoms, do not edit by hand. Cards stay in their category folders; "
-        "this view only lists paths, and a card can belong to several languages.",
-        "> How it decides: the card name or Trigger matches a term in the languages section of `memory/_meta/taxonomy.json`, or the card is in a "
-        "category folder bound to that language. Core layer memory/ only, no local categories or personal. After changing the terms run `sync-memory-index.py --write`.",
+        _gt("language_view_note"),
+        _gt("language_view_rule"),
         "",
-        "| Language | Atoms |",
+        _gt("language_header"),
         "|------|---------|",
     ]
     lines += [f"| {lang} | {len(items)} |" for lang, items in groups.items()]
     for lang, items in groups.items():
-        lines += ["", f"## {lang}", "", f"| {lang} | Description |", "|------|------|"]
+        lines += ["", f"## {lang}", "", f"| {lang} | {_gt('description')} |", "|------|------|"]
         lines += [f"| `{rel_path}` | {cap} |" for rel_path, cap in items]
     return "\n".join(lines)
 
@@ -520,12 +607,11 @@ def render_local_catalog(rows: List[Tuple[str, str, str]],
         return ""
     tree = _build_tree(local_atoms)
     lines = [
-        f"# {LOCAL_CATALOG_TITLE}",
+        f"# {_gt('local_title')}",
         "",
-        "> Files live under `_AIDocs/_atoms/<hierarchy path>/`; still indexed in `_atom_index.json` (scope=global). "
-        "**Injected only when cwd is under ~/.claude**, so outside projects carry no cost. Drill down through each level's `_INDEX.md`.",
+        _gt("local_note"),
         "",
-        "| Category root | Atoms | Drill down |",
+        _gt("local_header"),
         "|--------|---------|------|",
     ]
     for root_name in sorted(tree.children):
@@ -541,11 +627,7 @@ PROJECT_SHARED_REL = f"{CORE_ATOMS_REL}/shared"
 PROJECT_CATALOG_BEGIN = "<!-- atom-catalog -->"
 PROJECT_CATALOG_END = "<!-- /atom-catalog -->"
 PROJECT_CATALOG_MISSING_MSG = "[sync-memory-index] project catalog block missing (run --write to append)"
-PROJECT_CATALOG_NOTE = (
-    "> Category directory (auto-generated, do not edit by hand): `atom_write(scope=shared, mode=create)` must be given `domain` → "
-    "`shared/<Lv1>/`; file flat shared atoms with the memory system's `tools/atom-categorize.py plan|apply "
-    "--memory-dir <this directory>`; machine index `_atom_index.json`."
-)
+PROJECT_CATALOG_NOTE = GENERATED_TEXT["en"]["project_note"]   # 舊名；渲染走 _gt
 
 
 def is_project_memory_dir(memory_dir: Path) -> bool:
@@ -579,7 +661,7 @@ def _project_groups(rows: List[Tuple[str, str, str]], claude_root: Path,
             continue
         psegs = path_segments_under(rel_path, CORE_ATOMS_REL)
         if not psegs:
-            label = "(memory root)"
+            label = _gt("memory_root")
         elif psegs[0] in ("projects", "roles") and len(psegs) >= 2:
             label = f"{psegs[0]}/{psegs[1]}"
         else:
@@ -594,9 +676,9 @@ def render_project_catalog(rows: List[Tuple[str, str, str]], claude_root: Path,
     categorized, flat, partitions = _project_groups(rows, claude_root, existing_caps)
     tree = _build_tree(categorized)
     lines = [
-        PROJECT_CATALOG_NOTE,
+        _gt("project_note"),
         "",
-        "| Category | Atoms | Drill down |",
+        _gt("category_header"),
         "|------|---------|------|",
     ]
     for lv1 in _ordered_lv1(tree.children):
@@ -610,7 +692,7 @@ def render_project_catalog(rows: List[Tuple[str, str, str]], claude_root: Path,
     for label in sorted(partitions):
         lines.append(f"| {label} | {partitions[label]} | `{CORE_ATOMS_REL}/{label}/` |")
     if flat:
-        lines += ["", "| Uncategorized (flat in shared/) | Description |", "|------|------|"]
+        lines += ["", _gt("uncategorized_header"), "|------|------|"]
         for name, cap, _rel in sorted(flat):
             lines.append(f"| {name} | {cap} |")
     return "\n".join(lines)
@@ -707,16 +789,14 @@ def _run_project_mode(args, memory_dir: Path, claude_root: Path, memory_path: Pa
 
 def render_level_index(node: _Node, rel_dir: str, hierarchical: Optional[bool] = None) -> str:
     """Render 單層 `_INDEX.md`：本層 atom（名+說明）＋直屬子層（名+遞迴計數 drill）。"""
-    note = ("> Category index for this level (auto-generated; `_`-prefixed files are not atoms)."
-            if resolve_hierarchical(hierarchical) else
-            "> Local category index for this level (auto-generated; `_`-prefixed files are not atoms).")
-    lines = [f"# {rel_dir} — Category index", "", note]
+    note = _gt("level_note") if resolve_hierarchical(hierarchical) else _gt("level_note_local")
+    lines = [_gt("level_title", rel_dir=rel_dir), "", note]
     if node.atoms:
-        lines += ["", "## Atoms at this level", "", "| Atom | Description |", "|------|------|"]
+        lines += ["", _gt("level_atoms"), "", _gt("atom_header"), "|------|------|"]
         for name, cap, _ in sorted(node.atoms):
             lines.append(f"| {name} | {cap} |")
     if node.children:
-        lines += ["", "## Sub-levels", "", "| Sub-level | Atoms | Drill down |", "|------|---------|------|"]
+        lines += ["", _gt("level_children"), "", _gt("level_children_header"), "|------|---------|------|"]
         for cn in sorted(node.children):
             child = node.children[cn]
             lines.append(f"| {cn} | {_subtree_count(child)} | {_drill_target(child, f'{rel_dir}/{cn}')} |")

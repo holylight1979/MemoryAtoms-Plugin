@@ -12,9 +12,12 @@
   B. 高曝光零使用（token 稅，附 trigger 收斂建議）
   C. 零曝光死重候選
   D. 失念（該想起而未想起，附 trigger 補詞建議）
+  E. 按來源分組（trigger／vector／bm25／related…各送了幾次全文、幾次一行、helpful 票、有用率）
+  F. trigger 從沒命中、卻被其他來源注入 ≥N 次的卡（卡名｜注入次｜主要來源｜helpful）
+E/F 只讀 injection-turns.jsonl 每回合的 cards 欄（舊紀錄沒有這欄，樣本自第一筆有 cards 的日期起算）。
 接入點：/memory health 與 tools/health-weekly.py 週健檢。
 
-用法：python tools/memory-effect-report.py [--json] [--days 30] [--top 10]
+用法：python tools/memory-effect-report.py [--json] [--days 30] [--top 10] [--min-inject 5]
 注意：timestamps 上限 50 筆/atom，超高頻 atom 的窗內曝光為下限估計。
 """
 from __future__ import annotations
@@ -64,6 +67,63 @@ def _load_injection_turns(since_ts: float) -> list[dict]:
 
 EXPOSURE_TAX_MIN = 10   # 窗內曝光 ≥ 此值且零使用證據 → token 稅
 TOP_N_DEFAULT = 10
+MIN_INJECT_DEFAULT = 5  # F 段門檻：trigger 零命中、注入 ≥ 此次數才列
+FULL_FORM = "ok"        # cards[].form 為 ok = 全文送達；其餘（skip/dropped/tech_line…）算一行
+
+
+def _card_stats(turn_recs: list[dict], helpful_by_name: dict[str, float],
+                min_inject: int) -> dict:
+    """E 按來源分組 + F trigger 零命中的高注入卡。資料只取每回合的 cards 欄（舊紀錄沒有，略過）。
+
+    helpful 票沒有記是哪個來源送的，所以來源的 helpful = 經該來源注入過的不同卡的票數加總，
+    有用率 = 其中有 helpful 票的卡數 ÷ 經該來源注入過的不同卡數。
+    """
+    with_cards = [tr for tr in turn_recs if isinstance(tr.get("cards"), list)]
+    if not with_cards:
+        return {"since": None, "turns": 0, "truncated": 0, "by_source": [], "trigger_zero": []}
+
+    by_source: dict[str, dict] = {}
+    per_card: dict[str, dict[str, int]] = {}   # 卡名 → {來源: 次數}
+    for tr in with_cards:
+        for c in tr["cards"]:
+            if not isinstance(c, dict) or not c.get("name"):
+                continue
+            name, src = str(c["name"]), str(c.get("source") or "?")
+            s = by_source.setdefault(src, {"source": src, "full": 0, "line": 0, "_cards": set()})
+            s["full" if c.get("form") == FULL_FORM else "line"] += 1
+            s["_cards"].add(name)
+            counts = per_card.setdefault(name, {})
+            counts[src] = counts.get(src, 0) + 1
+
+    src_rows = []
+    for s in by_source.values():
+        cards = s.pop("_cards")
+        voted = [n for n in cards if helpful_by_name.get(n, 0) > 0]
+        s["cards"] = len(cards)
+        s["helpful"] = round(sum(helpful_by_name.get(n, 0) for n in cards), 2)
+        s["useful_rate"] = round(len(voted) / len(cards), 2)
+        src_rows.append(s)
+    src_rows.sort(key=lambda s: (-(s["full"] + s["line"]), s["source"]))
+
+    trigger_zero = []
+    for name, counts in per_card.items():
+        total = sum(counts.values())
+        if "trigger" in counts or total < min_inject:
+            continue
+        top_src = max(sorted(counts), key=lambda k: counts[k])   # 同次數取字母序第一個，結果穩定
+        trigger_zero.append({"name": name, "injections": total, "main_source": top_src,
+                             "helpful": round(helpful_by_name.get(name, 0), 2)})
+    trigger_zero.sort(key=lambda r: (-r["injections"], r["name"]))
+
+    first = min(with_cards, key=lambda tr: tr["_ts"])
+    return {
+        "since": datetime.fromtimestamp(first["_ts"]).strftime("%Y-%m-%d"),
+        "turns": len(with_cards),
+        "truncated": sum(int(tr.get("cards_truncated") or 0) for tr in with_cards),
+        "by_source": src_rows,
+        "trigger_zero": trigger_zero,
+        "min_inject": min_inject,
+    }
 
 
 def _load_atoms() -> list[dict]:
@@ -146,7 +206,8 @@ def _aggregate_recall_misses(recs: list[dict]) -> list[dict]:
     return rows
 
 
-def collect(days: int = 30, top_n: int = TOP_N_DEFAULT) -> dict:
+def collect(days: int = 30, top_n: int = TOP_N_DEFAULT,
+            min_inject: int = MIN_INJECT_DEFAULT) -> dict:
     now = time.time()
     since = now - days * 86400
     rescue = _load_rescue_hits(since)
@@ -230,6 +291,10 @@ def collect(days: int = 30, top_n: int = TOP_N_DEFAULT) -> dict:
     # D. 失念：踩坑時庫有可防 atom（trigger 命中失敗證據 ≥2 詞）但未被注入
     recall_miss = _aggregate_recall_misses(_load_recall_misses(since))
 
+    # E/F：helpful 票 = α 扣掉 prior（和 A 段同一個數）
+    helpful_by_name = {r["name"]: max(0.0, r["alpha"] - USEFULNESS_PRIOR) for r in rows}
+    card_stats = _card_stats(turn_recs, helpful_by_name, min_inject)
+
     for r in rows:
         r.pop("stamps", None)
     return {
@@ -241,6 +306,9 @@ def collect(days: int = 30, top_n: int = TOP_N_DEFAULT) -> dict:
         "dead_candidates": dead,
         "recall_miss": recall_miss,
         "trend_weekly": trend,
+        "by_source": card_stats["by_source"],
+        "trigger_zero": card_stats["trigger_zero"],
+        "cards_meta": {k: card_stats[k] for k in ("since", "turns", "truncated")} | {"min_inject": min_inject},
         "caveat": t("cli.memory_effect_report.caveat"),
     }
 
@@ -290,6 +358,36 @@ def render_md(result: dict) -> str:
     else:
         L.append(t("cli.memory_effect_report.none"))
 
+    meta = result.get("cards_meta") or {}
+    L.append("")
+    L.append(t("cli.memory_effect_report.e_title"))
+    if not meta.get("since"):
+        L.append(t("cli.memory_effect_report.no_cards"))
+    else:
+        L.append(t("cli.memory_effect_report.since_turns", since=meta['since'], turns=meta['turns']))
+        L.append(t("cli.memory_effect_report.e_head"))
+        L.append("|------|------|------|-------|---------|-------|")
+        for s in result["by_source"]:
+            L.append(f"| {s['source']} | {s['full']} | {s['line']} | {s['cards']} "
+                     f"| {s['helpful']:g} | {int(round(s['useful_rate'] * 100))}% |")
+        L.append("")
+        L.append(t("cli.memory_effect_report.e_note"))
+        if meta.get("truncated"):
+            L.append(t("cli.memory_effect_report.e_truncated", count=meta['truncated']))
+
+    L.append("")
+    L.append(t("cli.memory_effect_report.f_title", min=meta.get('min_inject', MIN_INJECT_DEFAULT)))
+    if not meta.get("since"):
+        L.append(t("cli.memory_effect_report.no_cards"))
+    elif result["trigger_zero"]:
+        L.append(t("cli.memory_effect_report.since", since=meta['since']))
+        L.append(t("cli.memory_effect_report.f_head"))
+        L.append("|------|-------|---------|---------|")
+        for r in result["trigger_zero"]:
+            L.append(f"| {r['name']} | {r['injections']} | {r['main_source']} | {r['helpful']:g} |")
+    else:
+        L.append(t("cli.memory_effect_report.f_none", since=meta['since']))
+
     L.append("")
     L.append(t("cli.memory_effect_report.trend_title"))
     L.append(t("cli.memory_effect_report.trend_head"))
@@ -306,12 +404,14 @@ def render_md(result: dict) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--json", action="store_true")
-    ap.add_argument("--days", type=int, default=30)
-    ap.add_argument("--top", type=int, default=TOP_N_DEFAULT)
+    ap = argparse.ArgumentParser(description=t("cli.memory_effect_report.desc"))
+    ap.add_argument("--json", action="store_true", help=t("cli.memory_effect_report.arg_json"))
+    ap.add_argument("--days", type=int, default=30, help=t("cli.memory_effect_report.arg_days"))
+    ap.add_argument("--top", type=int, default=TOP_N_DEFAULT, help=t("cli.memory_effect_report.arg_top"))
+    ap.add_argument("--min-inject", type=int, default=MIN_INJECT_DEFAULT,
+                    help=t("cli.memory_effect_report.arg_min_inject"))
     args = ap.parse_args()
-    result = collect(days=args.days, top_n=args.top)
+    result = collect(days=args.days, top_n=args.top, min_inject=args.min_inject)
     # 兩種輸出都含中文；Windows 主控台/排程器 stdout 預設 cp950，不重設會 UnicodeEncodeError
     try:
         sys.stdout.reconfigure(encoding="utf-8")

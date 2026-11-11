@@ -24,12 +24,13 @@
 
 ## 記憶
 - 使用者說「初始化原子記憶庫」或開場出現 `[Guardian:ProjectMemory]` → 跑記憶系統的 `tools/init-project-memory.py --cwd <專案根>`（`[Guardian:ProjectMemory]` 提示行會印完整指令），不自己手建目錄。
-- 寫入一律走 atom_write MCP（自動驗證去重索引），禁直接 Edit atom .md；已記錄事實直接引用；不寫臨時嘗試/未確認猜測。**新 atom 一律 [臨] 起跳**（系統拒收新建 [固]/[觀]），晉升靠使用或 append。注入的卡明顯救了你一次或把你帶錯 → `atom_feedback(atom_name, verdict=helpful|misleading)` 投一票（沒真的用到的卡不投）。
+- 寫入目前走 atom_write MCP（自動驗證去重索引），禁直接 Edit atom .md；已記錄事實直接引用；不寫臨時嘗試/未確認猜測。**新 atom 目前以 [臨] 起跳**（系統拒收新建 [固]/[觀]），晉升靠使用或 append。注入的卡明顯救了你一次或把你帶錯 → `atom_feedback(atom_name, verdict=helpful|misleading)` 投一票（沒真的用到的卡不投）。
 - **Realm**：跨專案通用 → `memory/<範疇>/`（失敗家族 `memory/Failures/<主題>/`）；只在 ~/.claude 內有用 → `realm=local`（`_AIDocs/_atoms/`）。判定三問：① 可重用 ≥2 個專案？② 系統規則，還是特定 app／工具／環境的範疇？③ 月級還是週級有效期？三題偏前者 → core，偏後者 → local；拿不準回 core（[[realm判core還是local-問換一個不用記憶系統的專案還用不用得上-例子取自記憶系統不算local-拿不準回core]]）。
 - **Scope**（問「遷就專案還是遷就人？」）：專案的規則／決策 → `shared`；只關於這個人 → `personal`；本人跨專案偏好 → `personal, cross_project=true`；全組織所有專案都該知道 → `org`。
 - **個人隱私敏感資訊放 secret**（密碼、token、私鑰、憑證、個資、內網位址、任何不想公開的驗證或隱私內容）：`atom_write` 帶 `secret=true`，落 `memory/personal/<user>/secret/`——不進版控、不送向量、只給本人、觸發詞照常注入。其他個人卡（工作偏好）照常進版控，不必躲。值本身別寫進卡，只寫放在哪。寫入閘碰到相關字眼會要你判斷：只是一般技術知識就帶 `not_sensitive=<理由>`；判不準當敏感（放 secret 之後搬出來很容易，公開了收不回）。**一張卡部分隱私、部分不是 → 拆成兩張**，隱私那半才進 secret；寫入閘會擋整張沒隱私字眼、或只有部分行命中的 secret 卡，整張確實都該藏才帶 `secret_reason=<理由>`。已經寫錯地方的卡用 `atom_move` 搬進去（或搬出來）。
 - create 必給 `domain`（Lv1 閉合清單 `memory/_meta/taxonomy.json`），不確定落點先 `dry_run`；分不出範疇的知識不寫。
-- **清單不進 atom**：待辦／backlog／稽核結果／對照表這類「會一直加項目」的東西，正本寫 `memory/_staging/<主題>.md`，atom 只留指標（正本在哪／怎麼改／什麼不寫這裡）。atom 隨 trigger 整顆注入、知識段上限約 200 tok，長清單會被截斷——放進去等於記了但送不到。寫入閘以待辦標記數硬拒（`- [ ]`／`- [x]` ≥3）。
+- **清單不進 atom**：待辦／backlog／稽核結果／對照表這類「會一直加項目」的東西，正本寫 `memory/_staging/<主題>.md`，atom 只留指標（正本在哪／怎麼改／什麼不寫這裡）。atom 隨 trigger 整顆注入、知識段預設約 200 tok（預算夠時最多 400），長清單仍會被截斷——放進去等於記了但送不到。寫入閘以待辦標記數硬拒（`- [ ]`／`- [x]` ≥3）。
+- **Failures 卡的禁令要帶情境**：Failures 範疇新寫的 `[臨]` 行含「一律／不准／禁止／必須／嚴禁／不得」，同一行或下一行要寫「情境：」（或「何時：」「適用：」）——什麼時候適用、什麼時候不適用；沒寫寫入閘拒收。失敗當下寫的禁令不帶情境，會被拿去否決使用者的新目標，也會跟別張卡互相打架。只管新卡與 append 的新行。
 - atom 被預算擋下時先分辨**這是結論還是清單**：結論 → 壓縮（個案敘事移文件）；清單 → 換形狀。別靠刪既有內容換空間。放寬寫入預算沒用，注入端會先截斷。
 
 ## 版控
@@ -39,5 +40,5 @@
 ## 對話
 - 「用識流…」→ /memoryatoms:consciousness-stream；/resume → /memoryatoms:continue。
 - 獨立子任務可新開對話，拆分前確保知識已存入；Context 壓縮即將發生 → 提醒開新 session。
-- **Plan Mode 查讀**一律用 Read / Grep / Glob 工具，不用 Bash 的 cat/grep/sed 替代（Plan Mode 暫停 bypass，Bash 要過唯讀判定會彈窗）；Bash 指令不加 `cd <資料夾>` 前綴，直接寫絕對路徑。
+- **Plan Mode 查讀**目前用 Read / Grep / Glob 工具，不用 Bash 的 cat/grep/sed 替代（Plan Mode 暫停 bypass，Bash 要過唯讀判定會彈窗）；Bash 指令不加 `cd <資料夾>` 前綴，直接寫絕對路徑。
 - 並行 sub-agent／知識檢索 fan-out：裝了 workflow-nudge 插件時 hook 命中會提示；**沒命中（或沒裝）而明顯受益**（多個互不衝突切面／幫我查・研究一下型請求）仍主動評估；判準 [[workflow-parallel-agents]]、[[workflow-research-fanout]]。

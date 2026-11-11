@@ -2,7 +2,7 @@
 wg_atoms_budget.py — 預算裁切：決定每張卡整段注入或只給指標、熱冷分類、冷卡單行、在 token 預算內載入 atom、組出最終注入文字。
 
 誰叫它：每句提問的注入管線（ups_inject 等）、subagent 注入。
-純搬移自 wg_atoms.py，函式本體未改；hooks/wg_atoms.py 仍 re-export 這裡的名稱。
+從 wg_atoms.py 拆出；hooks/wg_atoms.py 仍 re-export 這裡的名稱。
 """
 
 import json
@@ -16,9 +16,12 @@ from wg_atoms_index import AtomEntry, load_access_cached, parse_memory_index
 from wg_atoms_match import BM25_MIN_SCORE_DEFAULT, bm25_match, compute_activation, match_triggers
 from wg_atoms_pool import superseded_names_cached
 from wg_atoms_render import (
+    _KNOWLEDGE_CAP_TOKENS_DEFAULT,
     _extract_named_section,
+    _knowledge_cap_for_budget,
     _strip_atom_for_injection,
     _strip_atom_for_injection_impression_only,
+    _truncated_mark,
 )
 
 
@@ -31,7 +34,19 @@ def decide_atom_injection(
     used_tokens: int,
     budget_limit: int = _TURN_BUDGET_LIMIT,
 ) -> Tuple[str, str, int]:
-    """Decide ok / fallback / skip for an atom against per-turn budget."""
+    """Decide ok / fallback / skip for an atom against per-turn budget.
+
+    full_content 是預設 cap 截過的版本、預算還有剩時，改用依剩餘預算放寬 cap 的版本
+    （候選卡少時整張送到）；放寬版塞不下就照舊用 full_content。full_content 若不是
+    預設 strip 的產物（例如呼叫端只抽了命中章節）就不動它。"""
+    if _truncated_mark() in full_content:
+        remaining = budget_limit - used_tokens
+        if (_knowledge_cap_for_budget(remaining) > _KNOWLEDGE_CAP_TOKENS_DEFAULT
+                and full_content == _strip_atom_for_injection(raw_content)):
+            wide = _strip_atom_for_injection(raw_content, remaining_budget=remaining)
+            wide_tokens = _estimate_tokens(wide)
+            if wide != full_content and used_tokens + wide_tokens <= budget_limit:
+                return ("ok", wide, wide_tokens)
     full_tokens = _estimate_tokens(full_content)
     if used_tokens + full_tokens <= budget_limit:
         return ("ok", full_content, full_tokens)

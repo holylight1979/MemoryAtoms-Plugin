@@ -25,7 +25,7 @@ paths:
 - Flattening step three: when nesting comes from repeated searching, prebuild a Set / Dict index, which often also turns repeated scans into a single lookup.
 - Nesting ≤2 needs no discussion.
 - Nesting =3 is the review line: if the three levels each guard an independent condition, the reader must hold three things at once — flatten it; if it is a single local decision that can still be followed in a straight line, it may stay.
-- Nesting ≥4 is always refactored.
+- Nesting ≥4 needs refactoring.
 - The three lines above only govern the sections I write or change this time; existing nesting need not be refactored along the way.
 - Do not over-flatten: extract a function only with ≥2 call sites, or when it can be named with one noun and has real content; do not create one-off tiny functions just to reduce nesting.
 - A comprehension may have only one for and one if; clear > clever.
@@ -33,9 +33,9 @@ paths:
 
 ## Minimalism
 - Add no parameters, settings, abstractions, or defensive branches that were not asked for; external boundaries and known failure modes are still handled.
+- Minimalism never cuts observability: error signals, logs, resource release, and security checks are not deleted; silent failure is forbidden; a record field that tells two different causes apart does not count as an extra parameter.
 - Extract shared code only the 2nd time "knowledge that must change together" appears; similar-looking text does not count as duplication.
 - Dead code, temp bits, and noise comments you created yourself are deleted on the spot; do not get attached to code.
-- Minimalism never cuts observability: error signals, logs, resource release, and security checks are not deleted; silent failure is forbidden.
 
 ## Rhythm
 - Read code with a purpose: for each implementation goal, first list the contracts, call sites, data flows, and tests to confirm.

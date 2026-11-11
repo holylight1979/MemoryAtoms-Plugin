@@ -6,7 +6,8 @@
   每包 < --max-kib（預設 240 KiB）。
 - manifest：version（version.json 的 guardian 版號）、count、packs[{file, count, bytes, sha256}]。
 - 可重入：舊的 shipped-*.jsonl 先刪再寫；內容一樣時輸出位元組也一樣（W9 改完卡裡的路徑字串後直接重跑）。
-怎麼跑：python tools/pack-shipped-cards.py [--root <程式碼根>] [--out <輸出資料夾，預設 <root>/memory>] [--max-kib 240] [--check]
+怎麼跑：python tools/pack-shipped-cards.py [--root <程式碼根>] [--out <輸出資料夾，預設 <root>/memory>] [--max-kib 240] [--check] [--bundle <plugin-bundle.json>]
+  --bundle：讀該檔的 exclude_cards（卡的相對路徑清單）略過不打包；不給＝全打（原始碼 repo 自己打包時）。
   --check：不寫檔，只比對現有輸出跟重算的一不一樣（不一樣 exit 1）。
 尾行：PACK_SHIPPED DONE cards=<n> packs=<n> bytes=<n> max_pack=<n>
 """
@@ -23,12 +24,14 @@ sys.path.insert(0, str(ROOT / "lib"))
 from shipped_cards import MANIFEST_NAME, PACK_PATTERN, iter_shipped_sources, sha256_text  # noqa: E402
 
 
-def build(root: Path, max_bytes: int) -> tuple:
+def build(root: Path, max_bytes: int, exclude: frozenset = frozenset()) -> tuple:
     """回 ([(檔名, bytes)], manifest dict)。"""
     packs: list = []
     current: list = []
     size = 0
     for rel, path in iter_shipped_sources(root):
+        if rel in exclude:
+            continue
         text = path.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
         line = (json.dumps({"path": rel, "sha256": sha256_text(text), "text": text},
                            ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
@@ -63,9 +66,11 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--max-kib", type=int, default=240)
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--bundle", type=Path, default=None)
     a = ap.parse_args()
     out = a.out or a.root / "memory"
-    outputs, manifest = build(a.root, a.max_kib * 1024)
+    exclude = frozenset(k for k in json.loads(a.bundle.read_text(encoding="utf-8")).get("exclude_cards", {}) if not k.startswith("_")) if a.bundle else frozenset()
+    outputs, manifest = build(a.root, a.max_kib * 1024, exclude)
     if a.check:
         stale = [n for n, data in outputs if not (out / n).is_file() or (out / n).read_bytes() != data]
         extra = [p.name for p in out.glob("shipped-*.jsonl") if p.name not in {n for n, _ in outputs}]

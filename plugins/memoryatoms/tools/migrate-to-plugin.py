@@ -204,7 +204,8 @@ def cmd_apply(out: dict, claude_override: str, as_json: bool) -> int:
                 "settings_sha256_before": _sha(before) if before is not None else "",
                 "hooks_removed": removed, "mcp_name": MCP_NAME, "mcp_entry": entry, "mcp_removed": False,
                 "global_config": str(claude_global_config())}
-    (backup / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    (backup / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8",
+                                         newline="\n")
     out["backup"] = str(backup)
     if entry:  # 先拿 MCP：失敗就什麼設定都還沒動
         rc, msg = run_claude(cmd, ["mcp", "remove", MCP_NAME, "-s", "user"])
@@ -219,7 +220,8 @@ def cmd_apply(out: dict, claude_override: str, as_json: bool) -> int:
         after = dump_settings(new_settings)
         write_bytes_atomic(settings_path, after)
     manifest["settings_sha256_after"] = _sha(after) if after is not None else ""
-    (backup / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    (backup / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8",
+                                         newline="\n")
     if not as_json:
         print(t("cli.migrate_to_plugin.applied", hooks=len(removed), mcp=out["mcp_removed"], backup=backup))
         print(next_steps())
@@ -269,7 +271,7 @@ def cmd_undo(out: dict, src: str, force: bool, claude_override: str, as_json: bo
         write_bytes_atomic(settings_path, (backup / "settings.json").read_bytes())
         out["settings_restored"] = 1
     (backup / "undone.json").write_text(json.dumps({"undone_at": time.strftime("%Y-%m-%dT%H:%M:%S")}) + "\n",
-                                        encoding="utf-8")
+                                        encoding="utf-8", newline="\n")
     if not as_json:
         print(t("cli.migrate_to_plugin.undone", backup=backup))
     return 0

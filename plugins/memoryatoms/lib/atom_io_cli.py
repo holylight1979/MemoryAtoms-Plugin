@@ -58,8 +58,8 @@ from pathlib import Path
 from .atom_io import (
     write_atom, write_index, write_index_full, write_raw,
     append_atom_file, locate_atom, check_supersedes, WriteResult,
-    _canonical_supersedes, card_body_lines, narrative_date_error,
-    _audit_log, _gen_audit_id,
+    _canonical_supersedes, card_body_lines, narrative_date_error, failures_ban_context_error,
+    _audit_log, _gen_audit_id, header_depends,
 )
 try:
     from . import i18n
@@ -71,6 +71,7 @@ from .atom_spec import (
     knowledge_sections_bytes, knowledge_budget_error, knowledge_task_list_error, KNOWLEDGE_BUDGET_BYTES,
     render_knowledge_lines,
 )
+from .atom_depends_infer import with_auto_depends
 from .hub_card import budget_limit_for, is_hub_card, route_doc_for, depends_paths
 
 
@@ -81,6 +82,23 @@ def _index_kwargs(index: dict) -> dict:
     if index.get("depends") is not None:
         out["depends"] = index["depends"]
     return out
+
+
+def _depends_from_file(base_dir: Path, rel_path, given):
+    """write_index（MCP replace 落檔之後才呼叫）：索引 depends 跟落檔檔頭走——檔頭有 Depends 行就併入，
+    寫入漏斗自動補的條目才進得了索引。檔不在／沒有該行 → 原樣回 given。"""
+    if not rel_path:
+        return given
+    try:
+        fp = Path(base_dir).parent / str(rel_path)   # 索引 rel_path 以 index_root（＝索引目錄上一層）為根
+        head = header_depends(fp.read_text(encoding="utf-8-sig")) if fp.is_file() else None
+    except OSError:
+        return given
+    if head is None or not isinstance(given, (list, type(None))):
+        return given
+    merged = list(given or [])
+    merged += [d for d in head if d not in merged]
+    return merged
 
 
 def _budget_check(content: str, route_paths=None, kind_hint=None):
@@ -240,6 +258,12 @@ def create_atom(payload: dict) -> WriteResult:
     build_params, sup, sup_err = _canonical_build_params(build_params)
     if sup_err:
         return WriteResult(ok=False, error=sup_err)
+    # 0c. 正文點名的存在檔自動補進 Depends（檔頭與索引同一份）
+    auto_dep = with_auto_depends(build_params.get("depends"), [
+        build_params.get("knowledge"), build_params.get("actions"), build_params.get("provenance")], file_path)
+    if auto_dep is not None and auto_dep != build_params.get("depends"):
+        build_params = {**build_params, "depends": auto_dep}
+        index = {**index, "depends": auto_dep}
     if sup:
         sup_err = check_supersedes(sup, self_slug=index["slug"], index_dir=Path(index["base_dir"]))
         if sup_err:
@@ -253,6 +277,9 @@ def create_atom(payload: dict) -> WriteResult:
     err = validate_atom_content(content) or narrative_date_error(card_body_lines(content))
     if err is not None:
         return WriteResult(ok=False, error=f"validate: {err}")
+    ban_err = failures_ban_context_error(file_path, build_params.get("knowledge"))
+    if ban_err is not None:
+        return WriteResult(ok=False, error=ban_err)
     shape_err = _shape_check(content)
     if shape_err is not None:
         return WriteResult(ok=False, error=f"shape: {shape_err}")
@@ -399,7 +426,7 @@ def main() -> int:
             result = write_atom(**payload)
         elif action == "write_index":
             payload["base_dir"] = Path(payload["base_dir"])
-            depends = payload.pop("depends", None)
+            depends = _depends_from_file(payload["base_dir"], payload.get("rel_path"), payload.pop("depends", None))
             result = write_index(**payload, **_index_kwargs({"depends": depends}))
         elif action == "write_index_full":
             # JSON 不能傳 Path，caller 用 str；轉成 Path
@@ -413,6 +440,12 @@ def main() -> int:
             existing_path = payload.pop("existing_path", None)
             payload, sup, err = _canonical_build_params(payload)
             content = None
+            if err is None and existing_path:
+                # MCP replace：正文點名的存在檔補進 Depends；索引由隨後的 write_index 從落檔檔頭同步
+                auto_dep = with_auto_depends(payload.get("depends"), [
+                    payload.get("knowledge"), payload.get("actions"), payload.get("provenance")], Path(existing_path))
+                if auto_dep is not None:
+                    payload["depends"] = auto_dep
             if err is None:
                 content = build_atom_content(**payload)
                 if existing_path:

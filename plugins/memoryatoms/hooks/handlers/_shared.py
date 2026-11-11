@@ -250,6 +250,8 @@ def _cleanup_old_states() -> None:
                 if age > 7 * 86400:
                     f.unlink(missing_ok=True)
                 continue
+            if not isinstance(data, dict):   # 同名不同用途的檔（例如擴充自己存成 list 的 state-<名>.json）：不是 session state，不碰
+                continue
 
             phase = data.get("phase", "")
             prompt_count = data.get("topic_tracker", {}).get("prompt_count", 0)

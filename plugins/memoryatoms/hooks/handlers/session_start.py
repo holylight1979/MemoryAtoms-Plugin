@@ -18,6 +18,7 @@ handle_session_start 是目錄：一行一步，步驟函式照呼叫順序排�
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -135,10 +136,10 @@ def _mcp_registered() -> bool:
     return "workflow-guardian" in servers
 
 
-def _core_rule_lines(source: str) -> List[str]:
+def _core_rule_lines(source: str, config: Dict[str, Any]) -> List[str]:
     """核心的寫卡規則（lib/i18n/core-rules.<語言>.md，跟語言設定走）。resume 接著舊對話、規則還在 context 裡，不重送。"""
-    if source == "resume":
-        return []
+    if source == "resume" or not (config.get("session_start") or {}).get("core_rules", True):
+        return []   # 設定關掉（例如另有規則檔已送同一份）→ 整段不送、也不報紅字
     from i18n import current_language   # lib/
     path = CODE_DIR / "lib" / "i18n" / f"core-rules.{current_language()}.md"
     try:
@@ -312,7 +313,7 @@ def _opening_root_lines(cwd: str, source: str, config: Dict[str, Any], v6: bool)
         root_lines = [*root_lines, *_first_session_hint_lines(root_res, cwd)]
     # root_lines 三條開場路（合併、恢復、新開）與超時降級都送得到：缺詞表／缺設定的紅字與核心規則放這裡
     try:
-        core_rule_lines = _core_rule_lines(source)
+        core_rule_lines = _core_rule_lines(source, config)
         root_lines = [*_degraded_opening_lines(config), *core_rule_lines, *root_lines]
     except Exception as e:
         _atom_debug_error("session_start:opening_lines", e)
@@ -467,7 +468,7 @@ def _open_new_session(input_data: Dict[str, Any], config: Dict[str, Any], sessio
 
     # ── 版控同步
     # 未推送 commit：SessionEnd 晉升自動提交的 push 走背景、失敗當下無人知 → 這裡補可見性。
-    lines.extend(_unpushed_advisory())
+    lines.extend(_unpushed_advisory(session_id))
     lines.extend(_index_conflict_advisory(cwd))
     _lap_or_degrade("未推送與索引衝突", session_id, state, lines)
     lines.extend(_followup_advisory())
@@ -476,6 +477,10 @@ def _open_new_session(input_data: Dict[str, Any], config: Dict[str, Any], sessio
     lines.extend(_vcs_ignore_advisory(project_mem_dir))
     lines.extend(_personal_sync_advisory(project_mem_dir, v4_user))
     _lap_or_degrade("分層與同步", session_id, state, lines)
+    try:
+        _fold_repeated_advisories(lines, session_id, str(project_mem_dir or cwd or ""))
+    except Exception as e:  # noqa: BLE001
+        print(i18n.t("hook.session_start.repeat_fold_failed", error=f"{type(e).__name__}: {e}"), file=sys.stderr)
 
     # ── 組織層
     lines.extend(_org_advisory(org_root, pool))
@@ -667,6 +672,73 @@ def _vector_flag_lines(lines: List[str], config: Dict[str, Any]) -> Optional[str
     elif vector_flag == "cleared":
         _notify_vector_down(config)
     return vector_flag
+
+
+ADVISORY_REPEAT_NAME = "advisory-repeat.json"   # workflow/ 底下：等人處理的警告在各專案出現過幾場
+REPEAT_FOLD_FROM = 3          # 同一句第幾場起收成一行
+REPEAT_KEEP_DAYS = 30         # 別的專案的計數多久沒再出現就丟
+REPEAT_FOLD_PREFIXES = ("[Guardian:HealthCheck]", "[Guardian:ScopeLayout]")   # 「等人處理」型；資訊行不收
+
+
+def _fold_repeated_advisories(lines: List[str], session_id: str, scope: str, path: Optional[Path] = None) -> None:
+    """等人處理的警告（REPEAT_FOLD_PREFIXES）每場原樣重播會變警報疲勞：同一句在同一專案出現過幾場記在
+    workflow/advisory-repeat.json（鍵＝專案\t句子，值 {count, sid, at}；同 session 的 resume/compact 不重複計），
+    第 REPEAT_FOLD_FROM 場起這些句子收成一行「N 則舊警告未處理」，放在第一則原本的位置——收成一行仍浮出、不消失。
+    本專案這場沒出現的句子拿掉（處理掉後再冒出來從 1 算）；別的專案的 REPEAT_KEEP_DAYS 天沒更新才丟。
+    計數檔讀寫失敗 → 照舊全文、stderr 留訊號（就地改 lines）。path 沒給＝本模組 WORKFLOW_DIR 底下那份（測試換得掉）。"""
+    path = path or (WORKFLOW_DIR / ADVISORY_REPEAT_NAME)
+    idx = [i for i, ln in enumerate(lines) if isinstance(ln, str) and ln.startswith(REPEAT_FOLD_PREFIXES)]
+    old: Dict[str, Any] = {}
+    try:
+        if path.exists():
+            old = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(old, dict):
+                old = {}
+    except (OSError, ValueError) as e:
+        print(i18n.t("hook.session_start.repeat_read_failed", error=f"{type(e).__name__}: {e}"), file=sys.stderr)
+        old = {}
+    now = datetime.now()
+    prefix = f"{scope}\t"
+    new: Dict[str, Any] = {}
+    for k, rec in old.items():   # 別的專案：保留到過期
+        if k.startswith(prefix) or not isinstance(rec, dict):
+            continue
+        try:
+            if now - datetime.fromisoformat(str(rec.get("at"))) <= timedelta(days=REPEAT_KEEP_DAYS):
+                new[k] = rec
+        except ValueError:
+            pass
+    counts: Dict[str, int] = {}
+    for i in idx:
+        key = prefix + lines[i]
+        if key in new:
+            counts[lines[i]] = new[key]["count"]
+            continue
+        rec = old.get(key) if isinstance(old.get(key), dict) else {}
+        n = int(rec.get("count") or 0)
+        if rec.get("sid") != session_id or n == 0:
+            n += 1
+        new[key] = {"count": n, "sid": session_id, "at": now.isoformat(timespec="seconds")}
+        counts[lines[i]] = n
+    if new != old:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(new, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
+            os.replace(tmp, path)
+        except OSError as e:
+            print(i18n.t("hook.session_start.repeat_write_failed", path=path, error=f"{type(e).__name__}: {e}"), file=sys.stderr)
+    stale = [i for i in idx if counts.get(lines[i], 0) >= REPEAT_FOLD_FROM]
+    if not stale:
+        return
+    tags: List[str] = []
+    for i in stale:
+        tag = lines[i][len("[Guardian:"):].split("]", 1)[0]
+        if tag not in tags:
+            tags.append(tag)
+    lines[stale[0]] = i18n.t("hook.session_start.repeat_folded", n=len(stale), tags=i18n.t("hook.session_start.list_sep").join(tags))
+    for i in reversed(stale[1:]):
+        del lines[i]
 
 
 def _role_lines(lines: List[str], v4_user: str, v4_roles: List[str], v4_mgmt: bool,

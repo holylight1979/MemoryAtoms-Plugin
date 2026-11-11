@@ -41,7 +41,8 @@ RULES: Dict[str, str] = {
                            "每個使用者回合一份擋次預算（reconcile_gate.max_blocks_per_turn，預設 2，鍵 *，"
                            "不分是哪幾條規則）：同一個使用者回合擋滿就改問使用者【收尾放行確認】；收尾報告那一份（e）另計。"
                            "吃 stop_gate_max_blocks 的那份共用擋次（退縮閘、收尾檢核推遲寫卡、Reload 建議、取用稽核、"
-                           "一般同步擋）每個使用者回合歸零、同一回合第 3 次放行（寫碼守門開時；寫碼守門關照舊，整個 session 累計）。"
+                           "一般同步擋）每個使用者回合歸零、同一回合擋滿後放行並告知（SHARED_BUDGET_RELEASE_NOTICE；寫碼守門開時；"
+                           "寫碼守門關照舊，整個 session 累計）。"
                            "判法在 handlers/stop.py。",
     "COMMENT_ONLY_CHANGE": "程式檔與基準版本（本 session 沒 commit 過它時的 HEAD）用 ast 去掉註解、docstring、空白後相同，"
                            "同根其他程式檔也等於 HEAD 或只差註解 → 不算改碼；非 Python、解析不了、基準拿不到 → 照算。",
@@ -1602,7 +1603,9 @@ RULES.update({
     "NOT_DOING_DECLARED": "退避語（軟偵測與 DeferralGate）命中的那一行若本身就是「不做｜<哪一件>：<理由>」，或同一段文字有不做行而它的事項"
                           "出現在命中那一行 → 不標、不擋、留帳（guard log evasion_declared／deferral_declared）；理由要有文字內容、不是佔位。"
                           "說明句被詞表誤命中（「下個 session 開場會列出…」是在描述已驗過的事）→ 寫「不是退避｜<命中的詞或句>：因為 <理由>」"
-                          "同樣只查有沒有理由、留帳。詞表各類的 exception 文字（風險、為什麼超出）附在提示裡給 LLM 寫理由用，程式不評理由內容。",
+                          "同樣只查有沒有理由、留帳。不帶前綴的白話句也算：命中那一行本身、或另一行帶到命中的詞，句中有因為／所以／"
+                          "理由是／原因是（en：because／therefore／the reason is／reason:）且後面有理由 → 同樣不標、留帳"
+                          "（擋訊息與舉證要求只教白話句，前綴寫法照收）。詞表各類的 exception 文字（風險、為什麼超出）附在提示裡給 LLM 寫理由用，程式不評理由內容。",
     "RED_ITEMS_ONLY_FROM_FAILURE_LINES": "紅測的失敗項只從失敗行取：pytest 摘要 FAILED／ERROR 開頭的節點行（扣掉之後的綠已跑到的 "
                                          "cleared_units）；沒有節點行時只認行首 FAIL／FAILED／ERROR 的行（unittest、go、jest）"
                                          "加上指令點名的案例檔。指令裡 # 開頭的註解行、git 輸出、Exit code 行都不是失敗項。"
@@ -1627,6 +1630,9 @@ _RECEIPT_REF_RE = lazy_re(r"^(?:收據|receipt\b)\s*[：:]?\s*(.+)$", re.IGNOREC
 _NOT_DOING_RE = lazy_re(r"(?:不做|追蹤|(?<![A-Za-z])(?:not[ -]doing|track(?:ing)?))\s*[｜|]\s*([^：:\n]{1,80}?)\s*[：:]\s*(.+)", re.IGNORECASE)
 # 說明句被退避詞表誤命中（「下個 session 開場會列出…」是在描述已驗過的事）→ AI 說明這不是退避，程式只查有沒有理由、留帳
 _NOT_EVASION_RE = lazy_re(r"(?:不是退避|(?<![A-Za-z])not[ -]evasion)\s*[｜|]\s*([^：:\n]{1,80}?)\s*[：:]\s*(?:因為|理由[：:]?|because\b|reason\s*[：:]?)?\s*(.+)", re.IGNORECASE)
+# 白話說明句（不帶前綴）：句中有原因詞，後面接得出理由 → 同樣算回答（規則 NOT_DOING_DECLARED）；兩種語言都認
+_PLAIN_REASON_RE = lazy_re(r"(?:因為|所以|理由是?\s*[：:]|原因是?\s*[：:]?|(?<![A-Za-z])(?:because|therefore|the\s+reason\s+is|reason\s*[：:]))\s*(.+)",
+                           re.IGNORECASE)
 _USER_SAID_RE = lazy_re(r"(?:使用者\s*(?:說|原話|的話|說的)|(?<![A-Za-z])user\s+said)\s*[：:]?\s*[「『\"“]([^「」『』\"”\n]{1,160})[」』\"”]", re.IGNORECASE)
 _WS_RE = lazy_re(r"\s+")
 _ITEM_STRIP_RE = lazy_re(r"[\s，,、：:（）()「」『』`*\-—–~～?？!！.。；;]")
@@ -1753,8 +1759,9 @@ def claim_disposition_verdict(kind: str, dispositions: Dict[str, List[Dict[str, 
 
 def parse_not_doing(text: str) -> List[Dict[str, str]]:
     """收尾文字裡的不做行與不是退避行 → [{mode, item, reason, quote, line}]：mode＝not_doing（「不做｜<哪一件>：<理由>」）或
-    disclaim（「不是退避｜<命中的詞或句>：因為 <理由>」，說明句被詞表誤命中時用）；quote＝「使用者說「…」」引用的片段（沒有＝空字串，
-    不是退避行一律空）。"""
+    disclaim（「不是退避｜<命中的詞或句>：因為 <理由>」，說明句被詞表誤命中時用）或 plain（沒前綴的白話句，含因為／所以／
+    理由是／原因是〔en：because／therefore／the reason is／reason:〕，item 空；要對到命中的那一行或句中帶到命中的詞才算數，
+    見 not_doing_covering）；quote＝「使用者說「…」」引用的片段（沒有＝空字串，不是退避行與白話句一律空）。"""
     out: List[Dict[str, str]] = []
     for raw in str(text or "").splitlines():
         m = _NOT_DOING_RE.search(raw)
@@ -1768,11 +1775,16 @@ def parse_not_doing(text: str) -> List[Dict[str, str]]:
         if m:
             out.append({"mode": "disclaim", "item": m.group(1).strip(), "reason": m.group(2).strip(), "quote": "",
                         "line": raw.strip()[:240]})
+            continue
+        m = _PLAIN_REASON_RE.search(raw)
+        if m:
+            out.append({"mode": "plain", "item": "", "reason": m.group(1).strip(), "quote": "", "line": raw.strip()[:240]})
     return out
 
 
-def not_doing_covering(line: str, decls: Sequence[Dict[str, str]]) -> Optional[Dict[str, str]]:
-    """命中退避語的那一行對到哪一條不做行：那一行本身就是不做行，或某條的事項（去標點、至少 2 字）出現在那一行。"""
+def not_doing_covering(line: str, decls: Sequence[Dict[str, str]], phrase: str = "") -> Optional[Dict[str, str]]:
+    """命中退避語的那一行對到哪一條不做行：那一行本身就是不做行（含白話說明句），或某條的事項（去標點、至少 2 字）出現在那一行，
+    或某條白話說明句裡帶到命中的詞（phrase）。"""
     ln = _nows(line)
     for d in decls:
         if _nows(d["line"]) and _nows(d["line"]) in ln:
@@ -1781,6 +1793,11 @@ def not_doing_covering(line: str, decls: Sequence[Dict[str, str]]) -> Optional[D
         item = _ITEM_STRIP_RE.sub("", d["item"]).lower()
         if len(item) >= 2 and item in _ITEM_STRIP_RE.sub("", str(line or "")).lower():
             return d
+    ph = _nows(phrase).lower()
+    if ph:
+        for d in decls:
+            if d.get("mode") == "plain" and ph in _nows(d["line"]).lower():
+                return d
     return None
 
 
@@ -1790,23 +1807,30 @@ def not_doing_reason_hint(exception: str = "") -> str:
 
 
 CLOSING_ASK = i18n.t("hook.release_rules.closing_ask", track_line=i18n.t("hook.release_rules.track_line"))
+# 「只是描述」那半句只教白話句（前綴會原樣出現在給使用者看的回覆裡）；不是退避行照收（舊帳、照舊寫的模型）
+PLAIN_DISCLAIM_ASK = i18n.t("hook.release_rules.plain_disclaim_ask")
 
 
 def not_doing_hint(exception: str = "") -> str:
-    return i18n.t("hook.release_rules.not_doing_hint", closing_ask=CLOSING_ASK, not_avoid_line=i18n.t("hook.release_rules.not_evasion_line"))
+    return i18n.t("hook.release_rules.not_doing_hint", plain_disclaim_ask=PLAIN_DISCLAIM_ASK)
 
 
-def not_doing_verdict(line: str, decls: Sequence[Dict[str, str]], prompts: Sequence[str], exception: str = "") -> Verdict:
+def not_doing_verdict(line: str, decls: Sequence[Dict[str, str]], prompts: Sequence[str], exception: str = "",
+                      phrase: str = "") -> Verdict:
     """NOT_DOING_DECLARED：owed＝照舊標記或擋。line＝命中退避語的那一行；prompts＝近 3 則使用者原話（退避這一路不再核引用）。
     理由裡的角括號片段若是這個範本印給 AI 的說明（<不修的實際風險>）＝沒換掉的佔位，不算理由。"""
     hint_why = (not_doing_reason_hint(exception),)
-    d = not_doing_covering(line, decls)
+    d = not_doing_covering(line, decls, phrase)
     if d is None:
         return Verdict("NOT_DOING_DECLARED", True, i18n.t("hook.release_rules.notdoing_missing"), (str(line or "").strip()[:120], not_doing_hint(exception)))
     if d.get("mode") == "disclaim":
         if reason_present(d["reason"], hint_why):
             return Verdict("NOT_DOING_DECLARED", False, i18n.t("hook.release_rules.notdoing_disclaimed", item=d['item'][:60], reason=d['reason'][:120]), (d["line"],))
         return Verdict("NOT_DOING_DECLARED", True, i18n.t("hook.release_rules.notdoing_disclaim_no_reason"), (d["line"], not_doing_hint(exception)))
+    if d.get("mode") == "plain":
+        if reason_present(d["reason"], hint_why):
+            return Verdict("NOT_DOING_DECLARED", False, i18n.t("hook.release_rules.notdoing_plain", reason=d['reason'][:120]), (d["line"],))
+        return Verdict("NOT_DOING_DECLARED", True, i18n.t("hook.release_rules.notdoing_plain_no_reason"), (d["line"], not_doing_hint(exception)))
     if d["quote"]:              # 使用者叫跳過：不再要求逐件引到原句（退避這一路），寫了就收、留帳
         return Verdict("NOT_DOING_DECLARED", False, i18n.t("hook.release_rules.notdoing_user_said", quote=d['quote'][:60], item=d['item'][:60]), (d["line"],))
     if reason_present(d["reason"], hint_why):
@@ -2327,6 +2351,16 @@ RULES.update({
                                 "prompt 關鍵字意圖不算）。記憶注入瘦身（CODING_TURN_FULL_ONLY_ON_TRIGGER）看 coding_turn，不看關鍵字意圖。",
 })
 RULE_MODE.setdefault("NON_CODING_TURN_NO_NUDGE", REMIND)   # 登在 RULE_MODE 建表之後：說明型規則，不是擋點（GATE_MODE_TABLE 要每條都有送法）
+
+# ─── 共用擋次擋滿的放行不無聲（判法在 handlers/stop、handlers/stop_output，這裡只登錄） ───
+RULES.update({
+    "SHARED_BUDGET_RELEASE_NOTICE": "吃 stop_gate_max_blocks 的閘（退縮、收尾檢核推遲寫卡、Reload 建議、取用稽核、底部同步段）本回合擋滿後，"
+                                    "本來要擋的那次照舊放行，但要告知：留帳 guard-shared_budget event=budget_released、stderr 與 systemMessage "
+                                    "一行（閘名＋已擋幾次＋欠什麼），並記一件提醒等下一個工具結果送給模型；同閘同使用者回合一次。"
+                                    "守門家族關（插件版）只有取用稽核吃這份預算，只留帳與 systemMessage、不排模型提醒。"
+                                    "寫碼查核（對帳 (a)～(d)＋量尺）有自己的預算與放行詢問，不走這條（handlers/stop_output._budget_released）。",
+})
+RULE_MODE.setdefault("SHARED_BUDGET_RELEASE_NOTICE", REMIND)
 
 
 # ─── 子代理記憶補位：不經 Agent 工具的子代理在 SubagentStart 補（判法在 handlers/subagent_start.py，這裡只登錄） ───

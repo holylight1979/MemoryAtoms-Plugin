@@ -1,6 +1,6 @@
 ---
 name: consciousness-stream
-description: Consciousness Stream Pipeline (識流) - structured perceive, analyze, calibrate, execute, write-back pipeline for continuous conversation and high-risk tasks. Triggers: 識流, 用識流, consciousness stream.
+description: "Consciousness Stream Pipeline (識流): runs high-risk tasks, or tasks that need rigorous analysis, through a structured eight-consciousness pipeline (perceive → analyze → calibrate → execute → write back); use when the user says '用識流…' (use the consciousness stream). Triggers: 識流, 用識流, consciousness stream."
 ---
 
 # Consciousness Stream Pipeline (識流處理)
@@ -43,7 +43,7 @@ $ARGUMENTS
 
 ## Step 0: Sparśa (觸) - risk grading
 
-Grade risk by these keyword rules, **with no extra reasoning**:
+Grade risk by impact: shared definitions / base classes > modify, delete, migrate > add, configure > read-only queries (default: low). The keywords below are only a guide:
 
 | Level | Keywords |
 |------|--------|

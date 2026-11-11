@@ -1,7 +1,7 @@
 {
   "_doc": "版本標識檔。guardian＝Workflow Guardian（hooks + MCP server）版本，Dashboard 標題與 MCP serverInfo 顯示；atom_memory＝原子記憶系統版本；release_date＝此版本正式發布日；release_theme＝此版本主題一句話。程式讀者：tools/workflow-guardian-mcp/lib/paths.js（只取 guardian / atom_memory）與 tools/install.py --verify（確認本檔可讀）；文件讀者 TECH.md。",
-  "guardian": "6.1.2",
+  "guardian": "6.2.0",
   "atom_memory": "6.1",
-  "release_date": "2026-11-04",
-  "release_theme": "對 Claude Code 適應性補正更新：官方行為改變造成的前提失效修補（子代理歸因、hook 輸出上限、壓縮後送卡、專案根判定）、拆掉原生已有的腳手架換原生機制（auto memory、工作軌命名與 worktree、Claude 間信箱、續跑、MCP 註冊）、注入精準度（非真人訊息不注入、/continue 接交接單、子代理補位）與量尺"
+  "release_date": "2026-11-11",
+  "release_theme": "注入與寫卡精準化更新：補位注入預設關閉、技術卡只在寫碼回合送全文、短接續句沿用上一則注入額度、知識段依剩餘預算放寬到 400 tok；寫卡自動掛 Depends、Failures 卡禁令要帶情境；收尾閘共用預算用完改為放行並告知、退避舉證收白話句、工具寫完的檔當場轉 LF；效果報表按來源分組、週健檢加 _staging 堆積一行；插件版不帶第三方 MCP 安裝技能"
 }

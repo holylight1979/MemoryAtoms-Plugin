@@ -3,8 +3,9 @@ handlers/ups_inject.py — UserPromptSubmit injection assemble 段
 
 從 user_prompt_submit.py 拆出。
 職責：把 search 段排序後的候選組裝成注入內容：
-- hot/cold 分類（cold → 1-line 摘要；向量找到的冷卡，最像這句的那一段語意分數 ≥ vector_search.full_text_min_score 就升成 hot 給全文，規則 VECTOR_CONFIDENT_FULL，寫碼回合不升）
-- per-turn budget 硬上限（decide_atom_injection：ok/fallback/skip）
+- hot/cold 分類（cold → 1-line 摘要，injection.cold_lines 開才給、出廠關；向量找到的冷卡，最像這句的那一段語意分數 ≥ vector_search.full_text_min_score 就升成 hot 給全文，規則 VECTOR_CONFIDENT_FULL，寫碼回合不升）
+- per-turn budget 硬上限（decide_atom_injection：ok/fallback/skip；塞不下時的印象節錄 injection.budget_fallback 開才給、出廠關）
+- 技術卡（injection.tech_card_dirs 的卡）不是開發這則只給一行（wg_core.tech_cards_full）
 - section hints 局部抽取（SECTION_INJECT_THRESHOLD）
 - Related-Edge Spreading（max_depth=1）
 - ReadHits++ via lib.atom_access + 效用導向晉升提示（Wilson 下界）
@@ -48,6 +49,8 @@ _POINTER_TITLE_CAP = 80
 
 
 _INJECTION_TURNS_LOG = CLAUDE_DIR / "Logs" / "injection-turns.jsonl"
+# 每回合 cards 明細最多留幾張：一回合正常幾十張，超過只留前 N 張並記 cards_truncated（被丟掉的張數），防單行無限長
+_TURN_LOG_CARDS_CAP = 60
 
 
 def _append_injection_turn_log(
@@ -55,18 +58,25 @@ def _append_injection_turn_log(
     used_tokens: int, config: Dict[str, Any], **extra: Any,
 ) -> None:
     """每 turn 一行落 Logs/injection-turns.jsonl：{at, session_id, turn_seq, ok, fallback,
-    skip, cold, redundant, dropped, used_tokens, limit, ＋extra（最終裁切統計、輸出字元數）}。
+    skip, cold, redundant, dropped, used_tokens, limit, cards, ＋extra（最終裁切統計、輸出字元數）}。
+    cards＝本回合每張卡 [{name, source（trigger／vector／bm25／related…）, form}]，不寫 path（不洩本機路徑）；
+    超過 _TURN_LOG_CARDS_CAP 張只留前面的，另記 cards_truncated＝丟掉幾張。
     以「最終送達」為準：form 看 form_final（裁切後），沒有就看 form。state 的 injection_log
     會被 cap 裁掉且 session 結束後不易聚合；這份持久紀錄供 memory-effect-report。fail-open。"""
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return  # verify 套件以假 session 跑真 ups_inject，不得污染正式統計
     try:
         counts = {"ok": 0, "fallback": 0, "skip": 0, "cold": 0, "redundant": 0, "seen": 0,
-                  "dropped": 0, "pointer_trim": 0, "dropped_trim": 0}
+                  "dropped": 0, "pointer_trim": 0, "dropped_trim": 0, "cold_dropped": 0, "tech_line": 0}
+        cards: List[Dict[str, str]] = []
         for r in records:
             f = r.get("form_final") or r.get("form")
             if f in counts:
                 counts[f] += 1
+            cards.append({"name": str(r.get("name") or ""), "source": str(r.get("source") or ""), "form": str(f or "")})
+        card_extra: Dict[str, Any] = {"cards": cards[:_TURN_LOG_CARDS_CAP]}
+        if len(cards) > _TURN_LOG_CARDS_CAP:
+            card_extra["cards_truncated"] = len(cards) - _TURN_LOG_CARDS_CAP
         row = {
             "at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "session_id": session_id,
@@ -74,6 +84,7 @@ def _append_injection_turn_log(
             **counts,
             "used_tokens": int(used_tokens),
             "limit": int(_TURN_BUDGET_LIMIT),
+            **card_extra,
             **extra,
         }
         _INJECTION_TURNS_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -117,6 +128,23 @@ def _vector_confident(sections: Optional[List[Dict]], config: Optional[Dict[str,
         return False
     floor = float(((config or {}).get("vector_search") or {}).get("full_text_min_score", 0.70))
     return float(sections[0].get("score", 0.0)) >= floor
+
+
+def tech_card_dirs(config: Optional[Dict[str, Any]]) -> Tuple[str, ...]:
+    """config injection.tech_card_dirs：技術卡放在哪些資料夾（相對寫法、正斜線；出廠空＝沒有技術卡）。"""
+    raw = ((config or {}).get("injection") or {}).get("tech_card_dirs") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(s for s in (str(p).replace("\\", "/").strip("/") for p in raw) if s)
+
+
+def is_tech_card(atom_path: Path, dirs: Tuple[str, ...]) -> bool:
+    """技術卡＝卡檔路徑含 dirs 某一個資料夾（以整段資料夾名比對：`dev` 不會配到 `devops/`）；
+    不是開發這則只給一行（見 wg_core.tech_cards_full）。"""
+    posix = "/" + Path(atom_path).as_posix().lstrip("/")
+    return any(f"/{d}/" in posix for d in dirs)
 
 
 def _lean_turn(state: Dict[str, Any], config: Dict[str, Any]) -> bool:
@@ -292,10 +320,16 @@ def assemble_injection(
     used_tokens = 0
     skip_streak = 0  # 連續 budget skip 計數（達 _BUDGET_SKIP_STREAK_MAX 才 break）
     redundancy_on, redundancy_min = _redundancy_cfg(config)
+    # 補位注入開關（出廠都關：預算留給真正命中、能整張送到的卡）。
+    # cold_lines：判 cold 的卡給不給 `(cold)` 一行；budget_fallback：全文塞不下時給不給印象節錄。
+    inj_cfg = (config or {}).get("injection") or {}
+    cold_lines_on = bool(inj_cfg.get("cold_lines", False))
+    budget_fallback_on = bool(inj_cfg.get("budget_fallback", False))
     full_seen: List[Tuple[str, set]] = []  # 本 turn 已全文注入 (name, trigger set)，同題去冗比對用
     rescue_pairs: List[Tuple[str, str]] = []  # (atom, 實注入內容) → 救援日誌 watch
     # 本 turn 注入記錄（name/path/source/form），尾段落 state["injection_log"]。
-    # form: ok=全文 / fallback=印象 / skip=budget 一行 / cold=cold 一行
+    # form: ok=全文 / fallback=印象（budget_fallback 開才有） / skip=budget 一行 / cold=cold 一行（cold_lines 開才有）
+    #       / dropped=塞不下硬頂；cold_dropped=補位注入關閉時被略過的 cold 卡；tech_line=不是開發這則的技術卡一行
     inject_records: List[Dict[str, Any]] = []
 
     _atom_scopes: Dict[str, str] = (state.get("atom_index") or {}).get("scopes") or {}
@@ -332,6 +366,22 @@ def assemble_injection(
         return False
 
     acct = {"used": 0}  # atom 段實際送出的估算 token（含標頭／路標／cold 行，全部計費）
+    # 技術卡（injection.tech_card_dirs）這則只給一行：UPS 判這則不是在開發（wg_core.tech_cards_full 為假）；直接呼叫沒判過＝照舊
+    tech_dirs = tech_card_dirs(config) if state.get("tech_cards_full", True) is False else ()
+
+    def _push_tech_line(name_: str, path_: Path, rel_: str, source_: str, raw_: str) -> None:
+        """技術卡一行（form tech_line）：不進 injected_atoms（之後開發它的那則照常整段送）、不當 related 擴散起點、AtomAudit 不追問。"""
+        title_ = _strip_atom_for_injection(raw_).split("\n", 1)[0].strip("# ").strip()[:_POINTER_TITLE_CAP]
+        line_ = _pointer(name_, raw_, title_, path_, i18n.t("hook.ups_inject.tech_card_tag"))
+        tok_ = _estimate_tokens(line_)
+        if acct["used"] + tok_ > _TURN_BUDGET_LIMIT:
+            _record(name_, path_, rel_, source_, "dropped")
+            return
+        atom_lines.append(line_)
+        acct["used"] += tok_
+        _record(name_, path_, rel_, source_, "tech_line")
+        _atom_debug_log("BUDGET", f"atom={name_} source={source_} decision=tech_line used={acct['used']}/{_TURN_BUDGET_LIMIT}",
+                        config)
 
     def _push(block: str, name_: str, path_: Path, rel_: str, source_: str, form_: str,
               rescue_content: Optional[str] = None, final: bool = True) -> bool:
@@ -369,6 +419,9 @@ def assemble_injection(
         if name in sent_full:
             _push_seen(name, atom_path, rel_path, source)
             continue
+        if tech_dirs and is_tech_card(atom_path, tech_dirs):
+            _push_tech_line(name, atom_path, rel_path, source, raw_content)
+            continue
         # CODING_TURN_FULL_ONLY_ON_TRIGGER：寫碼回合只有 trigger 命中算 hot，其餘一律走一行
         classification = ("cold" if lean and source != "trigger"
                           else classify_hot_cold(atom_path, source, access_cache=access_cache))
@@ -377,6 +430,10 @@ def assemble_injection(
             classification = "hot"
 
         if classification == "cold":
+            if not cold_lines_on:
+                _record(name, atom_path, rel_path, source, "cold_dropped")
+                _atom_debug_log("BUDGET", f"atom={name} source={source} decision=cold_dropped (injection.cold_lines off)", config)
+                continue
             cold_line = format_cold_inject_line(name, raw_content, rel_path, atom_path, drop_name_echo=lean)
             if _push(cold_line, name, atom_path, rel_path, source, "cold"):
                 _atom_debug_log(
@@ -413,7 +470,7 @@ def assemble_injection(
                 content = extracted
                 sectioned = True
 
-        # 三態決策以「含標頭的完整區塊」為準：先試全文，塞不下再試印象式節錄，都不行才路標。
+        # 三態決策以「含標頭的完整區塊」為準：先試全文，塞不下再試印象式節錄（budget_fallback 開才試），都不行才路標。
         # decide_atom_injection 只算內文；標頭幾個 token 曾讓 1,199 tok 的內文被判 ok 卻在 _push 破頂，
         # 直接退成路標、丟掉可送的節錄（Codex #8 反例）。
         header_tok = _estimate_tokens(f"[Atom:{name}] (budget fallback)\n")
@@ -423,10 +480,10 @@ def assemble_injection(
         attempts = []
         if decision == "ok":
             attempts.append(("ok", f"[Atom:{name}]\n{inject_content}", inject_content))
-            fb = _strip_atom_for_injection_impression_only(raw_content)
+            fb = _strip_atom_for_injection_impression_only(raw_content) if budget_fallback_on else ""
             if fb and _estimate_tokens(fb) < _estimate_tokens(inject_content):
                 attempts.append(("fallback", f"[Atom:{name}] (budget fallback)\n{fb}", fb))
-        elif decision == "fallback":
+        elif decision == "fallback" and budget_fallback_on:
             attempts.append(("fallback", f"[Atom:{name}] (budget fallback)\n{inject_content}", inject_content))
         pushed = False
         for form, block, rescue_txt in attempts:
@@ -486,8 +543,17 @@ def assemble_injection(
         if rname in sent_full:
             _push_seen(rname, rpath, rel_path, "related", related=True)
             continue
+        if tech_dirs and is_tech_card(rpath, tech_dirs):    # related 本就低確信：技術卡這則連一行都不給
+            _record(rname, rpath, rel_path, "related", "cold_dropped")
+            _atom_debug_log("BUDGET", f"atom={rname}(related) decision=cold_dropped (technical card, not a development turn)",
+                            config)
+            continue
         related_classification = "cold" if lean else classify_hot_cold(rpath, "related", access_cache=access_cache)
         if related_classification == "cold":
+            if not cold_lines_on:
+                _record(rname, rpath, rel_path, "related", "cold_dropped")
+                _atom_debug_log("BUDGET", f"atom={rname}(related) decision=cold_dropped (injection.cold_lines off)", config)
+                continue
             cold_line = format_cold_inject_line(rname, raw_content, rel_path, rpath, drop_name_echo=lean)
             cold_line = cold_line.replace(f"[Atom:{rname}] (cold)", f"[Atom:{rname}] (related, cold)", 1)
             if _push(cold_line, rname, rpath, rel_path, "related", "cold"):
@@ -506,10 +572,10 @@ def assemble_injection(
         attempts = []
         if decision == "ok":
             attempts.append(("ok", f"[Atom:{rname}] (related)\n{inject_content}", inject_content))
-            fb = _strip_atom_for_injection_impression_only(raw_content)
+            fb = _strip_atom_for_injection_impression_only(raw_content) if budget_fallback_on else ""
             if fb and _estimate_tokens(fb) < _estimate_tokens(inject_content):
                 attempts.append(("fallback", f"[Atom:{rname}] (related, budget fallback)\n{fb}", fb))
-        elif decision == "fallback":
+        elif decision == "fallback" and budget_fallback_on:
             attempts.append(("fallback", f"[Atom:{rname}] (related, budget fallback)\n{inject_content}", inject_content))
         pushed = False
         for form, block, rescue_txt in attempts:

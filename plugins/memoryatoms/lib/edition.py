@@ -11,6 +11,7 @@
   <資料根>/workflow/config.json → <資料根>/workflow/config.local.json，後蓋前；疊法同 lib/config_local（頂層同名段淺合併）。
   出廠兩層只在插件版墊底：安裝版程式碼根＝資料根，出廠那份就是資料根那份；資料根另指（測試、乾淨環境檢查）時照舊只讀資料根，
   缺了開場紅字（綱領「缺設定：開場紅字＋功能停用」）。同一個檔只讀一次。
+- generated_language()：寫進產生檔（MEMORY.md、各層 _INDEX.md、_ATOM_INDEX.md 等）的固定文字用哪種語言，讀 repo 追蹤的設定 `generated_files.language`（"en"／"zh-TW"，缺或不認得＝"en"）。
 - layered_meta(名)：詞表檔路徑；<資料根>/memory/_meta/<名> 在就用它，插件版才退到 <程式碼根> 的（理由同上）。
 
 本模組不 import project_root（project_root.claude_data_dir 會呼叫這裡，頂層互相 import 會成環）；要資料根的函式用到才載。
@@ -160,6 +161,18 @@ def layered_config(config_path: Optional[Path] = None, with_local: bool = True,
         if isinstance(layer, dict):
             _overlay(config, layer)
     return config
+
+
+GENERATED_LANGUAGES = ("en", "zh-TW")
+
+
+def generated_language(config_path: Optional[Path] = None) -> str:
+    """產生檔固定文字的語言：設定 `generated_files.language`，缺鍵、壞值都回 "en"。
+    刻意不看 WG_LANG、插件 userConfig 與 config.local.json（這台專屬）：產生檔進版控、多台機器共用，
+    語言要由 repo 自己追蹤的設定決定，所有機器一致，才不會各台重產時把整份來回改寫成不同語言。"""
+    section = layered_config(config_path, with_local=False).get("generated_files")
+    value = section.get("language") if isinstance(section, dict) else None
+    return value if value in GENERATED_LANGUAGES else "en"
 
 
 def layered_meta(name: str, memory_dir: Optional[Path] = None) -> Path:

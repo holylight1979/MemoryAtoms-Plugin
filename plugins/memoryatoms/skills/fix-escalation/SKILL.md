@@ -7,7 +7,7 @@ disable-model-invocation: true
 # Fix Escalation Protocol
 
 > Triggers automatically from the 2nd fix attempt on the same problem (Guardian injects `[Guardian:FixEscalation]`), or manually with `/memoryatoms:fix-escalation`.
-> Escalate by evidence: **Stage 1 root-cause investigation + independent verification (at most 2 agents) -> if the evidence is consistent and reproducible, fix directly; only if it conflicts or cannot be reproduced, go to the Stage 2 meeting.** It does not always run all 9 agents.
+> Escalate by evidence: **Stage 1 root-cause investigation + independent verification (at most 2 agents) -> if the evidence is consistent and reproducible, fix directly; only if it conflicts or cannot be reproduced, go to the Stage 2 meeting.**
 
 ## Problem description
 

@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "_doc": "single source of truth for 反退避契約 forbidden phrases. Read by hooks/wg_evasion.py (regex assembly) and surfaced in IDENTITY.md (human-readable list). 各類的 exception 欄由程式接上（規則 NOT_DOING_DECLARED）：退避語所在那一行對到一條「不做｜<哪一件>：<理由>」就不標、留帳，exception 文字附在提示裡告訴 AI 理由要寫什麼（風險、為什麼超出）。",
+  "_doc": "single source of truth for 反退避契約 forbidden phrases. Read by hooks/wg_evasion.py (regex assembly) and surfaced in IDENTITY.md (human-readable list). 各類的 exception 欄由程式接上（規則 NOT_DOING_DECLARED）：退避語所在那一行對到一條「不做｜<哪一件>：<理由>」就不標、留帳（不帶前綴、帶到命中的詞並用「因為」接理由的白話句同樣算），exception 文字附在提示裡告訴 AI 理由要寫什麼（風險、為什麼超出）。",
   "categories": [
     {
       "id": "scope-evasion",

@@ -127,14 +127,17 @@ from wg_atoms_render import (  # noqa: E402,F401
     _FRONTMATTER_KEEP_RE,
     _HTML_COMMENT_RE,
     _KNOWLEDGE_CAP_TOKENS_DEFAULT,
+    _KNOWLEDGE_CAP_WIDEN_MULT,
     _STRIP_META_RE,
     _STRIP_SECTION_RE,
     _detect_atom_type,
     _extract_named_section,
     _extract_title_and_frontmatter,
+    _knowledge_cap_for_budget,
     _legacy_strip_atom_for_injection,
     _strip_atom_for_injection,
     _strip_atom_for_injection_impression_only,
+    _truncated_mark,
 )
 from wg_atoms_budget import (  # noqa: E402,F401
     SUBAGENT_INJECT_MARKER,

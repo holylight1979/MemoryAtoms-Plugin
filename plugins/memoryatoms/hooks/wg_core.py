@@ -106,6 +106,22 @@ def compute_token_budget(prompt: str) -> int:
     return TOKEN_BUDGET_MAX
 
 
+SHORT_PROMPT_CHARS = 10  # 去空白後少於這麼多字＝短句（「繼續」「然後呢？」這類接續句）
+
+
+def inherit_short_prompt_budget(typed: str, budget: int, prev_budget: int, enabled: bool = True) -> int:
+    """短句沿用上一則的注入總額：「繼續」這種接續句字少、但話題還在，照字數降級會把同話題的卡擠掉。
+
+    條件：使用者打的字去空白後 < SHORT_PROMPT_CHARS，且同 session 有上一則人打的回合的總額（prev_budget>0）。
+    取 max(本則, 上一則)——只往上沿用、不往下拉。總額是上限不是配額，沒命中的卡就不會多送。
+    enabled 對應 config injection.short_prompt_inherits_budget（預設 true）。"""
+    if not enabled or prev_budget <= 0:
+        return budget
+    if len("".join((typed or "").split())) >= SHORT_PROMPT_CHARS:
+        return budget
+    return max(budget, prev_budget)
+
+
 # ─── 覆轍信號（same_file_3x）檔名白名單 ─────────────────────────────────────
 # 索引/編年/說明/驗收工件本來就每 session 高頻反覆更新（README、_CHANGELOG、
 # DocIndex-*、各種 _INDEX、MEMORY.md、acceptance-*），「同檔改 ≥3 次」proxy 對
@@ -271,6 +287,28 @@ def coding_turn(state: Optional[Dict[str, Any]], config: Optional[Dict[str, Any]
     return any(isinstance(m, dict) and int(m.get("last_turn_seq") or m.get("turn_seq") or 0) >= since
                and _is_code_path(str(m.get("path") or ""), config)
                for m in st.get("modified_files") or [])
+
+
+_DEV_INTENTS = ("debug", "feature", "refactor", "perf")
+_FILE_TOKEN_RE = re.compile(r"[\w./\\-]+\.[A-Za-z][A-Za-z0-9]{0,5}\b")   # 原話裡像檔名的字（ups_inject.py、a\b.ps1）
+
+
+def tech_cards_full(state: Optional[Dict[str, Any]], config: Optional[Dict[str, Any]], typed: str = "") -> bool:
+    """技術卡這則送不送全文。技術卡＝config injection.tech_card_dirs 列的資料夾裡的卡（出廠空＝沒有技術卡）；
+    UPS 每則把結果放進 state["tech_cards_full"]，注入組裝與 UserPromptSubmit 擴充（例如只在開發時送的參考文件）都讀它。
+    config injection.tech_cards_full_only_when_coding（出廠 true）不是 true → 照舊每則都送。
+    開著時三個既有訊號任一成立才算開發這則：本回合已改程式檔（coding_turn）、使用者原話的意圖是
+    debug／feature／refactor／perf（turn_intent，classify_intent 判的）、原話點名了程式檔（is_code_path）。
+    都不成立（只是提到這套系統、在檢討它）→ 技術卡只給一行。判錯只會少送技術卡，其他卡不經這裡。
+    守門家族關（插件版）：判程式檔的 wg_code_path 不出廠，只看意圖（coding_turn 這時一律為假）。"""
+    if ((config or {}).get("injection") or {}).get("tech_cards_full_only_when_coding", True) is not True:
+        return True
+    st = state or {}
+    if coding_turn(st, config) or st.get("turn_intent") in _DEV_INTENTS:
+        return True
+    if config is not None and not guard_family_on(config):
+        return False
+    return any(_is_code_path(tok, config) for tok in _FILE_TOKEN_RE.findall(typed or ""))
 
 
 def _is_code_path(path: str, config: Optional[Dict[str, Any]]) -> bool:

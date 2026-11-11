@@ -154,8 +154,18 @@
       "enabled": true,
       "min_shared_triggers": 3
     },
+    "_doc_cold_lines": "Whether a candidate card judged cold (not a trigger hit and not read often enough in the last 7 days) gets a one-line `[Atom:x] (cold) summary (full: Read ...)` pointer. false (default) = no line, only the atom-debug log records decision=cold_dropped, so the budget goes to cards that can be sent whole; true = the earlier behavior.",
+    "cold_lines": false,
+    "_doc_budget_fallback": "Whether a card whose full text does not fit falls back to its impression excerpt `[Atom:x] (budget fallback)`. false (default) = no excerpt; a card that does not fit gets the one-line skip pointer straight away; true = the earlier behavior.",
+    "budget_fallback": false,
+    "_doc_tech_cards_full_only_when_coding": "Technical cards (the folders listed in tech_card_dirs) are sent in full only on turns that work on code: this user turn has changed a code file, the intent of the user's words is debug / feature / refactor / perf, or the user's words name a code file (hooks/wg_core.tech_cards_full). Otherwise (the system is only being talked about) a technical card is sent as one line (form tech_line). The result is kept in the session state as tech_cards_full for UserPromptSubmit extensions. true (default); false = send them in full on every turn. Other cards are not affected.",
+    "tech_cards_full_only_when_coding": true,
+    "_doc_tech_card_dirs": "Folders whose cards count as technical cards for tech_cards_full_only_when_coding: relative paths with forward slashes, matched as whole folder names anywhere in the card's file path (\"dev\" does not match \"devops/\"). Shipped empty = no card is a technical card.",
+    "tech_card_dirs": [],
     "_doc_truncated_pointer_max": "Final budget trimming (_truncate_context_by_activation) drops rather than truncates: among the atoms sacrificed for going over budget, only the top N by activation keep a one-line pointer; the rest are not injected at all (details go to the atom-debug log, and the trailing budget marker carries the trim statistics).",
-    "truncated_pointer_max": 3
+    "truncated_pointer_max": 3,
+    "_doc_short_prompt_inherits_budget": "When what the user typed is under 10 characters without spaces (a short follow-up such as \"go on\") and the session has an earlier turn typed by a person, the injection total is max(this turn, the previous turn), so a short follow-up does not drop from 2000 to 1000 tokens. true (default); false = tier by length only.",
+    "short_prompt_inherits_budget": true
   },
   "response_capture": {
     "enabled": true,
@@ -216,6 +226,10 @@
       "enabled": false,
       "max_atoms": 8
     }
+  },
+  "session_start": {
+    "_doc": "core_rules (unset = true): send the core card-writing rules (lib/i18n/core-rules.<language>.md) at session start. Set false when another rules file you already load every session (such as ~/.claude/rules/core.md) carries the same text, so it is not sent twice; false also silences the red line about a missing rules file.",
+    "core_rules": true
   },
   "userExtraction": {
     "enabled": true,
@@ -367,6 +381,10 @@
   "eol": {
     "_doc": "Automatic LF line endings for the project memory tree (<proj>/.claude/memory): after a successful project-mode --write of tools/sync-memory-index.py (the end of the funnel of every atom write), normalize-eol.auto_project_eol is called: files in the tree are converted to LF; git projects get a marked block in .gitattributes (eol=lf + merge=atomindex for the three index files); svn projects get svn propset svn:eol-style LF on versioned text files. The first run touches the whole tree, later runs touch nothing, and the changes ride along with the next memory commit. Turn off with auto_normalize_project:false or --no-eol.",
     "auto_normalize_project": true
+  },
+  "generated_files": {
+    "_doc": "Language of the fixed text that tools write into generated index files (MEMORY.md, each level's _INDEX.md, _local_catalog.md, _by_language/_INDEX.md, the _ATOM_INDEX.md mirror): \"en\" or \"zh-TW\"; missing or unknown = \"en\". Only this tracked file decides it (not WG_LANG, the plugin option or config.local.json), so every machine sharing the repo regenerates the same text instead of rewriting the files back and forth.",
+    "language": "en"
   },
   "sync_reminder": {
     "_doc": "Stop sync gate. unpushed=true: also blocks when the files changed in this session are committed but the repo is ahead of upstream (\"上GIT\" = commit + push in one go). Roots whose live lock is held by the vcs-sync worker skip the unpushed check.",
@@ -608,5 +626,11 @@
   "tool_selftests": [],
   "_doc_tool_selftests": "Tool self-tests run one by one by the weekly health check (tools/health-weekly.py): each entry is {name, cmd, expected: PASS|FAIL|DONE, sentinel?: sentinel name, runtime_gate?: command, timeout_s?}. Only the sentinel on the last non-empty output line counts; with a non-zero exit, expected PASS / DONE is always red and only expected=FAIL is green; a non-zero runtime_gate -> skipped, not red. cmd is split with shlex after backslashes are turned into forward slashes. Example: {\"name\": \"my-tool\", \"cmd\": \"python -X utf8 tools/my-tool.py --selftest\", \"expected\": \"PASS\", \"timeout_s\": 30}",
   "depends_coverage_min": 0,
-  "_doc_depends_coverage_min": "Weekly health check threshold for Depends coverage (atoms with a path-type Depends / all atoms); below it is a yellow light. 0 = only reported, not judged."
+  "_doc_depends_coverage_min": "Weekly health check threshold for Depends coverage (atoms with a path-type Depends / all atoms); below it is a yellow light. 0 = only reported, not judged.",
+  "staging_hygiene": {
+    "max_files": 10,
+    "max_kb": 200,
+    "max_age_days": 30
+  },
+  "_doc_staging_hygiene": "Weekly health check threshold for memory/_staging pile-up: counts only top-level .md / .json files (_INDEX.md excluded; subfolders are engineering work trees and are only listed by name, not counted). File count > max_files, total KB > max_kb, or oldest file age in days > max_age_days (any one) -> a needs-attention yellow light (say 'clean staging'); none exceeded -> one line in the info section. A missing _staging folder just prints 0 files."
 }

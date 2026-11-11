@@ -1,7 +1,8 @@
-"""stop_output.py — 收尾的出口與共用句：輸出 JSON／放行／擋的三個出口（會把連鎖斷路器要給使用者看的尾巴一併帶上）、連鎖斷路器的接線、提醒只留帳的記法、要問使用者的固定句。
+"""stop_output.py — 收尾的出口與共用句：輸出 JSON／放行／擋的三個出口（會把連鎖斷路器要給使用者看的尾巴一併帶上）、連鎖斷路器的接線、提醒只留帳的記法、共用擋次擋滿放行的告知、要問使用者的固定句。
 由 handlers/stop.py 以及 stop_code_gate、stop_equivalence 叫用；本檔不 import 入口檔。
 """
 
+import re
 import sys
 import i18n   # lib/：給人看的提示走語言表
 import wg_core as _core
@@ -11,9 +12,11 @@ from wg_lazy_re import lazy_module
 
 _rel = lazy_module("wg_release")
 chain_store = lazy_module("chain_store")
+_overview = lazy_module("wg_overview")   # 提醒帳（守門家族）：擋滿放行的告知排給下一個工具結果時才載
 
 
-# 連鎖斷路器在收尾時不擋、要給使用者看的一段（使用者答了三選一的結果、還在等答的提醒）：這次收尾的每個出口都帶上
+# 連鎖斷路器在收尾時不擋、要給使用者看的一段（使用者答了三選一的結果、還在等答的提醒），以及共用擋次擋滿放行的告知：
+# 這次收尾的每個出口都帶上
 _CHAIN_TAIL: List[str] = []
 
 
@@ -66,6 +69,29 @@ def _remind_logged(log_name: str, gate: str, rule: str, text: str, session_id: s
     append_guard_log(log_name, {"event": "remind", "gate": gate, "rule": rule, "session_id": session_id, "turn_seq": turn_seq,
                                 "excerpt": head[:200], **extra})
     print(i18n.t("hook.stop_output.remind_only_logged", gate=gate, rule=rule, head=head[:120]), file=sys.stderr)
+
+
+def _budget_released(gate: str, what: str, state: Dict[str, Any], session_id: str, turn_seq: int, uturn: Any,
+                     stop_count: int, max_blocks: Any, remind: bool = True) -> None:
+    """規則 SHARED_BUDGET_RELEASE_NOTICE：吃 stop_gate_max_blocks 的閘這次本來要擋、但本回合共用擋次已滿 → 放行，但不無聲：
+    留帳（guard-shared_budget.jsonl event=budget_released）＋stderr＋systemMessage 一行給使用者看（_CHAIN_TAIL：這次收尾每個出口都帶），
+    並記一件提醒等下一個工具結果送給模型（wg_overview.remind_queue；同閘同使用者回合只送一次）。寫碼查核閘不走這裡。
+    remind=False：守門家族關（插件版沒有提醒帳、也沒有送提醒的那段），只留帳與 systemMessage。state 由呼叫端寫回。"""
+    head = next((ln.strip() for ln in str(what or "").splitlines() if ln.strip()), "")
+    head = re.sub(r"^\[(?:Guardian:[^\]]*|Workflow Guardian)\]\s*", "", head)[:120]     # 擋訊息自帶的閘標記不重複
+    line = i18n.t("hook.stop_output.budget_released", gate=gate, count=stop_count, limit=max_blocks, head=head)
+    append_guard_log("shared_budget", {"event": "budget_released", "gate": gate, "session_id": session_id,
+                                       "turn_seq": turn_seq, "stop_count": stop_count, "max_blocks": max_blocks, "excerpt": head})
+    _CHAIN_TAIL.append(line)
+    print(line, file=sys.stderr)
+    if not remind:
+        return
+    try:
+        _overview.remind_queue(state, {"rule": "SHARED_BUDGET_RELEASE_NOTICE", "obj": f"{gate}@{uturn}",
+                                       "what": i18n.t("hook.stop_output.budget_released_what", gate=gate, count=stop_count, head=head),
+                                       "fix": i18n.t("hook.stop_output.budget_released_fix")})
+    except Exception as e:  # noqa: BLE001  送不到模型只少一行提醒；帳與 systemMessage 已留
+        print(i18n.t("hook.stop_output.budget_released_remind_failed", gate=gate, error=f"{type(e).__name__}: {e}"), file=sys.stderr)
 
 
 # 測試會換掉的名字留在模組上（同 post_tool_use 的惰性入口）：呼叫時才轉給守門模組

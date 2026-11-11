@@ -1,6 +1,6 @@
 # MemoryAtoms
 
-Claude Code 的原子記憶。MemoryAtoms 把你和 Claude 學到的事存成一張張小的 Markdown 卡片；每一句話都把合用的卡送到 Claude 眼前；Claude 透過 MCP 伺服器寫卡、找卡；每場 session 學到的東西收割成新卡。出廠帶 485 張日常開發用的卡。
+Claude Code 的原子記憶。MemoryAtoms 把你和 Claude 學到的事存成一張張小的 Markdown 卡片；每一句話都把合用的卡送到 Claude 眼前；Claude 透過 MCP 伺服器寫卡、找卡；每場 session 學到的東西收割成新卡。出廠帶 486 張日常開發用的卡。
 
 English: [README.md](README.md)
 
@@ -28,7 +28,7 @@ English: [README.md](README.md)
    - `remote_llm_user`、`remote_llm_password`：只有你設的遠端 LLM 後端要登入時才填（見「傳到哪」），其他情況留空。密碼輸入時遮住，存在系統的安全憑證庫，不寫進 `settings.json`。
    之後可用 `/plugin configure` 改。
 3. `/reload-plugins` 或重開 Claude Code。
-4. 第一場開場會建資料夾、用模板寫 `IDENTITY.md` 與 `USER.md`、展開 485 張出廠卡並建索引。作者機上第一場開場約 9～17 秒，之後每場 2 秒多。
+4. 第一場開場會建資料夾、用模板寫 `IDENTITY.md` 與 `USER.md`、展開 486 張出廠卡並建索引。作者機上第一場開場約 9～17 秒，之後每場 2 秒多。
 5. Claude 第一次寫卡時，Claude Code 會問你要不要允許這個 MCP 工具。插件不能預先放行。
 6. 選做：`/memoryatoms:setup-vector` 開語意搜尋（見「下載什麼」）。
 

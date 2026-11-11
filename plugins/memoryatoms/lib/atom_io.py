@@ -81,6 +81,13 @@ VALID_SOURCES = frozenset({
     "tool:undo",
     "test",  # 測試用，等價測試 fixture 使用
 })
+EXTENSION_SOURCE_PREFIX = "ext:"   # 擴充自己的寫入：ext:<擴充名>（稽核帳照記，反查得到是哪個擴充寫的）
+
+
+def is_valid_source(source: str) -> bool:
+    """列舉過的來源，或 ext:<擴充名>。"""
+    return source in VALID_SOURCES or (
+        isinstance(source, str) and source.startswith(EXTENSION_SOURCE_PREFIX) and len(source) > len(EXTENSION_SOURCE_PREFIX))
 
 # SPEC §7.4 sensitive audience triggers auto-pending
 SENSITIVE_AUDIENCE = frozenset({"architecture", "decision"})
@@ -609,7 +616,7 @@ def write_index(
     entry：切入點代號；None → 跟 Related／Aka 一樣讀剛落檔的 atom 的 `- Entry:` 行（edit_metadata 先寫索引、
     後寫檔，那時檔還是舊的，所以由它明給）。
     """
-    if source not in VALID_SOURCES:
+    if not is_valid_source(source):
         return WriteResult(ok=False, error=f"invalid source: {source}",
                            audit_id=_gen_audit_id())
 
@@ -702,7 +709,7 @@ def write_index_full(
 
     所有寫入仍走 _atomic_write + _audit_log，行為對拍 funnel 其他入口。
     """
-    if source not in VALID_SOURCES:
+    if not is_valid_source(source):
         return WriteResult(ok=False, error=f"invalid source: {source}",
                            audit_id=_gen_audit_id())
     audit_id = _gen_audit_id()
@@ -743,7 +750,7 @@ def write_raw(
     唯一的內容檢查：密碼或 token 的真實值不准落 secret/ 以外（背景寫卡也走這裡）。
     """
     audit_id = _gen_audit_id()
-    if source not in VALID_SOURCES:
+    if not is_valid_source(source):
         return WriteResult(ok=False, audit_id=audit_id,
                            error=f"invalid source: {source}")
     leak = _secret_value_error(file_path, content)
@@ -800,7 +807,7 @@ def append_atom_file(
     不更新 access.json / index（caller 沿既有 spawnAtomAccess / appendToIndex 流程）。
     """
     audit_id = _gen_audit_id()
-    if source not in VALID_SOURCES:
+    if not is_valid_source(source):
         return WriteResult(ok=False, audit_id=audit_id,
                            error=f"invalid source: {source}")
     fp = Path(file_path)
@@ -811,10 +818,14 @@ def append_atom_file(
     date_err = narrative_date_error(render_knowledge_lines(knowledge))
     if date_err:
         return WriteResult(ok=False, audit_id=audit_id, error=date_err)
+    ban_err = failures_ban_context_error(fp, knowledge)
+    if ban_err:
+        return WriteResult(ok=False, audit_id=audit_id, error=ban_err)
     content = _append_header_fields(_build_append_content(existing, knowledge), provenance, quote)
     if content is None:
         return WriteResult(ok=False, audit_id=audit_id,
                            error="append: provenance/quote given but the atom has no metadata block to write them into")
+    content = _append_auto_depends(content, [knowledge, provenance], fp)
     err = validate_atom_content(content)
     if err:
         return WriteResult(ok=False, audit_id=audit_id,
@@ -912,6 +923,23 @@ def _append_header_fields(content: str, provenance: Optional[str], quote: Option
     return content
 
 
+def header_depends(text: str) -> Optional[List[str]]:
+    """檔頭 `- Depends:` 清單；沒有這行回 None、空行回 []（同 replace 三態）。"""
+    dm = re.search(r"^- Depends:[ \t]*(.*)$", text[:_header_end(text)], re.MULTILINE)
+    return [t.strip() for t in re.split(r"[,，]", dm.group(1)) if t.strip()] if dm else None
+
+
+def _append_auto_depends(content: str, texts: List[Any], file_path: Path) -> str:
+    """append：這次追加的知識行／Source 點名的存在檔補進檔頭 Depends（既有保留；沒新東西原樣回）。
+    索引的 depends 由下一次 create／replace 或 write_index 同步（append 不動索引）。"""
+    from .atom_depends_infer import with_auto_depends
+    old = header_depends(content)
+    new = with_auto_depends(old, texts, file_path)
+    if not new or new == old:
+        return content
+    return _set_meta_line(content, "Depends", f"- Depends: {', '.join(new)}") or content
+
+
 def _scope_from_frontmatter(text: str) -> Optional[str]:
     """frontmatter `- Scope:` → VALID_SCOPES 值；legacy `project` 對映 `shared`；缺/非法 → None。"""
     m = re.search(r"^-[ \t]*Scope:[ \t]*(\S+)", text, re.MULTILINE)
@@ -975,7 +1003,7 @@ def edit_metadata(
         source: audit source（須在 VALID_SOURCES；預設 "mcp"）
     """
     audit_id = _gen_audit_id()
-    if source not in VALID_SOURCES:
+    if not is_valid_source(source):
         return WriteResult(ok=False, audit_id=audit_id,
                            error=f"invalid source: {source}")
 
@@ -1225,6 +1253,37 @@ def rule_atom_style_violation(file_path: Path, knowledge: Optional[List[str]]) -
     return None
 
 
+# Failures 失敗家族的卡是失敗當下寫的，禁令句不帶情境就會互相打架（「敢拍板」對「別壓我拍板」）。
+# 新寫入的 [臨] 禁令行，同一行或緊接下一行要寫出情境：什麼時候適用、什麼時候不適用。
+_FAILURES_DIR_RE = re.compile(r"/memory/failures/", re.IGNORECASE)
+_BAN_WORD_RE = re.compile(r"一律|不准|禁止|必須|嚴禁|不得")
+BAN_CONTEXT_MARKERS = ("情境", "何時", "適用")   # 卡片內容的標記字，不翻；拒收訊息從這裡取
+_BAN_CONTEXT_RE = re.compile(rf"(?:{'|'.join(BAN_CONTEXT_MARKERS)})[：:]")
+FAILURES_BAN_EXAMPLE = "[臨] 不准自己跑整組測試。情境：驗證估超過兩分鐘時；只跑改到的那支 verify 不在此限"
+
+
+def failures_ban_context_error(file_path: Path, knowledge: Optional[List[str]]) -> Optional[str]:
+    """Failures 卡（全域 memory/Failures/、專案 memory/failures/）新寫入的知識行：含禁令字的 [臨] 行，
+    同一行或下一行沒有「情境：／何時：／適用：」→ 回錯誤字串；否則 None。
+    只看本次傳入的行（create 的整段知識、append 的新行），不回頭驗既有內容；skip_gate 不能繞過。"""
+    if not _FAILURES_DIR_RE.search(str(file_path).replace("\\", "/")):
+        return None
+    lines: List[str] = []
+    for k in knowledge or []:
+        if isinstance(k, str):
+            lines.extend(k.split("\n"))
+    for i, line in enumerate(lines):
+        if "[臨]" not in line or not _BAN_WORD_RE.search(line):
+            continue
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if _BAN_CONTEXT_RE.search(line) or _BAN_CONTEXT_RE.search(nxt):
+            continue
+        m1, m2, m3 = BAN_CONTEXT_MARKERS
+        return i18n.t("hook.atom_io.failures_ban_context", marker=f"{m1}：", alt1=f"{m2}：", alt2=f"{m3}：",
+                      example=FAILURES_BAN_EXAMPLE, line=line[:80])
+    return None
+
+
 def card_body_lines(content: str) -> List[str]:
     """建好的整張卡從第一個 `## ` 段起的行（知識段＋行動段）；檔頭欄位（含 replace 從舊卡帶回的）不在內。
     create／replace 的 KNOWLEDGE_LINE_NO_NARRATIVE_DATE 閘只看這段（py write_atom 與 atom_io_cli 共用）。"""
@@ -1365,7 +1424,7 @@ def write_atom(
     audit_id = _gen_audit_id()
 
     # ── Validate ──
-    if source not in VALID_SOURCES:
+    if not is_valid_source(source):
         return WriteResult(ok=False, audit_id=audit_id,
                            error=f"invalid source: {source} (must be in VALID_SOURCES)")
     if not title or not confidence or not triggers or not knowledge or not mode:
@@ -1463,7 +1522,10 @@ def write_atom(
                            error=f"located atom outside index root: {file_path}")
 
     # ── Build content ──
+    # 正文點名的存在檔自動補進 Depends（lib/atom_depends_infer；既有條目保留、去重；None 三態不變）
+    from .atom_depends_infer import with_auto_depends
     if mode == "create":
+        depends = with_auto_depends(depends, [knowledge, actions, provenance], file_path)
         if file_path.exists():
             return WriteResult(ok=False, audit_id=audit_id,
                                error=f"Atom already exists: {slug}.md (use mode=append/replace)")
@@ -1494,6 +1556,7 @@ def write_atom(
         if content is None:
             return WriteResult(ok=False, audit_id=audit_id,
                                error="append: provenance/quote given but the atom has no metadata block to write them into")
+        content = _append_auto_depends(content, [knowledge, provenance], file_path)
         supersedes_final = read_supersedes(existing)
     elif mode == "replace":
         # Confirmations/ReadHits 在 access.json，replace 不需保留（檔本就分離）
@@ -1539,6 +1602,7 @@ def write_atom(
             )
             if sup_err:
                 return WriteResult(ok=False, audit_id=audit_id, error=sup_err)
+        prev_depends = with_auto_depends(prev_depends, [knowledge, actions, prev_provenance], file_path)
         content = build_atom_content(
             title=title, scope=scope_label, confidence=confidence, triggers=triggers,
             knowledge=knowledge, actions=actions, related=related, audience=audience,
@@ -1561,6 +1625,9 @@ def write_atom(
     if err:
         return WriteResult(ok=False, audit_id=audit_id, error=f"Validation failed: {err}")
     err = rule_atom_style_violation(file_path, knowledge)
+    if err:
+        return WriteResult(ok=False, audit_id=audit_id, error=err)
+    err = failures_ban_context_error(file_path, knowledge) if mode in ("create", "append") else None
     if err:
         return WriteResult(ok=False, audit_id=audit_id, error=err)
     # 知識行與行動行不准敘事日期（判式與 tools/atom-date-lint.py 同一份）；只看這次寫進去的行，skip_gate 不能繞

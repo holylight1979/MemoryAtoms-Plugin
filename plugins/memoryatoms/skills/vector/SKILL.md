@@ -40,7 +40,7 @@ Take the subcommand from `$ARGUMENTS`:
 Run with the Bash tool:
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/tools/rag-engine.py" health
+python "${CLAUDE_PLUGIN_ROOT}/tools/rag-engine.py" status
 ```
 
 Interpret the output and report:

@@ -1,6 +1,7 @@
 ---
 name: handoff
-description: Cross-session handoff prompt builder - enforces a self-sufficient 6-block template so the next session does not start blind. 跨 Session Handoff：給下 session 的 prompt、續接 prompt、交接、寫 next-phase。
+description: Cross-session handoff prompt builder - enforces a self-sufficient 6-block template so the next session does not start blind. Use when the user wants a prompt for the next session, a continuation prompt, a handoff, or a next-phase write-up. 跨 Session Handoff：給下 session 的 prompt、續接 prompt、交接、寫 next-phase。
+when_to_use: 觸發詞：交接, 續接 prompt, 下個 session, next-phase, handoff
 ---
 
 # /memoryatoms-handoff:handoff — cross-session handoff prompt builder
@@ -27,7 +28,7 @@ Pronouns like "what we just discussed", "what was said before", "that method" ca
 ## Required 6 blocks (missing one = refuse to finish)
 
 ### 1.【前置脈絡】(Context)
-- Absolute project root path (e.g. `D:/work/acme-shop/.claude/`)
+- Absolute project root path (e.g. `<project>/.claude/`)
 - Working branch / working directory
 - Why this is being done (**include the why**, not only the what)
 - **Copy the original goal verbatim from its source** (the user's own words in the conversation), not from the previous handoff: retelling a retelling shrinks the goal round by round down to the task at hand.
@@ -86,10 +87,8 @@ Check before running; if any hits, refuse to finish and fill the gap:
 
 | Skill | Role | Action |
 |-------|------|--------|
-| `/memoryatoms-handoff:handoff` | **Writing side** | Produces the self-sufficient prompt, optionally saves it to staging |
+| `/memoryatoms-handoff:handoff` | **Writing side** | Produces the self-sufficient prompt and saves it to staging |
 | `/continue` (core) | **Reading side** | Reads `_staging/next-phase-*.md` and executes |
-
-Not saving to staging is fine too: just give the user a code block to copy.
 
 ---
 
@@ -104,14 +103,14 @@ Not saving to staging is fine too: just give the user a code block to copy.
 ### Good example (self-sufficient version)
 ```
 【前置脈絡】
-- 專案：D:/work/acme-shop/.claude/（acme-shop 伺服器，team memory repo）
+- 專案：<project>/.claude/（伺服器專案，team memory repo）
 - 任務：ShopApi 知識庫建置 Phase 2 — ShopAdmin 管理頁交叉對應
 - Why：team 同事 alice 之前在 a1b2c3d 補齊了 40 支訂單 API 的參數，需與管理頁對齊
 
 【已完成】
 - Phase 1：commit e4f5a6b 已 push origin/master
 - 權威來源：_AIDocs/API_Endpoints_Report.md（40 支 API 完整參數）
-- Phase 1 產出：D:/work/acme-shop/.claude/memory/api-directory.md（40 支 API §1-4 + §5 ShopAdmin 占位）
+- Phase 1 產出：<project>/.claude/memory/api-directory.md（40 支 API §1-4 + §5 ShopAdmin 占位）
 
 【權威來源】
 - API 清單：ShopServer 40 支 API（api-directory.md §1-4）
@@ -130,19 +129,10 @@ Not saving to staging is fine too: just give the user a code block to copy.
 【決策依據】
 - 為什麼用 curl：本機背景連測試站夠用，不需開視窗（之前討論結論）
 - 為什麼不全用 Playwright：開銷大且非必要；只在 curl 失敗時 fallback
-- 已知坑：ShopAdmin 測試帳密在 D:/work/acme-shop/.claude/secrets/（git ignore），讀檔取
+- 已知坑：ShopAdmin 測試帳密在 <project>/.claude/secrets/（git ignore），讀檔取
 ```
 
 ---
-
-## Step 1: Judge the trigger
-
-From the user's recent messages, catch one of these intents:
-- "a prompt for the next session", "the prompt for the next session"
-- "continue", "handoff", "pick up next time"
-- "write next-phase"
-
-If none is caught, do not run; reply "No handoff intent detected, please state it explicitly."
 
 ## Step 2: Collect the 6 blocks
 
@@ -154,7 +144,7 @@ Go item by item; if any hits, go back and fill it; **do not deliver**.
 
 ## Step 3.5: Adversarial self-review gate (mandatory before delivery; no skipping)
 
-> A complete structure (all 6 blocks present) is not correct meaning. **The author does not automatically see their own gaps**: in practice CC found the gaps in its own next-phase.md (ones that cause distortion or wrong understanding) only after the user said "do two careful confirmations". So this gate forces one critical review round; it cannot be skipped or run only in the head.
+> A complete structure is not the same as correct meaning; authors often cannot see their own gaps, so run one round of critical review before delivery and answer each item, not only in your head.
 
 Ask each item; any "no" means go back and fix, do not deliver:
 
@@ -176,10 +166,10 @@ Knowledge basis: atoms [[handoff-綜觀品質與抗失真寫法]], [[跨session�
 
 ## Step 4: Output
 
-Wrap in a code block. If the user wants it saved to staging:
+Wrap in a code block and save it as "Output format" says:
 ```bash
 # write path
 {project}/.claude/memory/_staging/next-phase-{name}.md
 ```
 
-Then tell the user: "Prompt produced, paste it at the start of the next session" or "Saved to staging, the next /continue reads it automatically".
+Then tell the user: "Prompt produced and saved to staging; paste it at the start of the next session, or the next /continue reads it automatically".

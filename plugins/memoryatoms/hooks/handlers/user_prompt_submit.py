@@ -28,7 +28,8 @@ from typing import Any, Dict, List
 from wg_core import (
     _ensure_state, _estimate_tokens, _now_iso, write_state,
     output_json, output_nothing, cap_hook_output, append_guard_log,
-    _atom_debug_log, _atom_debug_error, WORKFLOW_DIR, v6_enabled, coding_turn,
+    _atom_debug_log, _atom_debug_error, WORKFLOW_DIR, v6_enabled, coding_turn, tech_cards_full,
+    inherit_short_prompt_budget,
     DEFAULTS as CORE_DEFAULTS,  # config 缺鍵時的預設只認 wg_core 那一份
 )
 import i18n  # lib/（wg_core 已放進 sys.path）：給人看的提示走語言表
@@ -204,11 +205,28 @@ def handle_user_prompt_submit(
                                 str((state.get("session") or {}).get("cwd") or input_data.get("cwd") or ""))
     query_lower = query.lower()
 
+    # 意圖前移（A0.1）：注入前就知道這回合要做什麼；十鍵見 wg_atoms.INTENT_PATTERNS。
+    # 意圖是「使用者要做什麼」的權威判斷，只吃使用者本人打的字（user_typed_text：剔掉同伴訊息、背景通知等 harness 區塊）；
+    # 整則沒有使用者的字 → 沿用上一則判的意圖（同伴信、通知正文裡的「重構」不改意圖；G7 等值閘據此擋）
+    turn_intent = classify_intent(typed) if typed else (state.get("turn_intent") or "general")
+    state["turn_intent"] = turn_intent
+    # 技術卡這則送不送全文：看寫碼回合、意圖、原話點名程式檔（wg_core.tech_cards_full）；
+    # 脈絡段的 UserPromptSubmit 擴充與注入組裝（injection.tech_card_dirs 的卡）都讀這個值，所以在脈絡段之前、每則重算
+    state["tech_cards_full"] = tech_cards_full(state, config, typed)
+
     # ─── Context build 段：wisdom / parallel / AIDocs / JIT
     # budget_total 是整包 additionalContext 的上限；最終裁切量的是整包 lines（卡片加其他提示行），所以用總額。
     # 原文與查詢文字取大：一般回合查詢是原文的一部分、額度照原文；/continue 的查詢接了交接單、比原文長。
     # 同伴訊息只照正文算：harness 的包裝不是內容，不該把額度墊高一級。
     budget_total = compute_token_budget(query) if peer_text else max(compute_token_budget(prompt), compute_token_budget(query))
+    # 短接續句（「繼續」）沿用上一則人打的回合的總額（wg_core.inherit_short_prompt_budget）；同伴訊息、跳過注入的回合不沿用也不記
+    if typed and not (peer_text or skip_reason):
+        inherit_on = bool((config.get("injection") or {}).get("short_prompt_inherits_budget", True))
+        inherited = inherit_short_prompt_budget(typed, budget_total, int(state.get("last_budget_total") or 0), inherit_on)
+        if inherited != budget_total:
+            _atom_debug_log("BUDGET", f"short_prompt_inherit {budget_total}->{inherited} chars={len(typed)}", config)
+        budget_total = inherited
+        state["last_budget_total"] = budget_total
     if not (_hook_degraded() or skip_reason):
         build_context(
             session_id, state, config, query, clean_prompt, query_lower,
@@ -216,11 +234,6 @@ def handle_user_prompt_submit(
         )
         _hook_lap("脈絡")
 
-    # 意圖前移（A0.1）：注入前就知道這回合要做什麼；十鍵見 wg_atoms.INTENT_PATTERNS。
-    # 意圖是「使用者要做什麼」的權威判斷，只吃使用者本人打的字（user_typed_text：剔掉同伴訊息、背景通知等 harness 區塊）；
-    # 整則沒有使用者的字 → 沿用上一則判的意圖（同伴信、通知正文裡的「重構」不改意圖；G7 等值閘據此擋）
-    turn_intent = classify_intent(typed) if typed else (state.get("turn_intent") or "general")
-    state["turn_intent"] = turn_intent
     if not (v6 and coding_turn(state, config)):    # 規則 CODING_TURN_ONLY：不是寫碼回合寫碼守門不送（記憶注入照舊）
         _hook_timing.quiet()                       # 不寫計時帳；新的使用者回合起點：拿掉寫碼回合標記
         _hook_timing.mark_coding(session_id, False)

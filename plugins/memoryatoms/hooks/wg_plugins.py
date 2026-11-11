@@ -12,6 +12,13 @@
       },
       "config": {"<設定段>": {...}},                 出廠預設：開著的插件才墊進 wg_core.load_config，使用者的 config.json／
                                                      config.local.json 同名鍵優先（段是物件就淺合併）；兩個插件給同一段算登記表錯
+      "vector": {                                    向量服務那側（服務啟動時讀；見下方 vector_registrations）
+        "path": ["vector"],                          相對插件資料夾；服務行程加進 sys.path
+        "index_dirs": [{"dir": "<資料夾名>", "type": "<Type 值>", "type_bonus": {"<意圖>": 0.05}}],
+                                                     記憶層裡這個名字的子資料夾也進索引；檔頭 Type 為該值的列算這一型，
+                                                     type_bonus 是排序時這一型在該意圖的加分
+        "routes": {"/路徑": "模組:函式"}              GET 路徑 → 函式(params, ctx)，回傳 JSON 可序列化的值；ValueError＝400
+      },
       "mcp": "mcp/index.js",                         Node 模組（匯出 register(api)），見 lib/plugins.js
       "settings_fragment": "settings.fragment.json"  安裝器併進 settings 的片段（原生帶不了的：statusLine）
     }
@@ -25,7 +32,8 @@
     插件點                 什麼時候                      ctx                                              回傳
     SessionStart             每次開場（含 resume、compact）  state config session_id input_data source         要送的行
     SessionStart.new_session 開新 session 才跑               state config session_id input_data source         要送的行
-    UserPromptSubmit         組這一句的 context             state config session_id prompt（使用者打的字）    要送的行
+    UserPromptSubmit         組這一句的 context             state config session_id prompt（使用者打的字）    要送的行；或 {"lines": [...],
+                                                            query（這句拿去檢索的文字） cwd                    "reserve_tokens": n}＝送這些行並從這句的預算保留 n
     UserPromptSubmit.intent  使用者打字的那句，判完意圖後    intent state config session_id                    要送的行
     PreToolUse               工具執行前                     input_data config session_id tool_name tool_input 提示文字（有 deny 時只進 stderr）
     PreToolUse.warned        上一點的提示真的送出時         同上＋warnings                                    不用
@@ -38,6 +46,7 @@
     SessionEnd               session 結束                   state config session_id cwd staging_dir           不用
     AecReport.saved          收尾報告落檔後                 severity state config session_id                  True＝看得到，核心不用補訊號
     AecReport.unseen         Stop 補訊號前再問一次          severity report_file config session_id            True＝看得到或已告知使用者
+    HealthWeekly.freshness   週健檢算管線鮮度時（tools/health-weekly.py） fresh_cut fresh_days sessions_active  {"red": [...], "yellow": [...], "info": [...]}
 
 回傳 None＝沒話說；list 攤平。壞掉（登記表格式錯、模組載不起來、函式丟例外）核心照跑，stderr 一行 [Guardian:Degraded]。
 沒有登記表的資料夾靜默略過（extensions/.claude-plugin/ 放的是市集檔）。
@@ -97,6 +106,27 @@ def _manifest_problem(manifest: Any, folder: str) -> str:
         return "python.path must be a list of strings"
     if not isinstance(state, list) or not all(isinstance(k, str) for k in state):
         return "python.state must be a list of strings"
+    return _vector_problem(manifest.get("vector"))
+
+
+def _vector_problem(vector: Any) -> str:
+    """登記表 vector 欄哪裡不對（空字串＝沒問題或沒寫）。"""
+    if vector is None:
+        return ""
+    if not isinstance(vector, dict):
+        return "vector is not an object"
+    paths, dirs, routes = vector.get("path", []), vector.get("index_dirs", []), vector.get("routes", {})
+    if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+        return "vector.path must be a list of strings"
+    if not isinstance(dirs, list) or not all(isinstance(d, dict) and isinstance(d.get("dir"), str) and d["dir"]
+                                             for d in dirs):
+        return 'vector.index_dirs must be a list of {"dir": "<name>", ...}'
+    for d in dirs:
+        if not isinstance(d.get("type", ""), str) or not isinstance(d.get("type_bonus", {}), dict):
+            return "vector.index_dirs[].type must be a string and type_bonus an object"
+    if not isinstance(routes, dict) or not all(isinstance(k, str) and k.startswith("/") and isinstance(v, str) and ":" in v
+                                               for k, v in routes.items()):
+        return 'vector.routes must map "/path" to "module:function"'
     return ""
 
 
@@ -163,6 +193,38 @@ def config_defaults() -> Dict[str, Any]:
 def state_keys() -> List[str]:
     """開著的插件在 state 裡自己用的鍵（plugin.json 的 python.state）：核心重建 state 時照搬（handlers/session_start_state.carry_on_rebuild）。"""
     return [key for manifest in _load_manifests() for key in (manifest.get("python") or {}).get("state", [])]
+
+
+def vector_registrations() -> Dict[str, Any]:
+    """開著的插件給向量服務的登記（登記表的 vector 欄）合成一份；沒有插件登記時三項都是空的。
+        index_dirs  {資料夾名: {"type": ..., "type_bonus": {...}}}   indexer 掃記憶層時不略過這些子資料夾
+        type_bonus  {(type, 意圖): 加分}                              searcher 排序加分
+        routes      {"/路徑": 函式}                                   service 的 GET 路由；函式載不起來的不收（stderr 一行）
+    同一路徑或資料夾兩個插件都登記 → 先到的算數，後到的 stderr 一行。"""
+    out: Dict[str, Any] = {"index_dirs": {}, "type_bonus": {}, "routes": {}}
+    owner: Dict[str, str] = {}
+    for manifest in _load_manifests():
+        vector = manifest.get("vector") or {}
+        for entry in vector.get("index_dirs", []):
+            key = "dir " + entry["dir"]
+            if key in owner:
+                _warn(manifest["name"], f"vector index dir {entry['dir']!r} is already registered by plugin {owner[key]}")
+                continue
+            owner[key] = manifest["name"]
+            out["index_dirs"][entry["dir"]] = {"type": entry.get("type", ""), "type_bonus": entry.get("type_bonus", {})}
+            for intent, bonus in (entry.get("type_bonus") or {}).items():
+                if entry.get("type") and isinstance(bonus, (int, float)):
+                    out["type_bonus"][(entry["type"], intent)] = float(bonus)
+        for path, ref in (vector.get("routes") or {}).items():
+            key = "route " + path
+            if key in owner:
+                _warn(manifest["name"], f"vector route {path!r} is already registered by plugin {owner[key]}")
+                continue
+            func = _function({**manifest, "python": {"path": vector.get("path", [])}}, ref)
+            if func is not None:
+                owner[key] = manifest["name"]
+                out["routes"][path] = func
+    return out
 
 
 def emit(point: str, **ctx: Any) -> List[Any]:

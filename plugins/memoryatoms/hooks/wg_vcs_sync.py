@@ -587,16 +587,19 @@ def read_retired_paths(session_id: str) -> List[str]:
 
 def spawn_vcs_sync(session_id: str, cwd: str, reason: str,
                    retired_paths: Optional[Sequence[str]] = None,
-                   config: Optional[Dict[str, Any]] = None) -> int:
+                   config: Optional[Dict[str, Any]] = None,
+                   targets: Optional[Sequence[SyncTarget]] = None) -> int:
     """請求先落 `.req/`，再 detached 起 vcs-sync-worker.py；回 pid（0＝未起：關閉／無目標／失敗）。
+    targets 缺省依 cwd 重算；給了就只跑這些 root（SessionStart 補跑別處留下的孤兒請求用）。
     起不來時請求仍在 `.req/`（下個 worker 消費）、每 root 落 `.unpushed` + last_error 供 advisory 浮出。fail-open。"""
-    targets: List[SyncTarget] = []
+    explicit = list(targets) if targets is not None else None
+    targets = []
     try:
         cfg = config if config is not None else load_config()
         vs = vcs_sync_config(cfg)
         if not vs.get("enabled", True):
             return 0
-        targets = collect_sync_targets(cwd, cfg)
+        targets = explicit if explicit is not None else collect_sync_targets(cwd, cfg)
         if not targets:
             return 0
         worker_path = CODE_DIR / "hooks" / "vcs-sync-worker.py"

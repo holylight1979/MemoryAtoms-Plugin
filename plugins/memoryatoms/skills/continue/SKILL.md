@@ -50,7 +50,7 @@ Pick one (enter a number):
 
 > The name in the list is the `{name}` part of the file name `next-phase-{name}.md`; the summary is the file's first line.
 
-- **0 files found** -> reply "No pending task. There is no `next-phase-*.md` file under `_staging/`. Use `/resume` to infer what to continue from atoms / git / todo." and stop.
+- **0 files found** -> reply "No pending task (no `next-phase-*.md` under `_staging/`)." and stop.
 
 ## Step 2: Read, then delete
 

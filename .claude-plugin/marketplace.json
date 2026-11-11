@@ -9,7 +9,7 @@
       "name": "memoryatoms",
       "source": "./plugins/memoryatoms",
       "description": "Atomic memory for Claude Code: injects the cards that fit your prompt, writes and searches cards through an MCP server, and harvests what a session learned.",
-      "version": "6.1.2",
+      "version": "6.2.0",
       "author": {
         "name": "holylight"
       }
@@ -18,7 +18,7 @@
       "name": "memoryatoms-changelog-roll",
       "source": "./plugins/memoryatoms-changelog-roll",
       "description": "Rolls old rows of _CHANGELOG.md into _CHANGELOG_ARCHIVE.md in the background once it passes a row threshold; /changelog-debug runs it by hand.",
-      "version": "6.1.2",
+      "version": "6.2.0",
       "author": {
         "name": "holylight"
       }
@@ -27,7 +27,7 @@
       "name": "memoryatoms-codex",
       "source": "./plugins/memoryatoms-codex",
       "description": "Codex integration: /codex second opinion and build delegation, plus Codex Companion background review and acceptance judge.",
-      "version": "6.1.2",
+      "version": "6.2.0",
       "author": {
         "name": "holylight"
       }
@@ -36,7 +36,7 @@
       "name": "memoryatoms-coordination",
       "source": "./plugins/memoryatoms-coordination",
       "description": "Multi-session coordination: warns when another live session edits the same file or is about to finish with git (warns only, never blocks).",
-      "version": "6.1.2",
+      "version": "6.2.0",
       "author": {
         "name": "holylight"
       }
@@ -45,7 +45,7 @@
       "name": "memoryatoms-dashboard",
       "source": "./plugins/memoryatoms-dashboard",
       "description": "Local web dashboard served from the MCP process: dashboard, brain-world, and the wrap-up report HUD.",
-      "version": "6.1.2",
+      "version": "6.2.0",
       "author": {
         "name": "holylight"
       }
@@ -54,7 +54,7 @@
       "name": "memoryatoms-handoff",
       "source": "./plugins/memoryatoms-handoff",
       "description": "Automatic handoff notes: prepares next-phase-auto.md before compaction and at session end, warns when context is nearly full, and provides /handoff.",
-      "version": "6.1.2",
+      "version": "6.2.0",
       "author": {
         "name": "holylight"
       }
@@ -63,7 +63,7 @@
       "name": "memoryatoms-statusline",
       "source": "./plugins/memoryatoms-statusline",
       "description": "Claude Code status line: edited files, knowledge queue, vector service, wrap-up report (zero tokens)",
-      "version": "6.1.2",
+      "version": "6.2.0",
       "author": {
         "name": "holylight"
       }
@@ -72,7 +72,7 @@
       "name": "memoryatoms-usage-watch",
       "source": "./plugins/memoryatoms-usage-watch",
       "description": "Claude account usage monitor: scheduled quota checks, anomaly notifications, and a start-of-session hint when the monitor is not running.",
-      "version": "6.1.2",
+      "version": "6.2.0",
       "author": {
         "name": "holylight"
       }
@@ -81,7 +81,7 @@
       "name": "memoryatoms-wisdom",
       "source": "./plugins/memoryatoms-wisdom",
       "description": "Reflection stats: records how each session went and shows at most two self-awareness lines at session start.",
-      "version": "6.1.2",
+      "version": "6.2.0",
       "author": {
         "name": "holylight"
       }
@@ -90,7 +90,7 @@
       "name": "memoryatoms-workflow-nudge",
       "source": "./plugins/memoryatoms-workflow-nudge",
       "description": "Working-style nudges: suggests fan-out for research-type requests and parallel sub-agents for independent work.",
-      "version": "6.1.2",
+      "version": "6.2.0",
       "author": {
         "name": "holylight"
       }

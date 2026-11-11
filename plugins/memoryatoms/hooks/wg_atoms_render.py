@@ -2,7 +2,7 @@
 wg_atoms_render.py — 節錄渲染：把 atom 全文剝成注入用的節錄（去中介資料、抽命名段落、印象段、降級版）。
 
 誰叫它：wg_atoms_budget、wg_atoms_truncate 與外部呼叫端。
-純搬移自 wg_atoms.py，函式本體未改；hooks/wg_atoms.py 仍 re-export 這裡的名稱。
+從 wg_atoms.py 拆出；hooks/wg_atoms.py 仍 re-export 這裡的名稱。
 """
 
 import re
@@ -38,6 +38,24 @@ _HTML_COMMENT_RE = re.compile(r"^[ \t]*<!--.*?-->[ \t]*\n?", re.MULTILINE | re.D
 
 
 _KNOWLEDGE_CAP_TOKENS_DEFAULT = 200
+# 預算有剩時知識段 cap 可放寬：取「剩餘預算的一半」，但不超過預設 cap × 此倍數、不低於預設 cap。
+# 只拿一半是留給同回合後面的候選卡，不讓第一張卡吃光預算。
+_KNOWLEDGE_CAP_WIDEN_MULT = 2
+
+
+def _knowledge_cap_for_budget(
+    remaining_budget: Optional[int], base_cap: int = _KNOWLEDGE_CAP_TOKENS_DEFAULT,
+) -> int:
+    """依本回合剩餘預算決定知識段 cap；沒給剩餘預算 → 維持 base_cap。"""
+    if remaining_budget is None:
+        return base_cap
+    return max(base_cap, min(int(remaining_budget) // 2, base_cap * _KNOWLEDGE_CAP_WIDEN_MULT))
+
+
+def _truncated_mark() -> str:
+    """知識段截斷標記的固定開頭（語言表那句 {tokens} 之前的字）：decide_atom_injection 拿它認「被預設 cap 截過」。
+    標記跟著目前語言走，不寫死字面。"""
+    return i18n.t("hook.wg_atoms_render.truncated").split("{tokens}", 1)[0]
 
 
 def _extract_named_section(
@@ -114,7 +132,11 @@ def _legacy_strip_atom_for_injection(content: str) -> str:
 
 def _strip_atom_for_injection(
     content: str, knowledge_cap_tokens: int = _KNOWLEDGE_CAP_TOKENS_DEFAULT,
+    remaining_budget: Optional[int] = None,
 ) -> str:
+    """表頭＋印象＋知識（超過 cap 從頭截、尾附原長）＋行動。
+    remaining_budget 給了 → 知識段 cap 依剩餘預算放寬（見 _knowledge_cap_for_budget）。"""
+    knowledge_cap_tokens = _knowledge_cap_for_budget(remaining_budget, knowledge_cap_tokens)
     atom_type = _detect_atom_type(content)
 
     if atom_type == "fallback":

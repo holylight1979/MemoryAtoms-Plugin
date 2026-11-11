@@ -161,6 +161,7 @@ def discover_atoms(
 
     # V5+: Failures layer 用 _atom_index.json stems 過濾參考文件
     failures_stems_cache: Optional[set] = None
+    skipped_dir_names = {EPISODIC_DIR_NAME} - set(_registrations()["index_dirs"])   # 擴充登記的資料夾照掃
 
     for layer_name, mem_dir, kind in norm_layers:
         layer_skip_files = extra_skip.get(layer_name, set())
@@ -190,8 +191,8 @@ def discover_atoms(
                 continue
             seen_paths.add(md_file)
             rel_parts = md_file.relative_to(mem_dir).parts
-            if any(part.startswith("_") or part == EPISODIC_DIR_NAME for part in rel_parts[:-1]):
-                continue  # 舊安裝留下的 episodic/ 不是卡：內容是當時的原話，不進索引
+            if any(part.startswith("_") or part in skipped_dir_names for part in rel_parts[:-1]):
+                continue  # 舊安裝留下的 episodic/ 不是卡：內容是當時的原話，不進索引（有擴充登記它時才進）
             if layer_name == "global" and rel_parts[:1] == ("personal",):
                 continue  # 全域 personal 子夾走 personal:global:<user> 層，不進 global
             if layer_name.startswith("personal:") and rel_parts[0] == SECRET_DIR_NAME:
@@ -221,6 +222,20 @@ def discover_atoms(
 
 
 # ─── Atom Parsing & Chunking ────────────────────────────────────────────────
+
+
+def _registrations() -> Dict[str, Any]:
+    """開著的擴充給向量服務的登記（config.extension_registrations）；本檔被單獨載入時服務資料夾不一定在 sys.path。"""
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.append(here)
+    from config import extension_registrations
+    return extension_registrations()
+
+
+def _extension_types() -> set:
+    """擴充登記的列型（登記表 vector.index_dirs[].type）：檔頭 Type 是這些值的也照收。"""
+    return {d["type"] for d in _registrations()["index_dirs"].values() if d.get("type")}
 
 
 def _default_scope_from_layer(layer: str) -> str:
@@ -303,7 +318,7 @@ def parse_and_chunk(
                 cm = re.search(r"\[(固|觀|臨)\]", val)
                 confidence = f"[{cm.group(1)}]" if cm else val
             elif key == "Type":
-                if val in ("semantic", "episodic", "procedural"):
+                if val in ("semantic", "episodic", "procedural") or val in _extension_types():
                     atom_type = val
             elif key == "Tags":
                 tags_str = val

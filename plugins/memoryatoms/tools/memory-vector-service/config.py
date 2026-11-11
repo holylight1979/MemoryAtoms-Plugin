@@ -50,6 +50,30 @@ def load_config() -> Dict[str, Any]:
     return config
 
 
+_EMPTY_REGISTRATIONS: Dict[str, Any] = {"index_dirs": {}, "type_bonus": {}, "routes": {}}
+_registrations: Dict[str, Any] = {}
+
+
+def extension_registrations() -> Dict[str, Any]:
+    """開著的擴充給向量服務的登記（hooks/wg_plugins.vector_registrations）；一個行程讀一次。
+    讀不了（擴充機制本身壞掉）→ 當作沒有擴充，stderr 一行，服務與索引照常。"""
+    if _registrations:
+        return _registrations
+    try:
+        for sub in ("hooks", "lib"):
+            entry = str(_CODE_ROOT / sub)
+            if entry not in sys.path:
+                sys.path.append(entry)
+        import wg_plugins
+        _registrations.update(wg_plugins.vector_registrations())
+    except Exception as e:  # noqa: BLE001
+        print(f"[service] extension registrations unavailable, running without them: {type(e).__name__}: {e}",
+              file=sys.stderr, flush=True)
+    for key, empty in _EMPTY_REGISTRATIONS.items():
+        _registrations.setdefault(key, dict(empty))
+    return _registrations
+
+
 def save_config(config: Dict[str, Any]) -> None:
     """Save vector_search config back to config.json (merge, not overwrite)."""
     full: Dict[str, Any] = {}

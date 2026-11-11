@@ -26,7 +26,7 @@ sys.path.insert(0, str(SERVICE_DIR))
 # import wg_core for centralized path resolution
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hooks"))   # 程式碼：本檔所在樹的 hooks/
 
-from config import CLAUDE_DIR, load_config, VECTORDB_DIR  # config.py 已把程式碼根放進 sys.path
+from config import CLAUDE_DIR, extension_registrations, load_config, VECTORDB_DIR  # config.py 已把程式碼根放進 sys.path
 from lib.project_root import vector_service_port
 from indexer import NoEmbedderError, build_index, create_embedder, get_index_status
 from searcher import search, search_raw, ranked_search, ranked_search_sections
@@ -80,6 +80,10 @@ def _init_service():
     _config = load_config()
     _start_time = time.time()
     _ensure_ollama_running(_config)
+    regs = extension_registrations()
+    if regs["routes"] or regs["index_dirs"]:
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [service] Extension routes: {sorted(regs['routes'])}; "
+              f"index dirs: {sorted(regs['index_dirs'])}", file=sys.stderr, flush=True)
 
     try:
         _t = time.time()
@@ -194,6 +198,9 @@ class VectorServiceHandler(BaseHTTPRequestHandler):
         }
 
         handler = routes.get(path)
+        ext_route = None if handler else extension_registrations()["routes"].get(path)   # 開著的擴充登記的路徑
+        if ext_route is not None:
+            handler = lambda p: self._handle_extension_route(ext_route, p)   # noqa: E731
         if handler:
             try:
                 handler(params)
@@ -339,6 +346,16 @@ class VectorServiceHandler(BaseHTTPRequestHandler):
             layers=layers,
         )
         self._send_json(results)
+
+    def _handle_extension_route(self, func, params: Dict):
+        """擴充登記的 GET 路徑：func(params, ctx) 回傳 JSON 可序列化的值；ValueError＝呼叫端參數錯（400）。
+        ctx：config（vector_search 設定）、embedder（這次搜尋用的；沒有嵌入後端時丟 NoEmbedderError → 503）。"""
+        try:
+            data = func(params, {"config": _config, "embedder": _current_embedder()})
+        except ValueError as e:
+            self._send_error(400, str(e))
+            return
+        self._send_json(data)
 
     def _handle_health(self, params: Dict):
         """只回記憶體裡的狀態（不開 LanceDB）：開場用它判沒有嵌入後端、是不是別的資料根的服務，不必等 /status。"""

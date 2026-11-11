@@ -15,7 +15,8 @@ handlers/stop.py — Stop hook handler
 擋滿後不自行放行：改送擋滿訊息要模型用 AskUserQuestion 問使用者（wg_release）；使用者在最後一次擋之後放行，才放這一回合並記
 guard-reconcile.jsonl user_release，放行的那幾件之後的回合原因還在也不再要求放行。擋滿的待放行只在同一個使用者回合有效。
 無法互動（headless／SDK、子代理、裁判子 session）不叫它問：擋滿就放行並留帳。查核自己判定出錯：同一個錯誤每個使用者回合
-擋一次，之後放行並留帳。其餘共用 stop_gate_max_blocks 的閘每個使用者回合重新計次，同一回合第 3 次放行。
+擋一次，之後放行並留帳。其餘共用 stop_gate_max_blocks 的閘每個使用者回合重新計次，擋滿後本來要擋的那次放行但不無聲
+（規則 SHARED_BUDGET_RELEASE_NOTICE，stop_output._budget_released：留帳 guard-shared_budget event=budget_released＋systemMessage 一行＋下一個工具結果提醒模型；守門家族關只有取用稽核吃這份預算，不排模型提醒）。
 擋或提醒（寫碼守門；規則 GATE_MODE_TABLE／STOP_REMIND_LEDGER_ONLY，表在 wg_release_rules 檔尾）：每道閘拿到擋訊息後先問 gate_mode／hit_mode：
 照擋的只有對帳 (a) 說修好要有 PASS（子代理同一套）；紅測閘不問、一律擋；知識收割同 session 第偶數次判欠才擋（wg_harvest.harvest_send_mode）；其餘判成提醒的閘判定照跑、一回合一次的記號照記，但只留帳（_remind_logged：
 guard log event=remind＋stderr 一行），不擋、不續跑、不開放行題、不吃擋滿預算；提醒本身掛在改程式檔那則工具結果（handlers/post_tool_batch）。
@@ -105,7 +106,7 @@ from handlers._shared import (
 
 aec_ledger = lazy_module("handlers.aec_ledger")   # 殘檔帳本（守門家族）：用到才載
 from handlers.stop_output import (  # noqa: F401  搬走的名字原樣留在入口（測試與插件從這裡取）
-    ASK_HINT, _CHAIN_TAIL, _chain_gate, _log_waivers, _remind_logged, _unmark, non_interactive_reason, output_block, output_json, output_nothing, user_released,
+    ASK_HINT, _CHAIN_TAIL, _budget_released, _chain_gate, _log_waivers, _remind_logged, _unmark, non_interactive_reason, output_block, output_json, output_nothing, user_released,
 )
 # 守門家族（同上：呼叫時才載）
 _detect_uncommitted_files = lazy_func("handlers.stop_sync", "_detect_uncommitted_files")
@@ -958,7 +959,7 @@ def _deferral_gate(run: _StopRun) -> bool:
     # 底下四個「每回合最多擋一次」的閘（Deferral、KnowledgeHarvest、Harvest-Pending、AEC-Pending）的回合都用
     # _user_turn（使用者打字開的回合）：同伴訊息、背景通知每則都讓 turn_seq +1，拿它當鍵會每則訊息後又擋一次。
     _uturn = _since
-    if stop_count < max_blocks and last_text and (_coding or not v6):
+    if last_text and (_coding or not v6):
         _ah = config.get("auto_handoff", {}) or {}
         try:
             _dg_ratio = estimate_context_usage(
@@ -994,6 +995,10 @@ def _deferral_gate(run: _StopRun) -> bool:
             state["deferral_gate_turn"] = _uturn          # 一回合一次照記；不吃共用擋次、退避旗標照留給下一則注入
             _remind_logged("deferral", "DeferralGate", "DEFERRAL_OF_DOABLE_WORK", dg, session_id, turn_seq,
                            context_ratio=round(float(_dg_ratio), 3))
+            write_state(session_id, state)
+        elif dg and stop_count >= max_blocks:
+            state["deferral_gate_turn"] = _uturn          # 一回合一次：放行告知也只一次
+            _budget_released("DeferralGate", dg, state, session_id, turn_seq, _uturn, stop_count, max_blocks)
             write_state(session_id, state)
         elif dg and not _chain_hold("DeferralGate", dg):
             state["deferral_gate_turn"] = _uturn
@@ -1133,9 +1138,13 @@ def _aec_pending_gate(run: _StopRun) -> bool:
         _remind_logged("aec_pending", "AEC-Pending", "CLOSING_CHECK_MEMORY_NOT_DEFERRED",
                        i18n.t("hook.stop.hold_aec_pending", count=len(pending)), session_id, turn_seq, items=pending[:5])
         write_state(session_id, state)
+    elif _ap_owed and stop_count >= max_blocks:
+        state["aec_pending_gate_turn"] = _uturn
+        _budget_released("AEC-Pending", i18n.t("hook.stop.hold_aec_pending", count=len(pending)), state, session_id, turn_seq, _uturn,
+                         stop_count, max_blocks)
+        write_state(session_id, state)
     elif (
         _ap_owed
-        and stop_count < max_blocks
         and not _chain_hold("AEC-Pending", i18n.t("hook.stop.hold_aec_pending", count=len(pending)))
     ):
         state["aec_pending_gate_turn"] = _uturn
@@ -1174,7 +1183,7 @@ def _reload_advice_gate(run: _StopRun) -> bool:
     # 收尾叫使用者 Reload Window 前，查每個活著的工具服務是不是已載入磁碟上最新的程式；都是最新就擋一次。每個使用者回合一次。
     # 只對記憶系統自己的工具服務有意義：本 session 沒改過 tools/workflow-guardian-mcp/ 底下的檔就不判（也不列全機程序表）。
     _rl_turn = _user_turn(state, int(state.get("turn_seq", 0)))
-    if (v6 and stop_count < max_blocks and state.get("reload_advice_turn") != _rl_turn
+    if (v6 and state.get("reload_advice_turn") != _rl_turn
             and _session_touched_mcp(state, session_id)):
         _rl_text = get_last_assistant_text(transcript, text=transcript_text, min_chars=1)
         if RELOAD_ADVICE_RE.search(_rl_text or ""):
@@ -1182,6 +1191,10 @@ def _reload_advice_gate(run: _StopRun) -> bool:
             if _rl.owed and _gate_mode(_rl.rule, v6) == _REMIND:
                 state["reload_advice_turn"] = _rl_turn
                 _remind_logged("reload_advice", "ReloadAdvice", _rl.rule, _rl.why, session_id, turn_seq, evidence=list(_rl.evidence)[:4])
+                write_state(session_id, state)
+            elif _rl.owed and stop_count >= max_blocks:
+                state["reload_advice_turn"] = _rl_turn
+                _budget_released("ReloadAdvice", _rl.why, state, session_id, turn_seq, _rl_turn, stop_count, max_blocks)
                 write_state(session_id, state)
             elif _rl.owed and not _chain_hold("ReloadAdvice", _rl.why):
                 state["reload_advice_turn"] = _rl_turn
@@ -1258,12 +1271,9 @@ def _atom_audit_gate(run: _StopRun) -> bool:
     _chain_hold, _piggyback = run._chain_hold, run._piggyback
     # ── Atom Consumption Audit Gate（取用端閉環稽核）──────────────
     # 排序：correctness / sync 之後（那些優先）、DPM 之前；沿用 stop_gate_max_blocks
-    # 全域預算（第 3 次強制放行）。per-atom 一次（atom_audit_prompted）防轟炸。
-    # fail-open：判定任何失敗 → stderr 浮訊號後照常放行，不比既有慣例更擋人。
-    if (
-        (config.get("atom_audit", {}) or {}).get("enabled", True)
-        and stop_count < max_blocks
-    ):
+    # 全域預算（擋滿後放行並告知，規則 SHARED_BUDGET_RELEASE_NOTICE；守門家族關沒有提醒帳，不排模型提醒）。
+    # per-atom 一次（atom_audit_prompted）防轟炸。fail-open：判定任何失敗 → stderr 浮訊號後照常放行，不比既有慣例更擋人。
+    if (config.get("atom_audit", {}) or {}).get("enabled", True):
         try:
             aa = _audit_pointer_atom_consumption(state)
         except Exception as e:
@@ -1273,6 +1283,12 @@ def _atom_audit_gate(run: _StopRun) -> bool:
             prompted = state.setdefault("atom_audit_prompted", [])
             prompted.extend(n for n in aa[1] if n not in prompted)
             _remind_logged("atom_audit", "AtomAudit", "ATOM_CONSUMPTION_AUDIT", aa[0], session_id, turn_seq, atoms=list(aa[1])[:5])
+            write_state(session_id, state)
+        elif aa and stop_count >= max_blocks:
+            prompted = state.setdefault("atom_audit_prompted", [])
+            prompted.extend(n for n in aa[1] if n not in prompted)     # 每張卡一次：放行告知也只一次
+            _budget_released("AtomAudit", aa[0], state, session_id, turn_seq, run.since, stop_count, max_blocks,
+                             remind=run.guard)
             write_state(session_id, state)
         elif aa and not _chain_hold("AtomAudit", aa[0]):
             aa_reason, aa_names = aa
@@ -1338,11 +1354,12 @@ def _attribute_outcome(run: _StopRun) -> None:
 
 
 def _anti_loop_exit(run: _StopRun) -> bool:
-    """防連擋（Anti-loop guard）：共用擋次已滿、或 phase 已是 done／syncing → 放行（回 True）。"""
+    """防連擋（Anti-loop guard）：phase 已是 done／syncing → 放行（回 True）。共用擋次已滿時，守門家族開照樣往下走到底部一般同步擋，
+    那裡本來要擋的那次才放行並告知（規則 SHARED_BUDGET_RELEASE_NOTICE）；守門家族關（插件版）後面沒有底部同步擋，在這裡記 phase=done 放行。"""
     state, config, session_id, stop_count, max_blocks, phase = (
         run.state, run.config, run.session_id, run.stop_count, run.max_blocks, run.phase)
     # ── Anti-loop guard ─────────────────────────────────────────
-    if stop_count >= max_blocks:
+    if stop_count >= max_blocks and not run.guard:
         state["phase"] = "done"
         write_state(session_id, state)
         _maybe_spawn_user_extract_worker(session_id, state, config)
@@ -1358,8 +1375,8 @@ def _anti_loop_exit(run: _StopRun) -> bool:
 
 def _sync_block_gate(run: _StopRun) -> None:
     """底部一般同步擋（最後一步，一定送出口）：改了幾個檔、待記知識、文件漂移 → 擋，或只留 stderr／帳之後放行。"""
-    state, config, session_id, turn_seq, v6, stop_count, _since = (
-        run.state, run.config, run.session_id, run.turn_seq, run.v6, run.stop_count, run.since)
+    state, config, session_id, turn_seq, v6, stop_count, max_blocks, _since = (
+        run.state, run.config, run.session_id, run.turn_seq, run.v6, run.stop_count, run.max_blocks, run.since)
     own_mod_files, _chain_hold, _piggyback = run.own_mod_files, run._chain_hold, run._piggyback
     # 規則 SYNC_BLOCK_SKIPS_SYNCED：已 commit 並 push 的檔不再進一般 sync block（查不了 git 的照算）
     own_mod_files = run.own_mod_files = _drop_synced(own_mod_files)   # 之後的預覽（_later_gates）也看這份
@@ -1412,6 +1429,19 @@ def _sync_block_gate(run: _StopRun) -> None:
         state["sync_block_shown"] = {k: _prev.get(k, _mark) for k in _sync_block_keys(state, len(unique_files), min_files)}
         _remind_logged("sync_block", "SyncBlock", "SYNC_BLOCK_PENDING_ITEMS",
                        i18n.t("hook.stop.hold_sync_block3", files=len(unique_files), knowledge=kq_count, drift=len(docdrift)), session_id, turn_seq)
+        state["phase"] = "done"
+        write_state(session_id, state)
+        _maybe_spawn_user_extract_worker(session_id, state, config)
+        output_nothing()
+        return
+
+    # 共用擋次已滿：照舊放行（phase=done），但告知並留帳（規則 SHARED_BUDGET_RELEASE_NOTICE）；沒欠的情況上面各出口已放行
+    if stop_count >= max_blocks:
+        _prev, _mark = state.get("sync_block_shown") or {}, _turn_mark(state, _since)
+        state["sync_block_shown"] = {k: _prev.get(k, _mark) for k in _sync_block_keys(state, len(unique_files), min_files)}
+        _budget_released("SyncBlock", i18n.t("hook.stop.hold_sync_block3", files=len(unique_files), knowledge=kq_count,
+                                             drift=len(docdrift)),
+                         state, session_id, turn_seq, _since, stop_count, max_blocks)
         state["phase"] = "done"
         write_state(session_id, state)
         _maybe_spawn_user_extract_worker(session_id, state, config)
