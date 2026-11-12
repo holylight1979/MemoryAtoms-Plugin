@@ -194,21 +194,24 @@ def _shape_check(content: str):
 
 
 def _core_layout_gate_error(base_dir: Path, rel_path: str):
-    """核心層 create 落點後盾：gate 開且 index 在全域 memory/ 時，rel_path 必須帶範疇段。
-    回錯誤字串或 None。專案層 index（非全域）不在此檢。"""
+    """核心層 create 落點後盾：index 在全域 memory/ 時檢查 rel_path。回錯誤字串或 None。專案層 index（非全域）不在此檢。
+    - 本地卡舊址 _AIDocs/_atoms/ 一律拒（不看範疇閘開關）：新卡只落 memory/_local/，舊址只留給還沒搬的卡讀取；
+    - 範疇閘開時，核心卡必須帶範疇段（不收 memory/ 根下散檔、Failures 根散檔、失敗家族舊址）。"""
     from . import atom_io as _aio
     from .atom_locations import (
-        FAILURES_ROOT_NAME, core_category_segments, is_flat_core_path,
-        is_legacy_failures_path, unclassified_error,
+        FAILURES_ROOT_NAME, LEGACY_LOCAL_ATOMS_REL, LOCAL_ATOMS_REL, core_category_segments,
+        is_flat_core_path, is_legacy_failures_path, is_legacy_local_realm_path, unclassified_error,
     )
     try:
         if base_dir.resolve() != _aio.GLOBAL_MEMORY_DIR.resolve():
             return None
     except OSError:
         return None
+    rel = rel_path.replace("\\", "/")
+    if is_legacy_local_realm_path(rel):
+        return i18n.t("hook.atom_io_cli.legacy_local_landing", rel=rel, new=LOCAL_ATOMS_REL, old=LEGACY_LOCAL_ATOMS_REL)
     if not _aio._category_gate_enabled():
         return None
-    rel = rel_path.replace("\\", "/")
     segs = core_category_segments(rel)
     if is_legacy_failures_path(rel) or is_flat_core_path(rel) or segs == [FAILURES_ROOT_NAME]:
         try:
@@ -247,8 +250,8 @@ def create_atom(payload: dict) -> WriteResult:
     index = payload["index"]
 
     # 0. 範疇寫入閘後盾（py 單源）：js 端算好 file_path 才 spawn 本 action，不經 write_atom；
-    #    若 rel_path 仍是核心層平鋪（memory/<slug>.md）、Failures 根平鋪、或舊址 _AIDocs/Failures/
-    #    → 拒（舊碼 MCP 實例／繞路呼叫都攔得住）。專案層由 locate(mode=create) 閘 + js 預檢負責。
+    #    若 rel_path 仍是核心層平鋪（memory/<slug>.md）、Failures 根平鋪、失敗家族舊址 _AIDocs/Failures/、
+    #    或本地卡舊址 _AIDocs/_atoms/ → 拒（舊碼 MCP 實例／繞路呼叫都攔得住）。專案層由 locate(mode=create) 閘 + js 預檢負責。
     gate_err = _core_layout_gate_error(Path(index["base_dir"]), str(index.get("rel_path") or ""))
     if gate_err:
         return WriteResult(ok=False, error=gate_err)

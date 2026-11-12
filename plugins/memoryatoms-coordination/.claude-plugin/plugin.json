@@ -1,7 +1,7 @@
 {
   "name": "memoryatoms-coordination",
   "description": "Multi-session coordination: warns when another live session edits the same file or is about to finish with git (warns only, never blocks).",
-  "version": "6.2.0",
+  "version": "6.3.0",
   "author": {
     "name": "holylight"
   },

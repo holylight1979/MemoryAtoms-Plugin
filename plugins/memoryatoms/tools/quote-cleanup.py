@@ -2,7 +2,7 @@
 """quote-cleanup.py：找出 `- Quote:` 被自動回填成一兩個字回覆（預設「A」）的卡，刪掉那一行；--empty-entry 改清空的 `- Entry:` 行。
 
 做什麼：
-  掃記憶卡（預設資料根的 memory/ 與 _AIDocs/_atoms/，--memory-dir 可再加專案層、組織層），`- Quote: 「<值>」` 的值
+  掃記憶卡（預設資料根的 memory/、本地根 memory/_local/ 與相容期的舊本地根 _AIDocs/_atoms/，--memory-dir 可再加專案層、組織層），`- Quote: 「<值>」` 的值
   整個等於 --value（預設 A）的卡列出來；加 --apply 才刪掉那一行（只刪那一行，其餘位元組原樣，BOM 照留）。
   --empty-entry：改找中繼資料區值是空的 `- Entry: ` 行（拿掉 Entry 的卡留下的），同樣只刪那一行。
   寫入走 lib.atom_io.write_raw（source=tool:quote-cleanup，留稽核帳），不直接改 .md。
@@ -32,6 +32,7 @@ if str(CODE_DIR) not in sys.path:
 
 from lib.atom_io import write_raw  # noqa: E402
 from lib.i18n import t  # noqa: E402
+from lib.atom_locations import LEGACY_LOCAL_ATOMS_REL, LOCAL_ATOMS_REL  # noqa: E402
 from lib.atom_spec import iter_atom_files  # noqa: E402
 from lib.project_root import claude_data_dir  # noqa: E402
 
@@ -43,7 +44,7 @@ _SECTION_RE = re.compile(r"^## ", re.MULTILINE)
 
 def default_roots() -> List[Path]:
     data = claude_data_dir()
-    return [data / "memory", data / "_AIDocs" / "_atoms"]
+    return [data / "memory", data / LOCAL_ATOMS_REL, data / LEGACY_LOCAL_ATOMS_REL]
 
 
 def strip_quote(text: str, value: str) -> Optional[str]:

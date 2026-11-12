@@ -50,6 +50,7 @@ CODE_DIR = Path(__file__).resolve().parent.parent   # 程式碼根（本檔所�
 if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 from lib.atom_index_json import load_personal_rows  # noqa: E402
+from lib.atom_locations import LEGACY_LOCAL_ATOMS_REL, LOCAL_ATOMS_REL  # noqa: E402
 from lib.edition import layered_config  # noqa: E402  插件版出廠設定墊底
 from lib.wg_platform import no_window_flags, find_claude  # noqa: E402
 from lib.sensitive_gate import is_secret_path, secret_value_found  # noqa: E402
@@ -132,13 +133,27 @@ def _provenance_anti_rot(now: datetime, days: int) -> tuple[int, int, str]:
     return fixed, len(cands), ""
 
 
+def _legacy_local_cards() -> int:
+    """舊本地根（相容期）還有幾張卡：本地卡新址是 memory/_local/，舊址 _AIDocs/_atoms/ 只該在搬卡完成前還有東西。
+    _INDEX.md 等底線開頭的檔與 _distant/ 不算卡。舊夾不存在回 0。"""
+    base = CLAUDE_DIR / LEGACY_LOCAL_ATOMS_REL
+    if not base.is_dir():
+        return 0
+    n = 0
+    for p in base.rglob("*.md"):
+        if p.name.startswith("_") or "_distant" in p.relative_to(base).parts:
+            continue
+        n += 1
+    return n
+
+
 def _secret_leaks() -> list[str] | None:
     """會進版控的記憶卡與索引裡，提到 secret 卡名或含密碼／token 真實值的檔（相對路徑）；None＝查不了。
     只回路徑：報告與開場提示都不寫出卡名。還沒提交的新卡也算，提交了就留在歷史裡。"""
     names = [a["name"] for a in load_personal_rows(MEMORY)
              if isinstance(a, dict) and a.get("name") and is_secret_path(a.get("path", ""))]
     try:
-        r = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "memory", "_AIDocs/_atoms"],
+        r = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "memory", LEGACY_LOCAL_ATOMS_REL],
                            capture_output=True, timeout=60, cwd=str(CLAUDE_DIR),
                            creationflags=no_window_flags())
     except (OSError, subprocess.SubprocessError):
@@ -659,6 +674,9 @@ def collect() -> dict:
         yellow.append(t("cli.health_weekly.leak_check_failed"))
     elif leaks:
         red.append(t("cli.health_weekly.leaks", count=len(leaks), files="、".join(leaks[:5])))
+    n_legacy = _legacy_local_cards()   # 相容期提醒：舊位置還有本地卡就黃燈（搬完才熄）
+    if n_legacy:
+        yellow.append(t("cli.health_weekly.legacy_local_cards", count=n_legacy, legacy=LEGACY_LOCAL_ATOMS_REL, new=LOCAL_ATOMS_REL))
     none_hit, mixed = _secret_misfiled()
     if none_hit or mixed:
         yellow.append(t("cli.health_weekly.secret_misfiled", none_hit=none_hit, mixed=mixed))

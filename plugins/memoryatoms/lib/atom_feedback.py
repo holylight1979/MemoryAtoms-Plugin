@@ -29,7 +29,7 @@ from .atom_access import (
     record_usefulness, read_access, usefulness_stats, usefulness_promote_eligible,
 )
 from .atom_io import GLOBAL_MEMORY_DIR, _atomic_write
-from .atom_locations import LOCAL_ATOMS_DIR
+from .atom_locations import LOCAL_ATOMS_DIR, LEGACY_LOCAL_ATOMS_DIR
 
 VERDICTS = ("helpful", "misleading")
 FEEDBACK_SOURCE = "user:feedback"
@@ -42,7 +42,7 @@ def _user() -> str:
 
 def _memory_root_of(atom_path: Path) -> Path:
     """票據檔跟著卡住的那棵樹走，三種樹 vcs-sync 都會同步：
-    專案層（路徑含 /.claude/memory/）→ 該專案 memory；local realm（_AIDocs/_atoms）→ 該目錄；其餘 → 全域 memory。"""
+    專案層（路徑含 /.claude/memory/）→ 該專案 memory；local realm（memory/_local；相容期含舊址 _AIDocs/_atoms）→ 該目錄；其餘 → 全域 memory。"""
     resolved = atom_path.resolve()
     posix = resolved.as_posix()
     idx = posix.find(_PROJECT_MARK)
@@ -50,6 +50,8 @@ def _memory_root_of(atom_path: Path) -> Path:
         return Path(posix[: idx + len(_PROJECT_MARK) - 1])
     if resolved.is_relative_to(LOCAL_ATOMS_DIR.resolve()):
         return LOCAL_ATOMS_DIR
+    if resolved.is_relative_to(LEGACY_LOCAL_ATOMS_DIR.resolve()):
+        return LEGACY_LOCAL_ATOMS_DIR
     return GLOBAL_MEMORY_DIR
 
 
@@ -175,6 +177,8 @@ def fold_votes(memory_roots: Optional[List[Path]] = None, cwd: Optional[Path] = 
         roots = [Path(r) for r in memory_roots]
     else:
         roots = [GLOBAL_MEMORY_DIR, LOCAL_ATOMS_DIR, *_project_roots_from(Path(cwd or Path.cwd()).resolve())]
+        if LEGACY_LOCAL_ATOMS_DIR.is_dir():   # 相容期：還沒搬的舊址本地卡，票跟卡走
+            roots.insert(2, LEGACY_LOCAL_ATOMS_DIR)
     out: Dict[str, Any] = {
         "applied": 0, "skipped": 0, "missing": 0, "bad_lines": 0,
         "roots": [str(r) for r in roots],

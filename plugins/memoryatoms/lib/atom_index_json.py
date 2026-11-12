@@ -247,7 +247,7 @@ def personal_split_pending(mem_dir: Path) -> bool:
 
 
 def has_indexable_cards(mem_dir: Path) -> bool:
-    """磁碟上有沒有索引該登記的卡（atom 檔、有 Trigger 行）；找到第一張就停。根層連全域的其他搜尋根（_AIDocs/_atoms/ 等）
+    """磁碟上有沒有索引該登記的卡（atom 檔、有 Trigger 行）；找到第一張就停。根層連全域的其他搜尋根（memory/_local/、相容期舊址 _AIDocs/_atoms/ 等）
     一起看，其他層只看自己。索引讀成 0 筆時拿它分兩種：還沒有卡（新安裝，空索引是對的）／有卡、索引卻是空的（壞了，要報）。"""
     try:
         from .atom_locations import iter_atom_files_multi

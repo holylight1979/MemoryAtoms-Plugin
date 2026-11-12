@@ -4,7 +4,7 @@
 把 index 裡的 atom 依對映表搬進範疇資料夾：
   memory/<slug>.md            → memory/<Lv1>[/<Lv2>]/<slug>.md      （"版控/Git"）
   _AIDocs/Failures/<slug>.md  → memory/Failures/<主題>/<slug>.md     （"Failures/驗證與實證"）
-  memory/… 或 _AIDocs/…       → _AIDocs/_atoms/<domain>/<slug>.md    （"local:MemDev"，委派 atom-set-realm）
+  memory/… 或 _AIDocs/…       → memory/_local/<domain>/<slug>.md     （"local:MemDev"，委派 atom-set-realm）
   <proj>/.claude/memory/shared/<slug>.md → shared/<Lv1>[/<Lv2>]/     （--memory-dir，專案層；根＝shared/）
 
 契約：
@@ -14,8 +14,9 @@
     沙盒（保留名／字元集）。分不出、撞名、sidecar 落單一律列 error，plan 有任何 error 則 apply 拒跑。
   - `.md` 與 `.access.json` 用 lib.atom_access.move_atom_pair 原子同搬；apply 落 undo.json
     （sidecar 在 .gitignore，git 救不回，undo.json 是唯一反向依據）。
-  - 跨 realm（local:）委派 tools/atom-set-realm.py（_AIDocs/_atoms/ path 的唯一寫者）；undo 時為了
+  - 跨 realm（local:）委派 tools/atom-set-realm.py（本地樹 path 的唯一寫者）；undo 時為了
     逐字還原原路徑，改走本工具的 move_atom_pair + write_index（不經 set_realm 的落點推導）。
+    憑證裡的本地卡舊位置（_AIDocs/_atoms/…）：卡已被 migrate-local 搬到新位置就照新位置找，還原也落新位置（本地卡只寫新位置）。
   - 對映表格式（plans/core-categories.json）：
       {"atoms": {slug: "版控/Git" | "Failures/驗證與實證" | "local:MemDev"},
        "reference_git_mv": {src_rel: dst_rel}}      ← 非 atom 參考文件，只列清單、不搬（S3 用 git mv）
@@ -57,7 +58,8 @@ from lib.atom_classify import score_by_lexicon  # noqa: E402
 from lib.atom_index_json import load_atom_index_json, validate_index  # noqa: E402
 from lib.atom_io import _audit_log, _gen_audit_id, write_index  # noqa: E402
 from lib.atom_locations import (  # noqa: E402
-    FAILURES_ROOT_NAME, GLOBAL_MEMORY_DIR, LEGACY_FAILURES_DIR, LOCAL_ATOMS_DIR,
+    FAILURES_ROOT_NAME, GLOBAL_MEMORY_DIR, LEGACY_FAILURES_DIR, LEGACY_LOCAL_ATOMS_DIR, LEGACY_LOCAL_ATOMS_REL,
+    LOCAL_ATOMS_DIR, LOCAL_ATOMS_REL,
     is_flat_core_path, is_in_failures_path, is_legacy_failures_path, is_local_realm_path,
     known_category_paths, local_realm_path_segments, normalize_domain_path, project_taxonomy_lv1,
     validate_category_path,
@@ -106,9 +108,10 @@ class Layout:
         return rel_path.startswith(prefix) and "/" not in rel_path[len(prefix):]
 
     def prune_stop(self, src: Path) -> Path:
-        """搬離後清空目錄鏈的止點（不含）：local 樹止於 _atoms、舊址止於 _AIDocs/Failures、其餘止於範疇根。"""
+        """搬離後清空目錄鏈的止點（不含）：本地樹止於本地樹根（新位置 memory/_local、相容期舊位置 _AIDocs/_atoms）、
+        舊址止於 _AIDocs/Failures、其餘止於範疇根。"""
         s = src.resolve(strict=False)
-        for stop in (LOCAL_ATOMS_DIR, LEGACY_FAILURES_DIR):
+        for stop in (LOCAL_ATOMS_DIR, LEGACY_LOCAL_ATOMS_DIR, LEGACY_FAILURES_DIR):
             try:
                 if stop.resolve() in s.parents:
                     return stop
@@ -364,7 +367,7 @@ def apply_plan(layout: Layout, plan: Dict[str, Any], undo_file: Path) -> Dict[st
                 moved = _move_and_reindex(layout, it["slug"], it["from"], it["to"], "categorize_move")
                 done.append({"action": "move", "slug": it["slug"], "from": it["from"], "to": it["to"],
                              "sidecar_moved": moved})
-            else:  # realm → atom-set-realm（_AIDocs/_atoms/ path 唯一寫者）
+            else:  # realm → atom-set-realm（本地樹 path 唯一寫者）
                 if set_realm_mod is None:
                     set_realm_mod = _load_set_realm()
                 res = set_realm_mod.set_realm(it["slug"], domain=it["domain"])
@@ -390,13 +393,24 @@ def apply_plan(layout: Layout, plan: Dict[str, Any], undo_file: Path) -> Dict[st
             "validate_errors": validate_index(layout.memory_dir)}
 
 
+def _relocated_local(layout: Layout, rel: str) -> str:
+    """本地卡舊位置路徑（_AIDocs/_atoms/…）換成新位置的同一個相對路徑（memory/_local/…）；其他路徑原樣。"""
+    prefix = LEGACY_LOCAL_ATOMS_REL + "/"
+    if layout.is_global and rel.startswith(prefix):
+        return f"{LOCAL_ATOMS_REL}/{rel[len(prefix):]}"
+    return rel
+
+
 def undo_apply(layout: Layout, undo_payload: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     entries = list(undo_payload.get("entries") or [])
     reverted: List[Dict[str, Any]] = []
     failures: List[str] = []
     for e in reversed(entries):
-        slug, cur_rel, back_rel = e["slug"], e["to"], e["from"]
+        slug, cur_rel, back_rel = e["slug"], e["to"], _relocated_local(layout, e["from"])
         src = layout.claude_root / cur_rel
+        if not src.exists() and (layout.claude_root / _relocated_local(layout, cur_rel)).exists():
+            cur_rel = _relocated_local(layout, cur_rel)   # 搬家前的憑證：卡已被 migrate-local 搬到新位置
+            src = layout.claude_root / cur_rel
         if not src.exists():
             failures.append(f"{slug}: expected at {cur_rel} (not found; already reverted?)")
             continue

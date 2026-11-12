@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from wg_core import _is_under_claude_dir, _now_iso, WORKFLOW_DIR, user_typed_prompts
+from wg_core import _now_iso, local_cards_recalled_at, WORKFLOW_DIR, user_typed_prompts
 from wg_evasion import claims_completion, _DISMISS_RE, _COMPLETION_EXCLUDE_RE
 from wg_extraction import _is_pid_alive
 from wg_lazy_re import lazy_module
@@ -735,13 +735,13 @@ def note_owed(state: Dict[str, Any], sid: str) -> int:
 
 
 def harvest_block_message(cwd: str = "") -> str:
-    """cwd：session 的工作目錄；在 ~/.claude 之下才附「記憶系統開發面 → realm=local」那句。
+    """cwd：session 的工作目錄；本地卡想得起來的地方（資料根底下或記憶系統原始碼樹裡）才附「記憶系統開發面 → realm=local」那句。
     追蹤項只說「填進收尾檢核 k 欄」：k 欄不寫追蹤帳本、也不另寫病灶文件。"""
     tracking = i18n.t("hook.wg_harvest.fill_tracking_items_into")
     src = "\n".join(f"  {s}" for s in _HARVEST_SOURCES)
     return (
         i18n.t("hook.wg_harvest.guardian_knowledgeharvest_declaring_done") + src + i18n.t("hook.wg_harvest.ncriteria_write_only_what")
-        + (i18n.t("hook.wg_harvest.memory_system_development_realm") if _is_under_claude_dir(cwd) else "")   # 只在記憶系統自己的目錄裡有意義
+        + (i18n.t("hook.wg_harvest.memory_system_development_realm") if local_cards_recalled_at(cwd) else "")   # 只在開發記憶系統的地方有意義（寫進本地的卡要在同一處想得起來）
         + i18n.t("hook.wg_harvest.do_write_one_off")
         + tracking +
         i18n.t("hook.wg_harvest.if_nothing_report_still")

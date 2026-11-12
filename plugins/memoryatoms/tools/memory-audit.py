@@ -54,7 +54,7 @@ from lib.atom_spec import (
     parse_depends, resolve_depends_path, classify_depends_path, depends_base_for_file, depends_warnings, evidence_warning,
 )
 from lib.atom_locations import (
-    GLOBAL_MEMORY_DIR, FAILURES_DIR, LEGACY_FAILURES_DIR, LOCAL_ATOMS_DIR,
+    GLOBAL_MEMORY_DIR, FAILURES_DIR, LEGACY_FAILURES_DIR, LEGACY_LOCAL_ATOMS_DIR, LOCAL_ATOMS_DIR,
     atom_search_roots, failures_atom_stems, iter_atom_files_multi,
 )
 # 晉升判定權威來源（server.js 的 py 鏡像）：confirmations 主軌 + usefulness Wilson 下界軌。
@@ -103,7 +103,7 @@ VALID_PRIVACY = {"public", "internal", "sensitive"}
 
 def iter_atom_files(mem_dir: Path):
     """yield 合法 atom .md（mem_dir == 全域 memory 時多根掃描：memory/ 含 memory/Failures/、
-    舊址 _AIDocs/Failures/、_AIDocs/_atoms/）。
+    舊址 _AIDocs/Failures/、本地根 memory/_local/，相容期另含舊本地根 _AIDocs/_atoms/）。
 
     判定統一委派 lib.atom_locations.iter_atom_files_multi（內部用 lib.atom_spec.is_atom_file
     + failures_atom_stems 過濾參考文件）。非全域 mem_dir 只掃單根。
@@ -651,7 +651,7 @@ def validate_index(index_path: Path, memory_dir: Path, index_entries: List[Index
 
     # 實際 atom 檔（遞迴；與其餘掃描同源）：atom 實體可居子目錄（memory/<範疇>/、
     # memory/Failures/<主題>/、專案 shared/<domain>/）或樹外（舊址 _AIDocs/Failures/、
-    # _AIDocs/_atoms/）。global=多根、非 global=rglob 單根。以檔名比對；未登記索引的
+    # 相容期的舊本地根 _AIDocs/_atoms/）。global=多根、非 global=rglob 單根。以檔名比對；未登記索引的
     # atom 一律 warning「未在索引中列出」。
     actual_files: Set[str] = set()
     tree_stems: Set[str] = set()
@@ -702,7 +702,7 @@ def validate_index(index_path: Path, memory_dir: Path, index_entries: List[Index
         indexed_files.add(file_name)
 
         # entry.path 相對 memory_dir.parent（memory/x.md、memory/版控/Git/x.md、
-        # _AIDocs/_atoms/…）。依序認：完整相對路徑 → memory_dir 根下同名 → 遞迴 stem 集
+        # memory/_local/…、相容期的 _AIDocs/_atoms/…）。依序認：完整相對路徑 → memory_dir 根下同名 → 遞迴 stem 集
         # → 失敗家族（memory/Failures/<主題>/ 或舊址 _AIDocs/Failures/）；全落空才算不存在
         entry_stem = file_name[:-3] if file_name.endswith(".md") else file_name
         exists = (
@@ -798,7 +798,7 @@ def search_distant(memory_dir: Path, keyword: str) -> List[Tuple[Path, str]]:
 
 def _restore_index_home(dest: Path, fallback_mem: Path) -> Tuple[Path, Path]:
     """還原卡登進哪份索引 (index_dir, index_root)：在資料根下一律全域 memory/_atom_index.json
-    （範疇子夾與 _AIDocs/_atoms 的 _distant 上一層不是索引根，拿它會在子夾生一份假索引）；
+    （範疇子夾與本地根（memory/_local、相容期 _AIDocs/_atoms）的 _distant 上一層不是索引根，拿它會在子夾生一份假索引）；
     專案層上溯最近的 _atom_index.json；都找不到才退回 _distant 的上一層。"""
     if _is_under(dest, CLAUDE_DIR):
         return GLOBAL_MEMORY_DIR, CLAUDE_DIR
@@ -1075,13 +1075,13 @@ def _project_slug_for(mem_dir: Path) -> Optional[str]:
 def _vector_layer_label(atom_path: Path, layer: str, mem_dir: Path) -> Optional[str]:
     """由定位路徑推導該 atom 在向量庫的 layer 標籤（對拍 tools/memory-vector-service/indexer.py
     discover_layers 與 hooks/wg_core.discover_v4_sublayers 的命名）：
-      global 層：_AIDocs/_atoms/ → extra:local-atoms；memory/Failures/ 或舊址 _AIDocs/Failures/ →
+      global 層：memory/_local/（相容期另含舊址 _AIDocs/_atoms/）→ extra:local-atoms；memory/Failures/ 或舊址 _AIDocs/Failures/ →
       extra:failures；memory/personal/<user>/ → personal:global:<user>；其餘 memory/ → global
       專案層：roles/<r>/ → role:<slug>:<r>；personal/<u>/ → personal:<slug>:<u>；其餘（shared/、
       failures/、flat-legacy）→ shared:<slug>
     推導不出（專案未登記／路徑不在層下）回 None。"""
     if layer == "global":
-        if _is_under(atom_path, LOCAL_ATOMS_DIR):
+        if _is_under(atom_path, LOCAL_ATOMS_DIR) or _is_under(atom_path, LEGACY_LOCAL_ATOMS_DIR):
             return "extra:local-atoms"
         if _is_under(atom_path, FAILURES_DIR) or _is_under(atom_path, LEGACY_FAILURES_DIR):
             return "extra:failures"
@@ -1820,11 +1820,12 @@ def _infer_scope_from_path(atom_path: Path) -> str:
 
 def _distant_dirs(memory_dir: Path) -> List[Path]:
     """該層所有 `_distant/` 目錄：move_to_distant 把 atom 移到「原範疇資料夾」下的 _distant/，
-    所以 memory/<範疇>/_distant/ 與 memory/_distant/ 都可能存在；全域層另含 _AIDocs/_atoms/**。"""
+    所以 memory/<範疇>/_distant/ 與 memory/_distant/ 都可能存在；本地卡新址（memory/_local/**）在 memory 樹內，
+    rglob 已涵蓋；全域層另掛相容期的舊本地根（在 memory 樹外，不會與新址重複）。"""
     roots = [memory_dir]
     try:
         if memory_dir.resolve() == GLOBAL_MEMORY_DIR.resolve():
-            roots.append(CLAUDE_DIR / "_AIDocs" / "_atoms")
+            roots.append(LEGACY_LOCAL_ATOMS_DIR)
     except OSError:
         pass
     found: List[Path] = []

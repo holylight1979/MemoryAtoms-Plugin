@@ -58,7 +58,7 @@
  "mcp.atom_retire.param_project_cwd": "Project root (required for scope=shared/personal/role)",
  "mcp.atom_retire.param_reason": "Required: why it is retired (written to audit / merge history)",
  "mcp.atom_retire.param_role": "Role subfolder for scope=role",
- "mcp.atom_retire.param_scope": "Layer the atom is in: global=~/.claude/memory/ (including Failures/); local=~/.claude/_AIDocs/_atoms/; shared/personal/role=project layer (needs project_cwd); org=organization layer (the shared of the config org_memory root, no project_cwd needed)",
+ "mcp.atom_retire.param_scope": "Layer the atom is in: global=~/.claude/memory/ (including Failures/); local=~/.claude/memory/_local/; shared/personal/role=project layer (needs project_cwd); org=organization layer (the shared of the config org_memory root, no project_cwd needed)",
  "mcp.atom_retire.param_user": "Owner for scope=personal (defaults to the current OS user)",
  "mcp.atom_source.description": "Look up where an atom came from: the Source pointer plus the Quote original words; if the transcript still exists, returns one message before and after that uuid verbatim (state=live), otherwise returns the Quote (quote_only), and if neither exists returns the origin and \"original conversation past retention\" (unrecoverable). Read-only, writes no state, leaves no receipt.",
  "mcp.atom_source.param_atom": "Atom name (without .md) or absolute path (required)",

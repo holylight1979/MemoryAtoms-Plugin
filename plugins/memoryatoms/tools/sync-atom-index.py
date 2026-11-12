@@ -480,7 +480,11 @@ def fix_index_scope_from_path(memory_dir: Path, claude_root: Path,
         path = row.path
         if path and not md.exists():
             # 先找「只是搬了位置」的同名檔（跳過 skip 目錄）：找到 → 修 path；真的沒有 → 才算懸空
-            found = [p for p in memory_dir.rglob(f"{row.name}.md") if is_atom_file(p, memory_dir)]
+            # 本機資料根走多根列舉（含 memory/_local 與相容期舊本地根：這些根從 memory/ 往下掃會被跳過）；其他樹單根
+            if layer == "global":
+                found = [p for p in iter_atom_files_multi() if p.stem == row.name]
+            else:
+                found = [p for p in memory_dir.rglob(f"{row.name}.md") if is_atom_file(p, memory_dir)]
             if len(found) == 1:
                 path = str(found[0].relative_to(claude_root)).replace("\\", "/")
                 md = found[0]

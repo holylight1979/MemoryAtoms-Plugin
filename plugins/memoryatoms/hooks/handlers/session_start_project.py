@@ -14,7 +14,7 @@ from typing import Any, Dict, List
 from wg_core import (
     CLAUDE_DIR, CODE_DIR, MEMORY_DIR,
     _atom_debug_error,
-    _is_under_claude_dir,
+    local_cards_recalled_at,
     find_vcs_root, is_transient_project_root,
     load_config, load_org_local,
 )
@@ -50,13 +50,13 @@ def _aidocs_opening_lines(aidocs_entries, project_root) -> List[str]:
 
 
 def _local_catalog_lines(cwd: str) -> List[str]:
-    """本地範疇 catalog 一行指標（只在核心環境 cwd∈~/.claude；整張表要用再 Read）。
+    """本地範疇 catalog 一行指標（只在本地卡想得起來的地方：資料根底下或記憶系統原始碼樹裡；整張表要用再 Read）。
 
-    core catalog 走 CLAUDE.md @import memory/MEMORY.md；本地範疇明細在側檔 memory/_local_catalog.md。
-    fail-safe：缺檔／非核心 → []（local atom 仍走 trigger 注入）。
+    core catalog 走 CLAUDE.md @import memory/MEMORY.md；本地範疇明細在側檔 memory/_local_catalog.md（資料根那份）。
+    fail-safe：缺檔／想不起本地卡的地方 → []（local atom 仍走 trigger 注入）。
     """
     try:
-        if not _is_under_claude_dir(cwd):
+        if not local_cards_recalled_at(cwd):
             return []
         lc = MEMORY_DIR / "_local_catalog.md"
         if not lc.exists():

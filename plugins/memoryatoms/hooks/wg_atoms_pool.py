@@ -14,11 +14,11 @@ from wg_core import (
     MEMORY_INDEX,
     WORKFLOW_DIR,
     _atom_debug_error,
-    _is_under_claude_dir,
     cwd_to_project_slug,
     find_project_root,
     get_project_memory_dir,
     is_cross_project_local,
+    local_cards_recalled_at,
 )
 from pathlib import Path
 from atom_spec import SCOPE_DIR_NAMES
@@ -334,9 +334,9 @@ def build_candidate_pool(
     roles = list(roles or [])
     if global_atoms is None:
         global_atoms = parse_memory_index(MEMORY_DIR)
-    # 外部專案（cwd ∉ ~/.claude）濾掉 local-realm atom，跨專案 local 例外保留；
-    # is_local_realm_path 為 None（lib import 失敗）→ 不過濾（fail-open 全注入）。
-    if is_local_realm_path is not None and not _is_under_claude_dir(cwd):
+    # 本地卡想不起來的地方（不在資料根底下、也不在記憶系統原始碼樹裡：wg_core.local_cards_recalled_at）
+    # 濾掉 local-realm atom，跨專案 local 例外保留；is_local_realm_path 為 None（lib import 失敗）→ 不過濾（fail-open 全注入）。
+    if is_local_realm_path is not None and not local_cards_recalled_at(cwd):
         global_atoms = [
             (n, p, t) for (n, p, t) in global_atoms
             if not is_local_realm_path(p) or is_cross_project_local(p)

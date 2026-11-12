@@ -62,7 +62,7 @@ VALID_SOURCES = frozenset({
     "hook:user-extract",
     "hook:extract-worker",
     "tool:atom-move",
-    "tool:atom-set-realm",  # V5+ Realm 維度：core⇄local 範疇搬移（_AIDocs/_atoms/ path 唯一寫者）
+    "tool:atom-set-realm",  # Realm 維度：core⇄local 範疇搬移（本地樹 memory/_local/ path 唯一寫者）
     "tool:atom-categorize",  # 核心層批次歸類搬遷（memory/<範疇>/、memory/Failures/<主題>/；plan/apply/undo）
     "tool:conflict-review",  # _pending_review 核可 → shared/<Lv1>/ 落地 + index upsert
     "tool:atom-health-check",  # atom 健康診斷 / 反向參照修補
@@ -371,7 +371,7 @@ def _resolve_target(
     否則預覽會在專案樹留下空的範疇資料夾（落點計算沿途的 *_target helper 都會 mkdir-p）。"""
     if create_dirs:
         return _resolve_target_impl(scope, project_cwd, role, user, audience, force_global, **kw)
-    roots = [GLOBAL_MEMORY_DIR, CLAUDE_DIR / "_AIDocs" / "_atoms"]
+    roots = [GLOBAL_MEMORY_DIR]   # 本地卡落點 memory/_local/ 在 memory 底下，已涵蓋；舊址 _AIDocs/_atoms/ 不再寫入
     proj_root = _find_project_root(project_cwd)
     if proj_root is not None:
         roots.append(proj_root / ".claude")
@@ -426,7 +426,7 @@ def _resolve_target_impl(
     對拍 server.js:777 resolveMemDir + 1095-1101 sensitive audience routing。
     V5+ 擴展（皆 global scope 內疊加，與 scope 正交）：
       - feedback- 標題 → memory/Failures/<主題>/（routed_to_failures）
-      - realm=local → _AIDocs/_atoms/<domain>/（routed_to_local；realm 由 path 推導，不存欄位）
+      - realm=local → memory/_local/<domain>/（routed_to_local；realm 由 path 推導，不存欄位）
     兩者索引皆仍在 memory/_atom_index.json（index_root=CLAUDE_DIR，單一來源）。
     """
     if force_global:
@@ -448,7 +448,7 @@ def _resolve_target_impl(
                     "when writing cross-project knowledge from a project)"}
 
     if scope == "global":
-        # global 的三個物理居所（memory/ + memory/Failures/ + _AIDocs/_atoms/）一律
+        # global 的物理居所（memory/，含 Failures/ 與本地樹 _local/；相容期舊址 _AIDocs/Failures/、_AIDocs/_atoms/）一律
         # 全納入定位範圍，不隨 create 落點縮窄——否則 realm/domain 給錯（或沒給）的
         # append/replace 會在錯的子樹找檔。對拍 server.js append/replace 的 find-fallback。
         global_roots = atom_search_roots()
@@ -1051,8 +1051,8 @@ def edit_metadata(
         except OSError:
             in_claude = False
         if in_claude:
-            # global 三居所（memory/ + _AIDocs/Failures/ + _AIDocs/_atoms/）索引同居
-            # GLOBAL_MEMORY_DIR（Failures/_atoms 上溯不到它，不能走 find_index_dir）
+            # global 各居所（memory/ 含本地樹 _local/；相容期舊址 _AIDocs/Failures/、_AIDocs/_atoms/）索引同居
+            # GLOBAL_MEMORY_DIR（兩個舊址上溯不到它，不能走 find_index_dir）
             base_dir = GLOBAL_MEMORY_DIR
             index_root = CLAUDE_DIR.resolve()
         else:
@@ -1411,7 +1411,7 @@ def write_atom(
     Required: title, scope, confidence, triggers, knowledge, mode, source
     domain（mode=create 必填於 scope=global 非 local／feedback- 標題／scope=shared）：
     「層根下的 <Lv1>[/<Lv2>]」範疇路徑（正名／slug／別名皆可，snap 回正名）；
-    realm="local" 時則是 _AIDocs/_atoms/ 下的階層 domain。缺或未知 Lv1 → 拒寫並列出
+    realm="local" 時則是 memory/_local/ 下的階層 domain。缺或未知 Lv1 → 拒寫並列出
     全部 Lv1；allow_new_category=True 才准開新 Lv1（仍受保留名／字元集約束）。
     本函式永不自動分類（source 為 mcp 時 AI 必給；程式寫手在呼叫前自行 classify_category）。
     append/replace 忽略 domain（既有檔由 index 定位），給了只 stderr 提示不阻斷。
@@ -1496,7 +1496,7 @@ def write_atom(
     index_root = resolved["index_root"]
 
     # append/replace 的實體檔可能不在扁平落點（專案 projects/<X>/、shared/<Domain>/、
-    # local realm _AIDocs/_atoms/<domain>/）→ 索引優先、rglob 為輔定位。
+    # local realm memory/_local/<domain>/、相容期舊址 _AIDocs/_atoms/）→ 索引優先、rglob 為輔定位。
     # create 反向使用同一定位：同 slug 已存在於子夾 → 拒絕（否則會叉出重複 atom
     # 並讓索引 path 蹍掉舊檔）；不改 create 落點本身。
     if mode in ("append", "replace", "create") and not file_path.exists():
@@ -1700,6 +1700,22 @@ def write_atom(
                               "supersedes": supersedes_final})
 
 
+def auto_local_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+    """自動歸本地（設定 realm.auto_migrate）開著沒。管三條自動路：建 global 卡沒帶 realm 時照詞表判 local（locate_atom）、
+    使用者決策萃取照詞表判（hooks/user-extract-worker.py）、SessionEnd 搬移掃描（hooks/wg_atoms_realm.py 同鍵同預設自己讀）。
+    只有明寫 true 才開；沒寫、設定缺或壞都算關（缺設定時錯的方向要是「不自動藏卡」）。出廠設定（安裝版、插件版同一份
+    workflow/config.json）寫 false：本地卡只在資料根底下與記憶系統原始碼樹裡想得起來，自動歸過去等於收進想不起來的角落；要開的版本自己明寫 true。
+    手動 realm=local、tools/atom-set-realm.py、refile 不看這個開關。config 沒給就讀資料根的分層設定（插件版墊出廠兩層）。"""
+    if config is None:
+        try:
+            from .edition import layered_config
+            config = layered_config(CLAUDE_DIR / "workflow" / "config.json")
+        except Exception:  # noqa: BLE001 — 設定讀不了 → 照沒寫（關）
+            config = {}
+    realm_cfg = config.get("realm") if isinstance(config, dict) else None
+    return bool((realm_cfg if isinstance(realm_cfg, dict) else {}).get("auto_migrate", False))
+
+
 def locate_atom(
     title: str,
     scope: str = "shared",
@@ -1733,7 +1749,8 @@ def locate_atom(
       routed_to_failures / routed_to_pending / routed_to_local, realm, domain,
       auto_realm（scope=global、realm 未給時由 classify_realm 判 local 的命中詞），
       realm_hold（同條件下卡帶 entry → ENTRY_BOUND_STAYS_CORE 留 core：{rule, entry, would}；
-      帳由 create_atom 落檔成功後寫，dry-run 與被擋下的建卡不留帳）。
+      帳由 create_atom 落檔成功後寫，dry-run 與被擋下的建卡不留帳）、
+      dedupe_local（寫入閘去重要不要比本地層：自動歸本地開著、或這張的落點就是本地才比）。
     """
     audit_id = _gen_audit_id()
     if scope == "project":
@@ -1742,7 +1759,8 @@ def locate_atom(
     auto_realm: Optional[List[str]] = None
     realm_hold: Optional[Dict[str, Any]] = None
     rc: Dict[str, Any] = {}
-    if scope == "global" and realm is None and not is_failures_routed_title(title):
+    auto_local = auto_local_enabled()   # 關著：不替人判 local（詞表缺也不擋），寫入閘去重也不比本地層（落點本身是本地時才比）
+    if scope == "global" and realm is None and not is_failures_routed_title(title) and auto_local:
         # 自動 realm（core 全專案注入／local 只在 ~/.claude）：安全預設 core，核心保護硬擋。
         try:
             rc = classify_realm(slug, triggers or [])
@@ -1786,6 +1804,7 @@ def locate_atom(
         "personal_global": bool(resolved.get("personal_global")),
         "realm": "local" if resolved.get("routed_to_local") else ("global" if scope == "global" else None),
         "domain": domain, "auto_realm": auto_realm, "realm_hold": realm_hold,
+        "dedupe_local": bool(auto_local or resolved.get("routed_to_local")),
     }
     if not file_path.exists():
         found, loc_err = locate_existing_atom(

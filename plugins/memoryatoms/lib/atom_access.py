@@ -557,6 +557,42 @@ def _coerce_num(x: float) -> Any:
     return r
 
 
+def _pick_date(a: Any, b: Any, latest: bool) -> Any:
+    """兩個 YYYY-MM-DD（或 None）取最晚／最早的；一邊沒有就用另一邊。"""
+    vals = [v for v in (a, b) if v]
+    if not vals:
+        return None
+    return max(vals, key=str) if latest else min(vals, key=str)
+
+
+def merge_access_records(older: Dict[str, Any], newer: Dict[str, Any]) -> Dict[str, Any]:
+    """同一張卡的兩份使用紀錄併成一份，兩邊的計數都不丟。
+
+    用在本地卡搬家（tools/atom-set-realm.py migrate-local）：舊位置留著搬家前的紀錄，卡已在新位置後又長出一份新紀錄。
+    計數（read_hits、confirmations）相加；(α,β) 各自扣掉 prior 再相加、加回 prior；first_seen 取早的，
+    last_used／last_promoted_at／last_decay_date 取晚的；timestamps 合併排序留最後 TIMESTAMPS_MAX 筆；
+    confirmation_events 依 ts 排序合併。其他鍵以 newer 為準、newer 沒有的由 older 補。兩份都先照 _normalize 升到 v3。
+    """
+    a, _ = _normalize(dict(older or {}))
+    b, _ = _normalize(dict(newer or {}))
+    out: Dict[str, Any] = {**a, **b}
+    out["read_hits"] = int(a.get("read_hits") or 0) + int(b.get("read_hits") or 0)
+    out["confirmations"] = int(a.get("confirmations") or 0) + int(b.get("confirmations") or 0)
+    prior = float(USEFULNESS_PRIOR)
+    for key in ("useful_hits", "used_fail"):
+        evidence = sum(max(0.0, float(r.get(key) or prior) - prior) for r in (a, b))
+        out[key] = _coerce_num(prior + evidence)
+    out["first_seen"] = _pick_date(a.get("first_seen"), b.get("first_seen"), latest=False)
+    for key in ("last_used", "last_promoted_at", "last_decay_date"):
+        out[key] = _pick_date(a.get(key), b.get(key), latest=True)
+    stamps = sorted({float(x) for r in (a, b) for x in (r.get("timestamps") or []) if isinstance(x, (int, float))})
+    out["timestamps"] = stamps[-TIMESTAMPS_MAX:]
+    events = [e for r in (a, b) for e in (r.get("confirmation_events") or [])]
+    out["confirmation_events"] = sorted(events, key=lambda e: str(e.get("ts", "")) if isinstance(e, dict) else "")
+    out[SCHEMA_KEY] = SCHEMA_VERSION
+    return out
+
+
 def wilson_lower_bound(successes: float, n: float, z: float = WILSON_Z_DEFAULT) -> float:
     """二項比例 p̂=successes/n 的 Wilson score 下界（單一壞 turn 幾乎不動分數）。
 

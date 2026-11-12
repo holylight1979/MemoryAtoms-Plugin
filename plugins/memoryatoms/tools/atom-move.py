@@ -11,8 +11,8 @@
   - `.md` 與 `.access.json` sidecar 原子性同搬（lib.atom_access.move_atom_pair；計數不歸零）。
   - 子資料夾不再被誤當 memory root：以 find_index_dir 上溯到擁有 `_atom_index.json` 的根，
     JSON path 一律相對 index_dir.parent（對拍 atom_io 的 index_root=base.parent）。
-  - 落 `_AIDocs/_atoms/`（local realm）/ 舊址 `_AIDocs/Failures/`（feedback，title 路由）的 atom
-    由專屬路由器管，本工具拒絕搬移、導引到 atom-set-realm.py / title 前綴路由。
+  - 落本地樹（local realm：`memory/_local/`、相容期舊位置 `_AIDocs/_atoms/`）/ 舊址 `_AIDocs/Failures/`
+    （feedback，title 路由）的 atom 由專屬路由器管，本工具拒絕搬移（來源與目標都查）、導引到 atom-set-realm.py / title 前綴路由。
     `memory/Failures/<主題>/` 與 `memory/<範疇>/` 在 memory 樹內，是合法的搬移目標；
     全域 memory/ 下的目標資料夾經 core_target_gate（taxonomy Lv1 閉合清單、別名 snap；
     `memory/` 根平鋪只在 taxonomy.gate_enabled=false 時放行）。
@@ -160,8 +160,11 @@ def is_global_index(index_dir: Path) -> bool:
         return False
 
 
-# 只擋 memory 樹外的受管區；memory/Failures/<主題>/ 在樹內、由本工具正常搬（改分類）。
+# 受管區：本地樹（新位置 memory/_local 在 memory 樹內、相容期舊位置 _AIDocs/_atoms）由 atom-set-realm 獨佔，
+# 不擋的話本地卡會被直接搬進核心範疇、不留 realm_move 帳；舊址 _AIDocs/Failures 由 title 前綴路由。
+# memory/Failures/<主題>/ 不是受管區，由本工具正常搬（改分類）。
 _SPECIAL_REALM_MARKERS = (
+    ("memory/_local", t("cli.atom_move.marker_local_realm")),
     ("_AIDocs/_atoms", t("cli.atom_move.marker_local_realm")),
     ("_AIDocs/Failures", t("cli.atom_move.marker_old_failures")),
 )

@@ -106,11 +106,10 @@ def _autocapture_unconfirmed_from_text(text: str) -> bool:
 
 
 def _is_atom_physical_rel(rel: str) -> bool:
-    """rel（相對 ~/.claude、POSIX）落在 atom 物理區（失敗家族新舊址 / _AIDocs/_atoms/）⇒ True。"""
+    """rel（相對 ~/.claude、POSIX）落在 atom 物理區（失敗家族新舊址 / 本地樹新位置 memory/_local/、相容期舊位置 _AIDocs/_atoms/）⇒ True。"""
     if is_in_failures_path is not None and is_local_realm_path is not None:
         return is_in_failures_path(rel) or is_local_realm_path(rel)
-    return (rel.startswith("memory/Failures/") or rel.startswith("_AIDocs/Failures/")
-            or rel.startswith("_AIDocs/_atoms/"))
+    return rel.startswith(("memory/Failures/", "_AIDocs/Failures/", "memory/_local/", "_AIDocs/_atoms/"))
 
 
 def _scan_doc_refs(moved: List[Dict[str, Any]]) -> Dict[str, List[str]]:
@@ -167,7 +166,7 @@ def _sweep_realm_auto_migrate(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             or entry_bound_ids is None or core_protected_source() != "json"):   # 詞表沒載入：判不出保護名，這輪不搬（開場紅字已講）
         return []
     realm_cfg = config.get("realm", {})
-    if not realm_cfg.get("auto_migrate", True):
+    if not realm_cfg.get("auto_migrate", False):   # 只有明寫 true 才掃；沒寫＝關（同 lib/atom_io.auto_local_enabled）
         return []
 
     llm_cfg = realm_cfg.get("llm_fallback", {})

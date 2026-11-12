@@ -53,13 +53,15 @@ function projectSlugOf(memBase) {
  *  global → global + ~/.claude 本地 atom
  *  shared → 再加 shared:<slug>；role → 再加 role:<slug>:<role>；personal → 再加 personal:<slug>:<user>
  *  personal 跨專案（personalGlobal）→ global + personal:global:<user>
- *  別的專案、別人的 personal 層一律不比（比到了也不能 append 過去，只會卡死寫入）。 */
-function dedupLayersFor(scope, memBase, { role, user, personalGlobal } = {}) {
+ *  別的專案、別人的 personal 層一律不比（比到了也不能 append 過去，只會卡死寫入）。
+ *  localLayer=false（py locate 的 dedupe_local：自動歸本地關著、這張也不落本地）→ 不比本地層：
+ *  本地卡只在資料根底下與記憶系統原始碼樹裡想得起來，宣告 same 會把新知識併進想不起來的卡。 */
+function dedupLayersFor(scope, memBase, { role, user, personalGlobal, localLayer = true } = {}) {
   if (scope === "org") {
     // 組織層寫入：只比 global 與組織 shared 層（memBase＝<org_root>/.claude/memory）
     return memBase ? ["global", `shared:${projectSlugOf(memBase)}`] : ["global"];
   }
-  const layers = ["global", "extra:local-atoms"];
+  const layers = localLayer ? ["global", "extra:local-atoms"] : ["global"];
   if (scope === "personal" && personalGlobal && user) {
     layers.push(`personal:global:${user}`);  // 本人跨專案 personal（~/.claude/memory/personal/<u>/）
     return layers;

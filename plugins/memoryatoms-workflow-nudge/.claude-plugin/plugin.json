@@ -1,7 +1,7 @@
 {
   "name": "memoryatoms-workflow-nudge",
   "description": "Working-style nudges: suggests fan-out for research-type requests and parallel sub-agents for independent work.",
-  "version": "6.2.0",
+  "version": "6.3.0",
   "author": {
     "name": "holylight"
   },

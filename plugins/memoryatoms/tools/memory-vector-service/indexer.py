@@ -30,7 +30,8 @@ from ollama_client import get_client
 from wg_core import CLAUDE_DIR, MEMORY_DIR, discover_memory_layers
 # V5+ Session β: Failures layer 注入 + stems filter（對拍 lib/atom_locations）
 from lib.atom_locations import (  # noqa: E402
-    FAILURES_DIR, LEGACY_FAILURES_DIR, LOCAL_ATOMS_DIR, atom_search_roots, failures_atom_stems,
+    FAILURES_DIR, LEGACY_FAILURES_DIR, LEGACY_LOCAL_ATOMS_DIR, LOCAL_ATOMS_DIR, atom_search_roots,
+    failures_atom_stems,
 )
 # 遙測欄位（last_used / read_hits / confirmations）住 <atom>.access.json sidecar，
 # 統一經 lib.atom_access 讀取（.md frontmatter 不再攜帶這些欄位）
@@ -42,7 +43,7 @@ COLLECTION_NAME = "atom_memory"
 
 # Layer label 用於 Failures filter 觸發判斷
 FAILURES_LAYER_LABEL = "extra:failures"
-# Local realm atoms（_AIDocs/_atoms/ 階層：Tools/MemDev/World/Continuity/...）
+# Local realm atoms（memory/_local/ 階層：Tools/MemDev/World/Continuity/...；相容期另含舊址 _AIDocs/_atoms/）
 LOCAL_ATOMS_LAYER_LABEL = "extra:local-atoms"
 
 # Atom 檔案排除清單
@@ -91,9 +92,10 @@ def discover_layers(
 
     if _accept("global"):
         # 全域 atom 根走 lib.atom_locations.atom_search_roots() 單一來源：
-        # memory/（global，遞迴已含 memory/Failures/<主題>/）+ 舊址 _AIDocs/Failures/
-        # （尚未遷入的 feedback-*，存在才掛）+ _AIDocs/_atoms/（local realm 階層目錄，
-        # 遞迴掃描；_atoms 本身是根、不受 `_` 前綴排除規則影響）
+        # memory/（global，遞迴已含 memory/Failures/<主題>/；底線開頭的夾含 memory/_local/ 照跳，不重複收）
+        # + 舊址 _AIDocs/Failures/（尚未遷入的 feedback-*，存在才掛）
+        # + 本地根 memory/_local/（local realm 階層目錄，遞迴掃描；本身是根、不受 `_` 前綴排除規則影響）
+        # + 相容期的舊本地根 _AIDocs/_atoms/（存在才掛；與新根同一層、層內相對路徑不變，不用重嵌）
         for root in atom_search_roots():
             if root == MEMORY_DIR:
                 layers.append(("global", MEMORY_DIR, "recursive"))
@@ -107,9 +109,9 @@ def discover_layers(
             elif root in (FAILURES_DIR, LEGACY_FAILURES_DIR):
                 if root.is_dir():
                     layers.append((FAILURES_LAYER_LABEL, root, "recursive"))
-            elif root == LOCAL_ATOMS_DIR:
-                if LOCAL_ATOMS_DIR.is_dir():
-                    layers.append((LOCAL_ATOMS_LAYER_LABEL, LOCAL_ATOMS_DIR, "recursive"))
+            elif root in (LOCAL_ATOMS_DIR, LEGACY_LOCAL_ATOMS_DIR):
+                if root.is_dir():
+                    layers.append((LOCAL_ATOMS_LAYER_LABEL, root, "recursive"))
             elif root.is_dir():
                 # atom_search_roots 未來新增根時仍進索引（label 依目錄名生成）
                 layers.append((f"extra:{root.name.strip('_').lower()}", root, "recursive"))
@@ -144,6 +146,7 @@ def discover_atoms(
       - "recursive" / "extra"：遞迴 **/*.md（仍跳 _-prefixed 目錄）
     """
     atoms: List[Tuple[str, Path, str]] = []
+    local_seen_rels: set = set()  # 本地層新舊兩根同相對路徑時只收先列的（新位置）那張
 
     extra_skip: Dict[str, set] = {}
     if additional_dirs:
@@ -207,6 +210,10 @@ def discover_atoms(
             if is_failures and md_file.stem not in (failures_stems_cache or set()):
                 continue
             rel = str(md_file.relative_to(mem_dir))
+            if layer_name == LOCAL_ATOMS_LAYER_LABEL:
+                if rel in local_seen_rels:
+                    continue
+                local_seen_rels.add(rel)
             atoms.append((layer_name, md_file, rel))
 
         if include_distant and not is_extra:
@@ -571,7 +578,7 @@ def _embed_input(record: Dict[str, Any]) -> str:
     title = record.get("title") or record.get("atom_name", "")
     layer = record.get("layer", "")
     if layer == LOCAL_ATOMS_LAYER_LABEL:
-        # local realm：file_path 相對 _AIDocs/_atoms/，父目錄鏈即 domain 階層（如 Tools、MemDev/x）
+        # local realm：file_path 相對本地根（memory/_local/ 或相容期的 _AIDocs/_atoms/），父目錄鏈即 domain 階層（如 Tools、MemDev/x）
         domain = str(Path(record.get("file_path", "")).parent).replace("\\", "/")
         if domain and domain != ".":
             layer = f"local:{domain}"

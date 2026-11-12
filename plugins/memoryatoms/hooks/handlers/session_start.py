@@ -799,7 +799,7 @@ def _reinject_compact_cards(lines: List[str], state: Dict[str, Any], compact_blo
 
 def _marker_file_notices(lines: List[str], cwd: str) -> None:
     """標記檔提示（標記檔讀後清）：本地範疇指標、上個 session 自動歸類搬移的卡、SessionEnd 沒跑完的殘留、效用歸因 unknown 偏高。"""
-    # V5+ realm：本地範疇 catalog 一行指標（僅核心環境 cwd∈~/.claude）
+    # V5+ realm：本地範疇 catalog 一行指標（只在資料根底下或記憶系統原始碼樹裡）
     lines.extend(_local_catalog_lines(cwd))
     _realm_automove_notice(lines)
 

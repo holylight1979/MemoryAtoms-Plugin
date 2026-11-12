@@ -1,7 +1,7 @@
 {
   "name": "memoryatoms-usage-watch",
   "description": "Claude account usage monitor: scheduled quota checks, anomaly notifications, and a start-of-session hint when the monitor is not running.",
-  "version": "6.2.0",
+  "version": "6.3.0",
   "author": {
     "name": "holylight"
   },

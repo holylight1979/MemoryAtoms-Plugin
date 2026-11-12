@@ -168,7 +168,7 @@ const TOOL_DEFINITIONS = [
         },
         realm: {
           type: "string", enum: ["core", "local"],
-          description: "V5+ realm (orthogonal to scope; only effective when scope=global). 'core' (default) = cross-project knowledge in memory/, injected in every project. 'local' = ~/.claude-only knowledge routed to _AIDocs/_atoms/<domain>/, injected ONLY when the working dir is under ~/.claude (zero cost in external projects). Use 'local' for memory-system/tooling/brain-world knowledge that is irrelevant outside ~/.claude. The atom keeps scope=global; realm is derived from its path, not stored as a field.",
+          description: "V5+ realm (orthogonal to scope; only effective when scope=global). 'core' (default) = cross-project knowledge in memory/, injected in every project. 'local' = ~/.claude-only knowledge routed to memory/_local/<domain>/, injected ONLY when the working dir is under ~/.claude (zero cost in external projects). Use 'local' for memory-system/tooling/brain-world knowledge that is irrelevant outside ~/.claude. The atom keeps scope=global; realm is derived from its path, not stored as a field.",
         },
         domain: {
           type: "string",
@@ -318,7 +318,7 @@ const TOOL_DEFINITIONS = [
       "V5 SoT-correct atom move/reconcile. Updates the single central _atom_index.json (via upsert/delete) and moves the .access.json sidecar with the .md; the _ATOM_INDEX.md mirror is auto-regenerated — it does NOT hand-edit per-folder indexes. " +
       "subcommand='move' relocates an atom to --to (a memory-root OR a subfolder under one — index root is auto-detected; the index scope is always preserved unless explicitly overridden via `scope`). " +
       "subcommand='reconcile' assumes the atom was manually moved to --at and fixes its index path + cross-layer refs. " +
-      "Refuses atoms under _AIDocs/_atoms/ (use atom-set-realm) or _AIDocs/Failures/ (title-routed). Cross-root layering: down-refs (global→project) removed, up-refs kept, sibling refs warned. Self-validates via validate_index. Use dry_run=true to preview.",
+      "Refuses atoms under memory/_local/ (use atom-set-realm) or _AIDocs/Failures/ (title-routed). Cross-root layering: down-refs (global→project) removed, up-refs kept, sibling refs warned. Self-validates via validate_index. Use dry_run=true to preview.",
     inputSchema: {
       type: "object",
       properties: {
@@ -338,7 +338,7 @@ const TOOL_DEFINITIONS = [
     description:
       "Surgically edit an atom's metadata (Trigger / Related / Tags / Entry) in place — " +
       "no full-file rebuild. Locates <atom_name>.md via py lib/atom_io.locate_atom (single " +
-      "authority: global memory/ + memory/Failures/ + _AIDocs/_atoms/; project shared → " +
+      "authority: global memory/ + memory/Failures/ + memory/_local/; project shared → " +
       "personal(current user) → role when scope=project), then " +
       "delegates to lib/atom_io.edit_metadata through the audit funnel. " +
       "Pass any subset of triggers/related/tags/entry; at least one is required. " +

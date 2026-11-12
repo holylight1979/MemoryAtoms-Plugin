@@ -16,6 +16,7 @@ JS mirror：tools/workflow-guardian-mcp/server.js:applyFeedbackRouting
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -29,7 +30,7 @@ from typing import Any, Dict, Iterable, List, Optional
 try:
     from .atom_classify import score_by_lexicon
     from .atom_spec import (
-        ARCHIVED_DIR_NAME, DISTANT_DIR_NAME, DRAFTS_DIR_NAME, EPISODIC_DIR_NAME, META_DIR_NAME,
+        ARCHIVED_DIR_NAME, DISTANT_DIR_NAME, DRAFTS_DIR_NAME, EPISODIC_DIR_NAME, LOCAL_DIR_NAME, META_DIR_NAME,
         PENDING_REVIEW_DIR_NAME, PERSONAL_DIR_NAME, REFERENCE_DIR_NAME, REJECTED_DIR_NAME, ROLES_DIR_NAME,
         SHARED_DIR_NAME, STAGING_DIR_NAME, TEMPLATES_DIR_NAME, VECTORDB_DIR_NAME, WISDOM_DIR_NAME,
     )
@@ -39,7 +40,7 @@ try:
 except ImportError:  # 頂層模組載入（wg_core / CLI sys.path.insert）
     from atom_classify import score_by_lexicon
     from atom_spec import (
-        ARCHIVED_DIR_NAME, DISTANT_DIR_NAME, DRAFTS_DIR_NAME, EPISODIC_DIR_NAME, META_DIR_NAME,
+        ARCHIVED_DIR_NAME, DISTANT_DIR_NAME, DRAFTS_DIR_NAME, EPISODIC_DIR_NAME, LOCAL_DIR_NAME, META_DIR_NAME,
         PENDING_REVIEW_DIR_NAME, PERSONAL_DIR_NAME, REFERENCE_DIR_NAME, REJECTED_DIR_NAME, ROLES_DIR_NAME,
         SHARED_DIR_NAME, STAGING_DIR_NAME, TEMPLATES_DIR_NAME, VECTORDB_DIR_NAME, WISDOM_DIR_NAME,
     )
@@ -68,17 +69,20 @@ LEGACY_FAILURES_REL = "_AIDocs/Failures"
 FAILURES_RELS = (FAILURES_REL, LEGACY_FAILURES_REL)
 FEEDBACK_TITLE_PREFIX = "feedback-"
 
-# V5+ local realm（範疇限定）：~/.claude 本地知識物理落 _AIDocs/_atoms/<domain>/，
-# 索引仍在 memory/_atom_index.json。realm **不存欄位**——由 index path 前綴推導
-# （is_local_realm_path）。注入閘門只在 cwd∈~/.claude 時才納入 local（見 session_start）。
-# JS mirror：server.js:applyLocalRouting / LOCAL_ATOMS_* 常數 — keep in sync。
-LOCAL_ATOMS_DIR = CLAUDE_DIR / "_AIDocs" / "_atoms"
-LOCAL_ATOMS_REL = "_AIDocs/_atoms"
+# 本地範疇（realm=local）：只在開發記憶系統的地方（資料根底下、記憶系統原始碼樹裡）工作時才想起的卡，物理落 memory/_local/<domain>/，
+# 索引仍在 memory/_atom_index.json。realm **不存欄位**——由 index path 前綴推導（is_local_realm_path）。
+# 舊址 _AIDocs/_atoms/ 僅供讀端相容（搬家期間兩處都認），寫端一律落新址；同失敗家族 FAILURES_RELS 的做法。
+# 注入閘門只在 cwd 在資料根底下或記憶系統原始碼樹裡時才納入 local（hooks/wg_core.local_cards_recalled_at）。JS 端不算路徑，落點一律問 py（atom_io_cli locate）。
+LOCAL_ATOMS_DIR = GLOBAL_MEMORY_DIR / LOCAL_DIR_NAME
+LOCAL_ATOMS_REL = f"{CORE_ATOMS_REL}/{LOCAL_DIR_NAME}"
+LEGACY_LOCAL_ATOMS_DIR = CLAUDE_DIR / "_AIDocs" / "_atoms"
+LEGACY_LOCAL_ATOMS_REL = "_AIDocs/_atoms"
+LOCAL_ATOMS_RELS = (LOCAL_ATOMS_REL, LEGACY_LOCAL_ATOMS_REL)
 # Lv1 已知根（canon 種子 + js mirror parity，test_14）；非 allow-list（深層 free-form）。
 LOCAL_REALM_DOMAINS = frozenset({"World", "Tools", "MemDev"})
 # catch-all / fail-safe domain（取代舊 "Misc"；LLM 低信心·unsure 歸此，py+js 鏡像 test_14）。
 LOCAL_REALM_DEFAULT_DOMAIN = "Else"
-# 跨專案注入的 local 範疇（解開「儲存位置綁死注入範圍」）：storage 仍在 _atoms（write 路由不變），
+# 跨專案注入的 local 範疇（解開「儲存位置綁死注入範圍」）：storage 仍在本地樹（write 路由不變），
 # 但 injection 全專案。注入閘門（session_start）對清單內 Lv1 根的 local atom 例外放行。
 # **僅影響注入範圍**，不改 realm/path/write 路由/catalog 歸類。py-only（注入是 Python hook，
 # 無 js 對拍面）。目前清單為空：跨專案通用的知識一律住 memory/<範疇>/（core），local 只留
@@ -171,7 +175,7 @@ def is_failures_routed_title(title: Optional[str]) -> bool:
     Failures 的非 feedback- atom（cognitive-patterns 等）——缺 (2) 時這些 atom 的
     append/replace 會在 memory/ 找不到檔而失敗。
 
-    顯式守衛：index path 已在 local 範疇（_AIDocs/_atoms/）的 feedback- atom
+    顯式守衛：index path 已在 local 範疇（memory/_local/，相容期含舊址 _AIDocs/_atoms/）的 feedback- atom
     （開發面 post-mortem 住 MemDev）→ False，不回搬——append/replace 在 local 樹找檔。
     """
     if not title:
@@ -191,7 +195,7 @@ def is_failures_routed_title(title: Optional[str]) -> bool:
 
 
 def _indexed_in_local_realm(slug: str, mem_dir: Optional[Path] = None) -> bool:
-    """slug 已註冊在 index 且 path 落 _AIDocs/_atoms/ ⇒ True。index 缺/壞/未註冊 → False。"""
+    """slug 已註冊在 index 且 path 落本地樹（新址或舊址，is_local_realm_path）⇒ True。index 缺/壞/未註冊 → False。"""
     try:
         from .atom_index_json import load_atom_index_json
     except ImportError:
@@ -216,13 +220,30 @@ def is_legacy_failures_path(rel_path: str) -> bool:
     return rel_path.startswith(LEGACY_FAILURES_REL + "/")
 
 
-def is_local_realm_path(rel_path: str) -> bool:
-    """rel_path（POSIX 風格）是否落在 _AIDocs/_atoms/ 之下 ⇒ local realm（範疇限定）。
+def local_realm_rest(rel_path: str) -> Optional[str]:
+    """本地路徑去掉命中的那個開頭（新址 memory/_local/ 或舊址 _AIDocs/_atoms/）後剩下的部分；非本地 → None。
 
-    realm 的單一判定來源：path 前綴。與 feedback-* 的 _AIDocs/Failures/ 是不同前綴、零衝突。
-    注入閘門（session_start）即用此前綴在外部專案濾掉 local。
+    例：'memory/_local/OS/Windows/x.md' 與 '_AIDocs/_atoms/OS/Windows/x.md' 都回 'OS/Windows/x.md'。
+    取分類段的函式都從這裡切，新舊兩種開頭切出來的分類一樣。
     """
-    return rel_path.startswith(LOCAL_ATOMS_REL + "/")
+    for root in LOCAL_ATOMS_RELS:
+        if rel_path.startswith(root + "/"):
+            return rel_path[len(root) + 1:]
+    return None
+
+
+def is_local_realm_path(rel_path: str) -> bool:
+    """rel_path（POSIX 風格）是否落在本地樹 ⇒ local realm（範疇限定）：新址 memory/_local/，相容期也認舊址 _AIDocs/_atoms/。
+
+    realm 的單一判定來源：path 前綴。與失敗家族 memory/Failures/、舊址 _AIDocs/Failures/ 是不同前綴、零衝突。
+    注入閘門（hooks/wg_atoms_pool）即用此前綴在外部專案濾掉 local。
+    """
+    return local_realm_rest(rel_path) is not None
+
+
+def is_legacy_local_realm_path(rel_path: str) -> bool:
+    """rel_path 仍在本地卡舊址 _AIDocs/_atoms/（尚未搬進 memory/_local/）。新卡不得落這裡（lib/atom_io_cli 建卡後盾）。"""
+    return rel_path.startswith(LEGACY_LOCAL_ATOMS_REL + "/")
 
 
 def is_core_protected_name(name: str) -> bool:
@@ -311,10 +332,11 @@ def entry_bound_ids(index_entry: Optional[Dict[str, Any]], md_path: Optional[Pat
 
 
 def atom_search_roots(include_failures: bool = True, include_local: bool = True) -> List[Path]:
-    """全域 atom 搜尋根目錄（V5+: memory + _AIDocs/Failures/ + _AIDocs/_atoms/）。
+    """全域 atom 搜尋根目錄：memory/、舊址 _AIDocs/Failures/、本地根 memory/_local/，相容期再加舊本地根 _AIDocs/_atoms/（存在才列）。
 
     include_local 預設 True：local atom 必須被 self-iterate / audit / index-rebuild 掃到，
-    否則無 decay/promote/usefulness 歸屬而凍結。dir 不存在時由 caller（iter_atom_files_multi）
+    否則無 decay/promote/usefulness 歸屬而凍結。本地根在 memory/ 裡面，但從 memory/ 往下掃會跳過它
+    （atom_spec.SKIP_DIRS 含 _local），所以要列成自己的根。dir 不存在時由 caller（iter_atom_files_multi）
     的 `is_dir()` 守門略過，故空目錄無副作用。
     """
     roots = [GLOBAL_MEMORY_DIR]  # memory/Failures/ 在 memory/ 樹下，rglob 自然涵蓋
@@ -322,6 +344,8 @@ def atom_search_roots(include_failures: bool = True, include_local: bool = True)
         roots.append(LEGACY_FAILURES_DIR)  # 舊址讀端相容；不存在時由 caller is_dir() 略過
     if include_local:
         roots.append(LOCAL_ATOMS_DIR)
+        if LEGACY_LOCAL_ATOMS_DIR.is_dir():
+            roots.append(LEGACY_LOCAL_ATOMS_DIR)  # 舊址讀端相容：還沒搬的本地卡照樣掃得到、照樣進本地層
     return roots
 
 
@@ -356,7 +380,7 @@ def iter_atom_files_multi(
     *,
     apply_failures_filter: bool = True,
 ) -> Iterable[Path]:
-    """yield 多 root 下合法 atom .md。
+    """yield 多 root 下合法 atom .md，同一個檔只出一次（根可以互相包含：本地根 memory/_local 在 memory 裡面）。
 
     判定統一走 atom_spec.is_atom_file（避免三份手刻 filter 分歧）。
     若 root == FAILURES_DIR 且 apply_failures_filter=True，
@@ -372,6 +396,7 @@ def iter_atom_files_multi(
         from atom_spec import is_atom_file
     roots_list = list(roots) if roots is not None else atom_search_roots()
     stems_cache: Optional[set] = None
+    yielded: set = set()   # 已出過的檔（絕對路徑＋大小寫折疊）：同一個根列兩次、或內外層根都掃到時不重複
     failures_resolved = set()
     for fd in (FAILURES_DIR, LEGACY_FAILURES_DIR):
         try:
@@ -393,6 +418,10 @@ def iter_atom_files_multi(
                 continue
             if is_failures_root and apply_failures_filter and md.stem not in (stems_cache or set()):
                 continue
+            key = fold_path_case(os.path.abspath(md))   # 不 resolve：Stop 端逐檔找卡也走這裡，不多付一次系統呼叫
+            if key in yielded:
+                continue
+            yielded.add(key)
             yield md
 
 
@@ -421,13 +450,12 @@ def failures_write_target(topic: Optional[str] = None) -> Dict[str, Any]:
 
 
 def local_write_target(domain: Optional[str] = None) -> Dict[str, Any]:
-    """V5+ local-realm 路由：本地範疇 atom 物理落 _AIDocs/_atoms/<domain_path>/，
-    索引仍在 memory/_atom_index.json（index_root=CLAUDE_DIR → rel_path 以 _AIDocs/_atoms/ 開頭）。
+    """local-realm 路由：本地範疇 atom 物理落 memory/_local/<domain_path>/（只寫新址，舊址 _AIDocs/_atoms/ 只讀），
+    索引仍在 memory/_atom_index.json（index_root=CLAUDE_DIR → rel_path 以 memory/_local/ 開頭）。
 
     domain 支援**多段階層路徑**（如 "OS/Windows/WSL"，mkdir-p 全鏈）；空/全非法 →
     LOCAL_REALM_DEFAULT_DOMAIN。每段過 `_clean_segment`（拒 `..`/分隔符/`_`前綴等），
     防寫到樹外（path traversal）。回 {dir, base, index_dir, index_root}。
-    MIRROR: server.js:applyLocalRouting — keep in sync。
     """
     dom = (domain or "").strip() or LOCAL_REALM_DEFAULT_DOMAIN
     safe = [_clean_segment(s) for s in dom.split("/") if s.strip()]
@@ -482,26 +510,30 @@ _LOCATE_SKIP_DIRS = frozenset({
 
 
 def _is_under(child: Path, roots: List[Path]) -> bool:
-    """child 落在任一 root 內，且相對路徑不含 skip 段/_archive* 段。
+    """child 落在任一 root 內，且相對「包住它的最深那個 root」的路徑不含 skip 段/_archive* 段。
 
     段層級防護：search_roots 放寬到整個 memory root 後（shared atom 可被歸位到
     projects/<X>/ 等兄弟子夾），跨 scope 保護改由「路徑段」把關——personal/roles/
     草稿/封存子樹內的檔即使被索引指到也不當定位目標。
+    根可以互相包含（本地根 memory/_local 在 memory 裡面）：呼叫端明列的內層根就是准許往下找的子樹，
+    和 _rglob_locate 從該根往下找同一個意思，所以以最深的根算段，不讓外層根看到的段把它擋掉。
     """
     try:
         c = child.resolve()
     except OSError:
         c = child
+    nearest = None   # 相對最深 root 的路徑（段數最少）
     for r in roots:
         try:
             rel = c.relative_to(r)
         except ValueError:
             continue
-        segs = rel.parts[:-1]  # 目錄段（去檔名）
-        if any(s in _LOCATE_SKIP_DIRS or s.startswith("_archive") for s in segs):
-            return False
-        return True
-    return False
+        if nearest is None or len(rel.parts) < len(nearest.parts):
+            nearest = rel
+    if nearest is None:
+        return False
+    segs = nearest.parts[:-1]  # 目錄段（去檔名）
+    return not any(s in _LOCATE_SKIP_DIRS or s.startswith("_archive") for s in segs)
 
 
 def _rglob_locate(root: Path, slug: str) -> List[Path]:
@@ -572,7 +604,7 @@ def locate_existing_atom(
 
     為何需要：atom 的**寫入預設落點是扁平的**（scope=shared → `memory/shared/`），
     但實體檔常被事後歸位到主題子夾（專案 classifier sweep → `shared/<Domain>/`；
-    local realm → `_AIDocs/_atoms/<domain 多段>/`）。只看預設落點會誤判 not-found。
+    local realm → `memory/_local/<domain 多段>/`，相容期舊址 `_AIDocs/_atoms/`）。只看預設落點會誤判 not-found。
 
     定位順序（抄 tools/atom-move.py:locate_md 的既有正解）：
       1. `_atom_index.json` 的 path 欄位（權威，含子夾）——需檔案存在且落在 search_roots
@@ -650,9 +682,9 @@ def atom_index_row_kind(rel_path: str, name: str) -> str:
 
     保留 sync-memory-index 原語意：name 以 'feedback' 開頭（含可能的 feedbacky-x）
     且 path 在 Failures 下 → 聚合行；其他 Failures 內 atom → 獨立行；
-    V5+ realm：path 落 _AIDocs/_atoms/ → 'local_realm'（本地範疇，render 收進獨立段，
+    realm：path 落本地樹（memory/_local/，相容期含舊址 _AIDocs/_atoms/）→ 'local_realm'（本地範疇，render 收進獨立段，
     保留 R4 印象層指標、避免人在 ~/.claude 找不到被歸走的 atom）；其餘 → 一般行。
-    Failures 與 _atoms 是不同前綴、互斥，分支順序不影響結果。
+    Failures 與本地樹是不同前綴、互斥，分支順序不影響結果。
     """
     if name.startswith("feedback") and is_in_failures_path(rel_path):
         return "feedback_aggregate"
@@ -719,27 +751,27 @@ def is_personal_path(rel_path: str) -> bool:
 
 
 def local_realm_domain(rel_path: str) -> str:
-    """從 _AIDocs/_atoms/<domain>/<slug>.md 抽出 <domain>；非 local 路徑回 ''。
+    """從 memory/_local/<domain>/<slug>.md（或舊址 _AIDocs/_atoms/<domain>/<slug>.md）抽出 <domain>；非 local 路徑回 ''。
 
     缺 domain 段（理論上不應發生，路由一律帶 domain 子夾）→ LOCAL_REALM_DEFAULT_DOMAIN。
     供 sync-memory-index 把 local atom 依範疇分組渲染用。
     """
-    if not is_local_realm_path(rel_path):
+    rest = local_realm_rest(rel_path)
+    if rest is None:
         return ""
-    rest = rel_path[len(LOCAL_ATOMS_REL) + 1:]
     head, _, tail = rest.partition("/")
     return head if (head and tail) else LOCAL_REALM_DEFAULT_DOMAIN
 
 
 def local_realm_path_segments(rel_path: str) -> List[str]:
-    """_AIDocs/_atoms/<a>/<b>/.../<slug>.md → ['a','b',...]（去尾檔名）；非 local → []。
+    """memory/_local/<a>/<b>/.../<slug>.md（或舊址 _AIDocs/_atoms/…）→ ['a','b',...]（去尾檔名）；非 local → []。
 
     扁平 'Tools/slug.md' → ['Tools']；多段 'OS/Windows/WSL/slug.md' → ['OS','Windows','WSL']。
     供階層 catalog 建樹 / Lv1 抽取 / existing_paths 枚舉。
     """
-    if not is_local_realm_path(rel_path):
+    rest = local_realm_rest(rel_path)
+    if rest is None:
         return []
-    rest = rel_path[len(LOCAL_ATOMS_REL) + 1:]
     parts = [p for p in rest.split("/") if p]
     return parts[:-1]  # 去檔名（最後一段）
 
@@ -753,7 +785,7 @@ def local_realm_lv1_root(rel_path: str) -> str:
 def is_cross_project_local(rel_path: str) -> bool:
     """local-realm atom 但 Lv1 根 ∈ CROSS_PROJECT_LOCAL_DOMAINS ⇒ 外部專案仍注入。
 
-    解開「儲存位置（_atoms）綁死注入範圍（僅 ~/.claude）」：清單內範疇 storage 在 _atoms、
+    解開「儲存位置（本地樹）綁死注入範圍（僅 ~/.claude）」：清單內範疇 storage 在本地樹、
     injection 全專案（如 Continuity），對偶 feedback-*。非 local 路徑一律 False。
     """
     if not is_local_realm_path(rel_path):
@@ -787,13 +819,14 @@ def enumerate_local_paths(mem_dir: Optional[Path] = None) -> List[str]:
 
 # ─── 核心層範疇資料夾（memory/<範疇>/…；分類由 index path 推導，與 local realm 同原理）────
 #
-# 兩根：memory/（core，全專案注入；含 Failures 家族 Lv1）與 _AIDocs/_atoms/（local，僅 ~/.claude）。
-# realm 仍由 _AIDocs/_atoms/ 前綴推導（is_local_realm_path 不動）；範疇＝path 在根之後的目錄段。
-REALM_ROOTS = ((CORE_ATOMS_REL, "core"), (LOCAL_ATOMS_REL, "local"))
+# 兩根：memory/（core，全專案注入；含 Failures 家族 Lv1）與 memory/_local/（local，僅資料根底下；相容期含舊址 _AIDocs/_atoms/）。
+# realm 由本地前綴推導（is_local_realm_path）；範疇＝path 在根之後的目錄段。
+# 本地根在 memory 根裡面 → 比對時本地排前面，否則 memory/_local/… 會被判成 core 根。
+REALM_ROOTS = ((LOCAL_ATOMS_REL, "local"), (LEGACY_LOCAL_ATOMS_REL, "local"), (CORE_ATOMS_REL, "core"))
 
 
 def realm_root_for(rel_path: str) -> Optional[str]:
-    """rel_path 所屬的根（'memory' / '_AIDocs/_atoms'）；舊址 _AIDocs/Failures 視為 core 根；皆非 → None。"""
+    """rel_path 所屬的根（'memory/_local' / 舊址 '_AIDocs/_atoms' / 'memory'）；舊址 _AIDocs/Failures 視為 core 根；皆非 → None。"""
     for root, _realm in REALM_ROOTS:
         if rel_path.startswith(root + "/"):
             return root
@@ -812,17 +845,26 @@ def path_segments_under(rel_path: str, root_rel: str) -> List[str]:
 
 
 def core_category_segments(rel_path: str) -> List[str]:
-    """核心層範疇段：memory/<Lv1>/<Lv2>/<slug>.md → ['Lv1','Lv2']；根下散檔 → []。
+    """核心層範疇段：memory/<Lv1>/<Lv2>/<slug>.md → ['Lv1','Lv2']；根下散檔 → []；本地卡（新舊址）→ []。
 
     舊址 _AIDocs/Failures/<slug>.md 視為 ['Failures']（遷移期間 catalog 計數一致）。
+    本地樹 memory/_local/ 在 memory 裡面，但不是核心範疇：不排除會冒出一個叫 '_local' 的核心範疇。
     """
+    if is_local_realm_path(rel_path):
+        return []
     if is_legacy_failures_path(rel_path):
         return [FAILURES_ROOT_NAME] + path_segments_under(rel_path, LEGACY_FAILURES_REL)
     return path_segments_under(rel_path, CORE_ATOMS_REL)
 
 
 def is_flat_core_path(rel_path: str) -> bool:
-    """memory/<slug>.md（根下散檔、無範疇資料夾）⇒ True。範疇資料夾必備的硬規則就看這個。"""
+    """memory/<slug>.md（根下散檔、無範疇資料夾）⇒ True。範疇資料夾必備的硬規則就看這個。
+
+    本地卡（memory/_local/…，相容期含舊址）一律 False：它的範疇段由 core_category_segments 回 []，
+    兩支要一起排除本地，否則每張本地新卡都會被當成 memory 根下的散檔、被建卡後盾擋掉。
+    """
+    if is_local_realm_path(rel_path):
+        return False
     return rel_path.startswith(CORE_ATOMS_REL + "/") and not core_category_segments(rel_path)
 
 
@@ -1240,7 +1282,7 @@ _LEXICON_TOKEN_SPLIT_RE = re.compile(r"[\s\-_/]+")
 
 # 保留標籤 / realm 自名 / 已知外部專案 token：learned 詞庫**絕不收**（exact-match 拒收）。
 # 外部專案知識與系統自身 trigger 標籤 "auto-capture" 曾雙雙被學進
-# 詞庫，drift sweep 據此把外部專案 core atom 搬進根層 _atoms/、把碎片塞進名為 "auto-capture"
+# 詞庫，drift sweep 據此把外部專案 core atom 搬進根層本地樹、把碎片塞進名為 "auto-capture"
 # 的葉夾（trigger 標籤被當分類維度）。三類絕不該成為實例分類詞：
 #   - 系統 trigger 標籤（auto-capture/auto-captured/觸發詞）：extract-worker 預設標籤，非實例詞。
 #   - realm 自名（memdev/world/tools/continuity）：分類『維度』本身，不該回頭當分類『詞』。

@@ -31,7 +31,7 @@ def _staging_dir_for_atom(md_file: Path) -> Path:
     """候選 atom 所屬記憶庫的 _staging/（不看 cwd）。
 
     專案庫（<root>/.claude/memory/ 或舊址 ~/.claude/projects/<slug>/memory/）→ 該庫 _staging；
-    其餘（~/.claude/memory/、_AIDocs/_atoms/、_AIDocs/Failures/）→ 全域 memory/_staging。
+    其餘（~/.claude/memory/ 含 memory/_local/、舊址 _AIDocs/_atoms/、_AIDocs/Failures/）→ 全域 memory/_staging。
     """
     projects_dir = CLAUDE_DIR / "projects"
     for p in md_file.parents:

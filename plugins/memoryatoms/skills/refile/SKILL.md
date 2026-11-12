@@ -1,6 +1,6 @@
 ---
 name: refile
-description: Take any .md file outside _AIDocs/_atoms/, run it through the input guard and the core/config-file guard, propose a filing location with the realm classification engine, then move the file after interactive confirmation and scan for docs that need reference updates. 觸發詞：refile, 歸檔, 手動歸檔, 重新歸位, 歸到應在的地方, 這檔案該放哪, atom 歸類, 移檔歸位, realm 歸檔, 把這個 md 歸位
+description: Take any .md file outside memory/_local/, run it through the input guard and the core/config-file guard, propose a filing location with the realm classification engine, then move the file after interactive confirmation and scan for docs that need reference updates. 觸發詞：refile, 歸檔, 手動歸檔, 重新歸位, 歸到應在的地方, 這檔案該放哪, atom 歸類, 移檔歸位, realm 歸檔, 把這個 md 歸位
 user-invocable: true
 when_to_use: Triggers - refile, file this note, where should this .md go, re-file, move to the atom tree, 觸發詞：refile, 歸檔, 手動歸檔, 重新歸位, 歸到應在的地方, 這檔案該放哪, atom 歸類, 移檔歸位, realm 歸檔, 把這個 md 歸位
 metadata:
@@ -9,7 +9,7 @@ metadata:
 
 # Skill: refile (Pipeline)
 
-> File **any `.md` outside `_AIDocs/_atoms/`** where it belongs: three guards → interactive confirmation → move → doc-sync.
+> File **any `.md` outside `memory/_local/`** where it belongs: three guards → interactive confirmation → move → doc-sync.
 > All deterministic judgments live in [scripts/refile_classify.py](scripts/refile_classify.py). **This file only orchestrates the interaction; never re-judge the guards by eye.**
 
 ## Triggers
@@ -49,7 +49,7 @@ metadata:
 
 | verdict | Action |
 |---------|--------|
-| `already_archived` | Already under `_AIDocs/_atoms/`; report "already archived, no refile needed" and stop |
+| `already_archived` | Already under `memory/_local/` (or the legacy `_AIDocs/_atoms/`, still read until the cards are moved); report "already archived, no refile needed" and stop |
 | `not_found` | Report that the file was not found, ask the user to confirm the path, and stop |
 | `core_file` | **Do not move.** Summarize using `signals` + `index_doc_hits` + the atom's `Related`: "this is a core/config file of the atom memory system, role = X, related subsystems = Y/Z", then offer two choices: ① **abort** ② **escalate to an architecture-level change plan** (enter plan mode via EnterPlanMode). Stop |
 | `classify` | Go to Step 3 (get confirmation first) |

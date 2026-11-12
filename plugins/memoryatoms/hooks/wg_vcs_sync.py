@@ -1,7 +1,7 @@
 """wg_vcs_sync.py — 記憶庫背景上版控（git 精確檔集 commit + push 快照守門；svn --xml add/delete/--depth empty commit）。
 
 分三層：
-  1. 目標集：`collect_sync_targets(cwd, config)` → 根層 memory/ + _AIDocs/_atoms/、專案 .claude/memory/；
+  1. 目標集：`collect_sync_targets(cwd, config)` → 根層 memory/（含本地卡 memory/_local/）+ 相容期的舊本地根 _AIDocs/_atoms/、專案 .claude/memory/；
      每個記憶目錄各自以 `find_vcs_root` 找最近的 VCS 根（巢狀 repo 取最近者），pathspec 轉成相對該根。
   2. 鎖與請求交接：`workflow/vcs-sync/<root-hash>.lock` 靠 OS 互斥（msvcrt.locking / fcntl.flock），檔內 pid
      只給 stop.py 的活鎖判定看；每次請求先持久化成 `<root-hash>.req/<uuid>.json` 再取鎖，取不到就退出。
@@ -67,6 +67,7 @@ from wg_platform import (  # noqa: E402
     no_window_kwargs, background_spawn_kwargs, gui_python, ansi_codepage, fold_path_case,
 )
 from atom_spec import ALL_INDEX_FILES  # lib/（wg_core 已放進 sys.path）
+from atom_locations import LEGACY_LOCAL_ATOMS_REL  # lib/：本地卡舊位置（相容期）
 from sensitive_gate import secret_value_found  # lib/
 import i18n  # lib/：給人看的提示走語言表
 
@@ -77,6 +78,9 @@ LEDGER_DIR = WORKFLOW_DIR / "harvest-ledger"
 DEFAULTS: Dict[str, Any] = {
     "enabled": True,
     "push": True,
+    # memory 已涵蓋本地卡新址 memory/_local/；_AIDocs/_atoms 是相容期的舊本地根——搬卡那筆提交的「刪除」那一半在這個
+    # pathspec 內，才算純記憶提交（背景才會自動提交與拉取）；舊夾整個清空後 git 照樣帶著它（_keep_vanished_legacy_local）。
+    # 所有機器的舊夾都清空後，再與 workflow/config.json、_keep_vanished_legacy_local 一起拿掉
     "root_pathspecs": ["memory", "_AIDocs/_atoms"],
     "project_pathspecs": [".claude/memory"],
     # 根層非記憶但隨 atom 寫入連動的檔（sync_doc_counts 的計數標記）：只進 pathspec、不進 mem_dirs
@@ -171,9 +175,30 @@ def collect_sync_targets(cwd: str, config: Dict[str, Any],
     # 組織層 repo 另收非記憶路徑（週用量截圖）
     org_t = targets.get(org.resolve().as_posix().lower()) if org and org.is_dir() else None
     _add_extra_pathspecs(org_t, vs["org_extra_pathspecs"])
+    root_t = _root_target(targets, base_root)
+    _keep_vanished_legacy_local(root_t, base_root, vs["root_pathspecs"])
     # 根層同理：atom 寫入連動的文件計數標記（TECH.md 等）跟索引一起自動上，否則每寫一顆 atom 留髒檔等人手動 commit
-    _add_extra_pathspecs(_root_target(targets, base_root), vs["root_extra_pathspecs"])
+    _add_extra_pathspecs(root_t, vs["root_extra_pathspecs"])
     return list(targets.values())
+
+
+def _keep_vanished_legacy_local(t: Optional[SyncTarget], base_root: Path, specs: Sequence[str]) -> None:
+    """本地卡舊位置（_AIDocs/_atoms）資料夾整個不見時，仍留在根層 git 目標的 pathspec：搬家（migrate-local、每場收尾
+    搬殘留）本來就要把它清空，上面的迴圈卻只收存在的資料夾——刪除那一半會沒人提交，工作樹留著沒提交的刪除；
+    別台推來的舊位置改動也會被當成非記憶提交而拉不進來（_foreign_commit）。git 不要求路徑存在（同 _add_extra_pathspecs）。
+    只認舊位置這一條：memory/ 或專案 .claude/memory 整個不見多半是誤刪，照舊略過，免得自動提交刪除推給所有人。
+    只跟著已成立的根層目標走（不自己成立目標）、不進 mem_dirs（沒有卡可索引）；svn 對不存在的路徑會報錯，不收。"""
+    if t is None or t.vcs != "git" or LEGACY_LOCAL_ATOMS_REL not in specs:
+        return
+    legacy = Path(base_root) / LEGACY_LOCAL_ATOMS_REL
+    if legacy.is_dir():
+        return   # 還在：上面的迴圈已收
+    try:
+        rel = legacy.resolve().relative_to(t.root).as_posix()
+    except (OSError, ValueError):
+        return
+    if rel not in t.pathspecs:
+        t.pathspecs.append(rel)
 
 
 def _root_target(targets: Dict[str, SyncTarget], base_root: Path) -> Optional[SyncTarget]:

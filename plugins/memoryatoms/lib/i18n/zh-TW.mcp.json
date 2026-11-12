@@ -58,7 +58,7 @@
  "mcp.atom_retire.param_project_cwd": "專案根（scope=shared/personal/role 必填）",
  "mcp.atom_retire.param_reason": "必填：為何退役（寫進 audit／merge history）",
  "mcp.atom_retire.param_role": "scope=role 的角色子夾",
- "mcp.atom_retire.param_scope": "atom 所在層：global=~/.claude/memory/（含 Failures/）；local=~/.claude/_AIDocs/_atoms/；shared/personal/role=專案層（需 project_cwd）；org=組織層（config org_memory 根的 shared，免 project_cwd）",
+ "mcp.atom_retire.param_scope": "atom 所在層：global=~/.claude/memory/（含 Failures/）；local=~/.claude/memory/_local/；shared/personal/role=專案層（需 project_cwd）；org=組織層（config org_memory 根的 shared，免 project_cwd）",
  "mcp.atom_retire.param_user": "scope=personal 的擁有者（預設現用 OS 使用者）",
  "mcp.atom_source.description": "查一張 atom 的來源：Source 指標＋Quote 原句；transcript 還在則回該 uuid 前後各 1 則原文（state=live），否則回 Quote（quote_only），都沒有回出處與『原對話已逾保留期』（unrecoverable）。唯讀，不寫 state、不留 receipt。",
  "mcp.atom_source.param_atom": "atom 名（不含 .md）或絕對路徑（必填）",

@@ -233,6 +233,34 @@ def _attr_block(prefix: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _rules_already_written(cur: str, prefix: str, block: str) -> bool:
+    """既有區塊的規則行和這次要寫的一樣 → 不改寫。標頭說明那一行各版本寫法不同；只為它改寫，
+    每個裝過舊版的 repo 都會多出一筆 .gitattributes 異動，工作樹一髒，同步遇到非記憶的上游提交就不能自動快轉。"""
+    if ATTR_MARK not in cur:
+        return False
+    rules = []
+    for line in cur.partition(ATTR_MARK)[2].split("\n")[1:]:
+        if not line.startswith(prefix + "/"):
+            break
+        rules.append(line)
+    return rules == block.rstrip("\n").split("\n")[1:]
+
+
+def _write_block(ga: Path, cur: str, prefix: str, block: str) -> None:
+    """拿掉舊區塊（標記行＋緊接的 <prefix>/ 規則行）後把新區塊接在檔尾。"""
+    if ATTR_MARK in cur:
+        head, _, rest = cur.partition(ATTR_MARK)
+        rest_lines = rest.split("\n")[1:]
+        while rest_lines and rest_lines[0].startswith(prefix + "/"):
+            rest_lines.pop(0)
+        cur = head + "\n".join(rest_lines)
+    cur = cur.rstrip("\n")
+    new = (cur + "\n\n" if cur else "") + block
+    tmp = ga.with_suffix(".tmp")
+    tmp.write_bytes(new.encode("utf-8"))
+    os.replace(tmp, ga)
+
+
 def write_gitattributes(mem_dir: Path) -> Dict:
     top = _git(mem_dir, "rev-parse", "--show-toplevel")
     if top.returncode != 0:
@@ -244,17 +272,9 @@ def write_gitattributes(mem_dir: Path) -> Dict:
         return {"ok": True, "skipped": t("cli.normalize_eol.ignored", prefix=prefix)}
     ga = root / ".gitattributes"
     cur = ga.read_bytes().decode("utf-8", "replace").replace("\r\n", "\n") if ga.exists() else ""
-    if ATTR_MARK in cur:
-        head, _, rest = cur.partition(ATTR_MARK)
-        rest_lines = rest.split("\n")[1:]
-        while rest_lines and rest_lines[0].startswith(prefix + "/"):
-            rest_lines.pop(0)
-        cur = head + "\n".join(rest_lines)
-    cur = cur.rstrip("\n")
-    new = (cur + "\n\n" if cur else "") + _attr_block(prefix)
-    tmp = ga.with_suffix(".tmp")
-    tmp.write_bytes(new.encode("utf-8"))
-    os.replace(tmp, ga)
+    block = _attr_block(prefix)
+    if not _rules_already_written(cur, prefix, block):
+        _write_block(ga, cur, prefix, block)
     paths = [f"{prefix}/{n}" for n in INDEX_FILES]
     chk = _git(root, "check-attr", "merge", "text", "eol", "--", *paths)
     lines = chk.stdout.decode("utf-8", "replace").replace("\r\n", "\n").strip().split("\n")

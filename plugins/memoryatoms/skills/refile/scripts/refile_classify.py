@@ -37,9 +37,9 @@ from lib.i18n import t  # noqa: E402
 CLAUDE_DIR = claude_data_dir()   # 使用者資料根（WG_CLAUDE_DIR 或 ~/.claude）：要歸檔的文件、索引、config 都在這裡
 
 from lib.atom_locations import (  # noqa: E402
-    GLOBAL_MEMORY_DIR, LOCAL_ATOMS_REL,
+    GLOBAL_MEMORY_DIR, LEGACY_LOCAL_ATOMS_REL, LOCAL_ATOMS_REL,
     classify_realm, enumerate_local_paths, load_learned_lexicon,
-    is_in_failures_path, is_local_realm_path,
+    is_in_failures_path, is_legacy_local_realm_path, is_local_realm_path,
 )
 from lib.atom_index_json import load_atom_index_json  # noqa: E402
 
@@ -149,10 +149,11 @@ def classify(path_arg: str) -> dict:
     basename = p.name
     stem = p.stem
 
-    # 護欄 1：已在 atom 物理區 → 拒（已歸檔）
-    if rel.startswith(LOCAL_ATOMS_REL + "/"):
+    # 護欄 1：已在 atom 物理區 → 拒（已歸檔）；本地樹新位置與相容期舊位置都算
+    if is_local_realm_path(rel):
+        here = LEGACY_LOCAL_ATOMS_REL if is_legacy_local_realm_path(rel) else LOCAL_ATOMS_REL   # 訊息講它實際所在的那一處
         return {"status": "ok", "verdict": "already_archived", "rel": rel,
-                "msg": t("cli.refile_classify.already_archived", dir=LOCAL_ATOMS_REL)}
+                "msg": t("cli.refile_classify.already_archived", dir=here)}
 
     if not p.exists() or not p.is_file():
         return {"status": "ok", "verdict": "not_found", "rel": rel,
@@ -177,8 +178,7 @@ def classify(path_arg: str) -> dict:
     result = {
         "status": "ok", "verdict": "classify", "rel": rel, "basename": basename, "stem": stem,
         "is_indexed_atom": entry is not None,
-        "indexed_realm": ("local" if (entry and entry.get("path", "").startswith(LOCAL_ATOMS_REL + "/"))
-                          else "core") if entry else None,
+        "indexed_realm": ("local" if is_local_realm_path(entry.get("path", "")) else "core") if entry else None,
         "looks_like_atom": _looks_like_atom(text),
         "triggers": triggers,
     }

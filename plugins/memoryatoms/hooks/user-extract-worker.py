@@ -54,7 +54,7 @@ from lib.ollama_extract_core import (
     ack_then_clear,
     SessionBudgetTracker,
 )
-from lib.atom_io import write_atom
+from lib.atom_io import auto_local_enabled, write_atom
 from lib.transcript import last_assistant_text
 from wg_evasion import evaluate_session
 
@@ -413,7 +413,7 @@ def _write_atom_via_mcp(
     # _pending.candidates.md（前綴 [category REJECT|ERROR]）+ stderr 浮訊號，不落 Else。
     domain = None
     realm = None
-    if write_scope == "global":
+    if write_scope == "global" and auto_local_enabled(config):   # 自動歸本地（realm.auto_migrate）關著：不分、詞表缺也不擋，走下面的核心範疇
         # realm 分類（core 全專案注入 / local 只在 ~/.claude 注入）：MCP 寫入鏈在 js 端
         # 會自動分，hook 寫入鏈原本一律落 core、靠 SessionEnd sweep 事後搬——同一顆
         # atom 依寫入路徑落點不同。改成寫前就分，與 MCP 對齊。安全預設 core。

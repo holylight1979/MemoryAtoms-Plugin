@@ -39,7 +39,7 @@ Review this conversation (user corrections, pitfalls hit, decisions settled, fac
 Decide whether the knowledge belongs to **core** or **non-core (local)** - three questions: (1) reusable in 2 or more projects? (2) a system rule, or specific to a single app / tool / environment? (3) stable at the month level, or volatile at the week level?
 
 - **Core** (default): cross-project general knowledge (preferences / decisions / workflows / toolchain / memory-system mechanics) → `atom_write` without realm (default core, lives in `memory/<Lv1>/`, injected into all projects); **`domain` is required** (Lv1 closed list in `memory/_meta/taxonomy.json`).
-- **Non-core (local)**: useful only inside ~/.claude (development of a "specific instance" of the memory system / Guardian, the dashboard's brain-world page, pitfalls of specific external tools) → `atom_write` with `realm=local` + `domain` (World/Tools/MemDev); **still scope=global**, automatically filed under `_AIDocs/_atoms/<domain>/`, injected only when cwd is inside ~/.claude, zero burden on external projects.
+- **Non-core (local)**: useful only inside ~/.claude (development of a "specific instance" of the memory system / Guardian, the dashboard's brain-world page, pitfalls of specific external tools) → `atom_write` with `realm=local` + `domain` (World/Tools/MemDev); **still scope=global**, automatically filed under `memory/_local/<domain>/`, injected only when cwd is inside ~/.claude, zero burden on external projects.
 - Unsure → default core (the safe side; the classifier also defaults safely to core, and the core protection list blocks hard). Mechanism: `skills/refile/scripts/refile_classify.py`.
 - Project-specific rules / decisions → `scope=shared`; about the user personally → `scope=personal`.
 

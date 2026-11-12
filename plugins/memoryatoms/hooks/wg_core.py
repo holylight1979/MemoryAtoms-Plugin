@@ -32,7 +32,7 @@ from degraded import notify as degraded_notify  # noqa: E402  缺詞表、缺設
 from wg_platform import console_python  # noqa: E402
 from harness_text import HOOK_RESIDUE_LINE_RE, strip_harness_blocks, user_typed_text  # noqa: E402,F401  使用者原話規則唯一一份
 from config_local import merge_local, with_defaults  # noqa: E402  config.local.json 蓋上去、插件預設墊底下的規則唯一一份
-from edition import layered_config  # noqa: E402  插件版出廠設定墊底、資料根 config.json 蓋上（分層讀設定唯一一份）
+from edition import PLUGIN, edition, layered_config  # noqa: E402  插件版出廠設定墊底、資料根 config.json 蓋上（分層讀設定唯一一份）；版別判定同出處
 import i18n  # noqa: E402  給人看的提示走語言表
 from token_estimate import estimate_tokens  # noqa: E402  token 估算唯一口徑
 from atom_debug import write as _atom_debug_write, error_message as _atom_debug_message  # noqa: E402  atom-debug 日誌唯一寫法
@@ -521,7 +521,7 @@ def _root_is_declared(cwd: str) -> bool:
 
 
 def _is_under_claude_dir(cwd: str) -> bool:
-    """cwd 是否在 ~/.claude（含本身）之下 — V5+ local-realm 注入閘門用。
+    """cwd 是否在 ~/.claude（資料根，含本身）之下 — 本地卡想得起來的地方之一（local_cards_recalled_at）。
 
     用 resolved parents 比對（非 startswith），避免 `~/.claude-foo` 之類旁系路徑
     被誤判為內部。對拍 server.js:resolveMemDir 的 isUnderClaudeDir（語意一致；
@@ -536,6 +536,40 @@ def _is_under_claude_dir(cwd: str) -> bool:
     except (OSError, ValueError):
         return False
     return c == cd or cd in c.parents
+
+
+# 記憶系統原始碼樹的認法：cwd 往上最近的版控根上，這三個檔同時都在。
+# plugin-bundle.json 是打包插件用的清單，只在原始碼 repo（生產力版、完整版、它們的複本）裡，插件包不帶它（它的 include
+# 沒列自己），所以插件的安裝目錄認不成原始碼樹；另兩個是記憶系統自己的程式，別人的專案剛好有同名清單也湊不齊三個。
+# 這三個檔改名或搬家要一起改這裡（hooks/verify/verify_dev_tree_local_recall.py 會紅：本樹要認得出自己）。
+MEMORY_SOURCE_TREE_MARKERS = ("plugin-bundle.json", "hooks/wg_atoms_pool.py", "lib/atom_locations.py")
+
+
+def in_memory_system_source_tree(cwd: str) -> bool:
+    """cwd 是否在記憶系統的原始碼樹裡（含子目錄）：維護系統程式的地方，例如生產力版 repo 與它的 clone、worktree。
+
+    只看 cwd 往上最近的版控根（.git 目錄或檔、.svn），根上要有 MEMORY_SOURCE_TREE_MARKERS 全部：
+    專案裡夾帶一份系統程式（沒有自己的版控根）不算，不在版控裡的解壓縮原始碼也不算；插件安裝目錄沒有
+    plugin-bundle.json，市集 clone 的根上沒有程式（程式在 plugins/<插件>/ 底下），都認不成。
+    路徑取不到 → False（寧可少想起本地卡，也不把它送進別的專案）。"""
+    if not cwd:
+        return False
+    try:
+        found = find_vcs_root(Path(cwd).resolve())
+        return found is not None and all((found[1] / m).is_file() for m in MEMORY_SOURCE_TREE_MARKERS)
+    except (OSError, ValueError):
+        return False
+
+
+def local_cards_recalled_at(cwd: str) -> bool:
+    """本地卡（realm=local）在這個 cwd 想不想得起來。注入候選池、向量本地層、開場本地目錄指標、收割擋的
+    「記憶系統開發面 → realm=local」提示都問這一支，判法才一致。
+
+    想得起來的地方＝開發記憶系統的地方：資料根底下（含本身），或記憶系統的原始碼樹裡（in_memory_system_source_tree）。
+    插件版只認資料根：插件只出廠記憶本體，插件使用者的行為照舊。"""
+    if _is_under_claude_dir(cwd):
+        return True
+    return edition() != PLUGIN and in_memory_system_source_tree(cwd)
 
 
 # ─── 判層（H9）：只看 cwd 與設定，不讀 transcript、不叫模型 ─────────────────────
@@ -1799,7 +1833,7 @@ def _rebuild_min_atom_index(cwd: str) -> Dict[str, Any]:
     try:
         from wg_atoms import parse_memory_index  # lazy：避免模組層循環 import
         global_atoms = parse_memory_index(MEMORY_DIR)
-        if is_local_realm_path is not None and not _is_under_claude_dir(cwd):
+        if is_local_realm_path is not None and not local_cards_recalled_at(cwd):
             global_atoms = [
                 (n, p, t) for (n, p, t) in global_atoms
                 if not is_local_realm_path(p) or is_cross_project_local(p)

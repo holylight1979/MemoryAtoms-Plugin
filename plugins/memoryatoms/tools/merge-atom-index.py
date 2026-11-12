@@ -687,6 +687,7 @@ def _strip_marker_labels(text: str) -> str:
 
 
 def _path_ok(rel: str) -> bool:
+    # memory/ 已涵蓋本地卡新址 memory/_local/；_AIDocs/_atoms/ 是相容期舊本地根，搬遷期結束前保留。
     return rel.startswith(("memory/", "_AIDocs/_atoms/")) or "/.claude/memory/" in ("/" + rel)
 
 

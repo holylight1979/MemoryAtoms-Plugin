@@ -285,6 +285,9 @@ def handle_session_end(input_data: Dict[str, Any], config: Dict[str, Any]) -> No
     except Exception as e:
         print(f"Over-engineering metrics error: {e}", file=sys.stderr)
 
+    import wg_atoms_local_migrate   # 本地卡舊位置收尾（舊位置有卡才動、有搬才印一行；例外模組自己接住，寫回 state 前跑）
+    wg_atoms_local_migrate.run_session_end(session_id, state)
+
     cwd = state.get("session", {}).get("cwd", "")
     staging_dir = resolve_staging_dir(cwd)
 

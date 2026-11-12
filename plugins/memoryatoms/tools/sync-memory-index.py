@@ -12,7 +12,7 @@ sync-memory-index.py — 從 _atom_index.json 自動生成 memory/MEMORY.md
   （精準度：描述性 H1 > 現有人工描述 > 裸名）。僅作用於一般 atom 列。
 - 保留現有「知識庫查閱」段落（自動偵測 `> **知識庫查閱**：` 標記後內容）
 - **realm 雙輸出**：core atom → `MEMORY.md`（@import，全專案）；
-  本地範疇 atom（path 落 `_AIDocs/_atoms/`）→ 側檔 `_local_catalog.md`，僅核心環境由
+  本地範疇 atom（path 落 `memory/_local/`，相容期也認舊址 `_AIDocs/_atoms/`）→ 側檔 `_local_catalog.md`，僅核心環境由
   SessionStart hook 注入。MEMORY.md 主表末尾僅留一行指標，外部專案零本地負擔。
 
 寫進檔案的固定文字不走語言表，而是照 repo 追蹤的設定 `generated_files.language`（"en"／"zh-TW"，缺＝"en"）從下方 GENERATED_TEXT 選一組：同一個 repo 每台機器一致，多機同步才不會互相洗成不同語言；範疇名與卡名是資料，不翻。兩種語言的表頭讀端都認得。
@@ -23,7 +23,7 @@ sync-memory-index.py — 從 _atom_index.json 自動生成 memory/MEMORY.md
   深入指各層 `_INDEX.md`（單葉直指 atom）。**硬規則：memory/ 根下不容平鋪 atom**——
   `--check` 逐顆印 `flat atom under memory/: <slug>` 並 exit 1、`--write` 拒寫。不設「未分類」表。
 
-per-level `_INDEX.md`：兩根都走（`_AIDocs/_atoms/<階層>/`、`memory/<範疇>/…`），只在
+per-level `_INDEX.md`：本地根與範疇根都走（`memory/_local/<階層>/`、`memory/<範疇>/…`；相容期舊址 `_AIDocs/_atoms/<階層>/` 還有卡才管），只在
 有子層或 atom≥2 的層生成；memory/ 根層（depth-0）永不生成（根索引就是 MEMORY.md）。
 
 依程式語言篩選的跨範疇視圖 `memory/_by_language/_INDEX.md`：卡片不搬檔、一張可屬多個語言；
@@ -68,6 +68,7 @@ from lib.atom_locations import (  # noqa: E402
     FAILURES_REL,
     FAILURES_ROOT_NAME,
     LEGACY_FAILURES_REL,
+    LEGACY_LOCAL_ATOMS_REL,
     LOCAL_ATOMS_REL,
     LOCAL_REALM_DEFAULT_DOMAIN,
     atom_index_row_kind,
@@ -216,7 +217,7 @@ def _classify_rows(rows: List[Tuple[str, str, str]],
     - individual:    一般 global atom 主表行 [(name, caption, rel_path)]
     - feedback_rows: feedback-* [(name, rel_path)]（平鋪模式聚合一行）
     - failures_other: Failures 家族內非 feedback-*（獨立行）[(name, caption, rel_path)]
-    - local_atoms:   path 落 _AIDocs/_atoms/ 的 local atom [(name, caption, rel_path, segments)]
+    - local_atoms:   path 落本地樹（memory/_local/ 或相容期舊址 _AIDocs/_atoms/）的 local atom [(name, caption, rel_path, segments)]
                      （segments=Lv1..Lvn 階層路徑；缺段→[Else]）
 
     保留策展：一般/local atom 的 H1 caption 退化成裸名/空時，沿用 existing_caps 較豐富的描述
@@ -273,7 +274,7 @@ def flat_core_atoms(rows: List[Tuple[str, str, str]]) -> List[str]:
             and not core_category_segments(rel_path)]
 
 
-# ─── 階層樹（兩根共用：memory/<範疇>、_AIDocs/_atoms/<階層>）────────────────────
+# ─── 階層樹（共用：memory/<範疇>、memory/_local/<階層>，相容期舊址 _AIDocs/_atoms/<階層>）────────────────────
 
 
 class _Node:
@@ -347,8 +348,9 @@ GENERATED_TEXT = {
         "language_header": "| Language | Atoms |",
         "description": "Description",
         "local_note": (
-            "> Files live under `_AIDocs/_atoms/<hierarchy path>/`; still indexed in `_atom_index.json` (scope=global). "
-            "**Injected only when cwd is under ~/.claude**, so outside projects carry no cost. Drill down through each level's `_INDEX.md`."),
+            "> Files live under `memory/_local/<hierarchy path>/`; still indexed in `_atom_index.json` (scope=global). "
+            "**Injected only when cwd is under ~/.claude or inside the memory system's source tree**, so outside projects carry no cost. "
+            "Drill down through each level's `_INDEX.md`."),
         "local_header": "| Category root | Atoms | Drill down |",
         "project_note": (
             "> Category directory (auto-generated, do not edit by hand): `atom_write(scope=shared, mode=create)` must be given `domain` → "
@@ -386,8 +388,8 @@ GENERATED_TEXT = {
         "language_header": "| 語言 | atom 數 |",
         "description": "說明",
         "local_note": (
-            "> 物理居 `_AIDocs/_atoms/<階層路徑>/`，索引仍在 `_atom_index.json`（scope=global）；"
-            "**只在 cwd∈~/.claude 時注入**，外部專案零負擔。深層進各層 `_INDEX.md`。"
+            "> 物理居 `memory/_local/<階層路徑>/`，索引仍在 `_atom_index.json`（scope=global）；"
+            "**只在 cwd∈~/.claude 或在記憶系統原始碼樹裡時注入**，外部專案零負擔。深層進各層 `_INDEX.md`。"
             "機制見 [[realm-範疇分區機制-v5]]。"),
         "local_header": "| 範疇根 | atom 數 | 深入 |",
         "project_note": (
@@ -594,6 +596,16 @@ def sync_language_view_file(lang_path: Path, lang_view: str) -> Optional[str]:
     return None
 
 
+def _local_trees(local_atoms) -> List[Tuple[str, "_Node"]]:
+    """本地卡依所在根拆成 [(根相對路徑, 階層樹)]：新址 memory/_local 在前，舊址 _AIDocs/_atoms 只在有卡時才列。"""
+    out: List[Tuple[str, _Node]] = []
+    for root_rel in (LOCAL_ATOMS_REL, LEGACY_LOCAL_ATOMS_REL):
+        group = [a for a in local_atoms if a[2].startswith(root_rel + "/")]
+        if group:
+            out.append((root_rel, _build_tree(group)))
+    return out
+
+
 def render_local_catalog(rows: List[Tuple[str, str, str]],
                          claude_root: Path,
                          existing_caps: dict | None = None) -> str:
@@ -605,7 +617,9 @@ def render_local_catalog(rows: List[Tuple[str, str, str]],
     _ind, _fb, _fo, local_atoms = _classify_rows(rows, claude_root, existing_caps)
     if not local_atoms:
         return ""
-    tree = _build_tree(local_atoms)
+    # 新舊兩個本地根各建一棵樹（相容期兩邊都可能有卡）；目錄列把同名 Lv1 的卡數合計，
+    # 深入指標各根各指自己的 _INDEX（兩根都有時並列）。
+    trees = _local_trees(local_atoms)
     lines = [
         f"# {_gt('local_title')}",
         "",
@@ -614,10 +628,17 @@ def render_local_catalog(rows: List[Tuple[str, str, str]],
         _gt("local_header"),
         "|--------|---------|------|",
     ]
-    for root_name in sorted(tree.children):
-        node = tree.children[root_name]
-        rel_dir = f"{LOCAL_ATOMS_REL}/{root_name}"
-        lines.append(f"| {root_name} | {_subtree_count(node)} | {_drill_target(node, rel_dir)} |")
+    root_names = sorted({n for _rel, tree in trees for n in tree.children})
+    for root_name in root_names:
+        count = 0
+        targets: List[str] = []
+        for root_rel, tree in trees:
+            node = tree.children.get(root_name)
+            if node is None:
+                continue
+            count += _subtree_count(node)
+            targets.append(_drill_target(node, f"{root_rel}/{root_name}"))
+        lines.append(f"| {root_name} | {count} | {' / '.join(targets)} |")
     return "\n".join(lines)
 
 
@@ -825,13 +846,14 @@ def collect_per_level_files(rows: List[Tuple[str, str, str]],
         for cn in sorted(node.children):
             walk(node.children[cn], root_rel, segs + [cn])
 
-    walk(_build_tree(local_atoms), LOCAL_ATOMS_REL, [])
+    for local_root_rel, local_tree in _local_trees(local_atoms):   # 舊址沒卡就不產它的 _INDEX.md
+        walk(local_tree, local_root_rel, [])
     walk(_build_tree(core_atoms), CORE_ATOMS_REL, [])
     return out
 
 
 def existing_index_files(claude_root: Path, memory_dir: Path) -> Set[Path]:
-    """磁碟現存、由本工具管轄的 _INDEX.md：_AIDocs/_atoms/** ∪ memory/<範疇>/**。
+    """磁碟現存、由本工具管轄的 _INDEX.md：memory/_local/** ∪ memory/<範疇>/** ∪（舊本地根還有卡時）_AIDocs/_atoms/**。
 
     只掃 iter_realm_category_dirs 認可的範疇資料夾——`memory/_reference/**`、手寫的
     `_AIDocs/Failures/_INDEX.md` 等永不被視為 stale。
@@ -848,6 +870,10 @@ def existing_index_files(claude_root: Path, memory_dir: Path) -> Set[Path]:
     local_atoms_dir = claude_root / LOCAL_ATOMS_REL
     if local_atoms_dir.is_dir():
         found |= _managed(local_atoms_dir)
+    # 相容期舊本地根：還有卡才管（卡搬空後留下的舊 _INDEX.md 由搬遷工具清，這裡不當 stale 刪）
+    legacy_dir = claude_root / LEGACY_LOCAL_ATOMS_REL
+    if legacy_dir.is_dir() and any(p.name != "_INDEX.md" for p in legacy_dir.rglob("*.md")):
+        found |= _managed(legacy_dir)
     for cat_dir in iter_realm_category_dirs(memory_dir):
         found |= _managed(cat_dir)
     return found

@@ -301,7 +301,7 @@ async function toolAtomWrite(id, args) {
       // 缺段／Depends）照做；「記住」與 skip_gate 都不等於可以把個案敘事整坨塞進 atom。
       // 去重只比「寫入者能 append 到」的層：global + ~/.claude 本地 atom + 當前專案
       // 自己的 shared／role／personal。不限層會撞到別的專案、別人 personal 的 atom。
-      const gateLayers = dedupLayersFor(isOrg ? "org" : scope, baseDir, { role, user, personalGlobal: !!loc.personal_global });
+      const gateLayers = dedupLayersFor(isOrg ? "org" : scope, baseDir, { role, user, personalGlobal: !!loc.personal_global, localLayer: loc.dedupe_local !== false });   // dedupe_local 由 py 判；舊 py 沒這欄＝照舊比本地層
       const gateResult = await execWriteGate(knowledge.join("\n"), confidence, gateLayers, title,
         { mode: "create", actions, depends, kind_hint, skip_gate: !!skip_gate, dedupe });   // title：指標卡去重門檻提高
       if (gateResult.need_declaration || (gateResult.action === "update" && gateResult.dedup_match)) {
@@ -659,7 +659,7 @@ async function toolAtomWrite(id, args) {
 // Locate <atom_name>.md anywhere under memDir; needed because feedback/ etc.
 // are valid atom subdirs (mirrors lib/atom_spec.SKIP_DIRS exclusions).
 /** 依 atom 名定位既有檔（promote / edit_meta 用）：全交 py locate（global 三址：memory/、
- *  memory/Failures/、_AIDocs/_atoms/；專案層依 scope 子層）。scope=project（舊語意＝
+ *  memory/Failures/、memory/_local/（相容期含舊址 _AIDocs/_atoms/）；專案層依 scope 子層）。scope=project（舊語意＝
  *  整個專案 memory 根）依序試 shared → personal(現用者) → role(若給)，不悄悄跨層。
  *  回 {path|null, error?}。 */
 async function locateByName(atomName, scope, projectCwd, { role, user } = {}) {

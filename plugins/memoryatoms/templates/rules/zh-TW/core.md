@@ -25,7 +25,7 @@
 ## 記憶
 - 使用者說「初始化原子記憶庫」或開場出現 `[Guardian:ProjectMemory]` → 跑記憶系統的 `tools/init-project-memory.py --cwd <專案根>`（`[Guardian:ProjectMemory]` 提示行會印完整指令），不自己手建目錄。
 - 寫入目前走 atom_write MCP（自動驗證去重索引），禁直接 Edit atom .md；已記錄事實直接引用；不寫臨時嘗試/未確認猜測。**新 atom 目前以 [臨] 起跳**（系統拒收新建 [固]/[觀]），晉升靠使用或 append。注入的卡明顯救了你一次或把你帶錯 → `atom_feedback(atom_name, verdict=helpful|misleading)` 投一票（沒真的用到的卡不投）。
-- **Realm**：跨專案通用 → `memory/<範疇>/`（失敗家族 `memory/Failures/<主題>/`）；只在 ~/.claude 內有用 → `realm=local`（`_AIDocs/_atoms/`）。判定三問：① 可重用 ≥2 個專案？② 系統規則，還是特定 app／工具／環境的範疇？③ 月級還是週級有效期？三題偏前者 → core，偏後者 → local；拿不準回 core（[[realm判core還是local-問換一個不用記憶系統的專案還用不用得上-例子取自記憶系統不算local-拿不準回core]]）。
+- **Realm**：跨專案通用 → `memory/<範疇>/`（失敗家族 `memory/Failures/<主題>/`）；只在 ~/.claude 內有用 → `realm=local`（`memory/_local/`）。判定三問：① 可重用 ≥2 個專案？② 系統規則，還是特定 app／工具／環境的範疇？③ 月級還是週級有效期？三題偏前者 → core，偏後者 → local；拿不準回 core（[[realm判core還是local-問換一個不用記憶系統的專案還用不用得上-例子取自記憶系統不算local-拿不準回core]]）。
 - **Scope**（問「遷就專案還是遷就人？」）：專案的規則／決策 → `shared`；只關於這個人 → `personal`；本人跨專案偏好 → `personal, cross_project=true`；全組織所有專案都該知道 → `org`。
 - **個人隱私敏感資訊放 secret**（密碼、token、私鑰、憑證、個資、內網位址、任何不想公開的驗證或隱私內容）：`atom_write` 帶 `secret=true`，落 `memory/personal/<user>/secret/`——不進版控、不送向量、只給本人、觸發詞照常注入。其他個人卡（工作偏好）照常進版控，不必躲。值本身別寫進卡，只寫放在哪。寫入閘碰到相關字眼會要你判斷：只是一般技術知識就帶 `not_sensitive=<理由>`；判不準當敏感（放 secret 之後搬出來很容易，公開了收不回）。**一張卡部分隱私、部分不是 → 拆成兩張**，隱私那半才進 secret；寫入閘會擋整張沒隱私字眼、或只有部分行命中的 secret 卡，整張確實都該藏才帶 `secret_reason=<理由>`。已經寫錯地方的卡用 `atom_move` 搬進去（或搬出來）。
 - create 必給 `domain`（Lv1 閉合清單 `memory/_meta/taxonomy.json`），不確定落點先 `dry_run`；分不出範疇的知識不寫。

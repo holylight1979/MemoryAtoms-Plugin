@@ -66,6 +66,8 @@ SHARED_DIR_NAME = "shared"                    # 專案記憶 shared scope 子樹
 PERSONAL_DIR_NAME = "personal"                # personal scope 子樹（含 role.md 宣告檔）
 ROLES_DIR_NAME = "roles"                      # role scope 子樹
 WISDOM_DIR_NAME = "wisdom"                    # Wisdom Engine 設計文件（DESIGN.md），非 atom
+LOCAL_DIR_NAME = "_local"                     # 本地範疇（realm=local）的卡：memory/_local/<分類>/，只在資料根底下或記憶系統原始碼樹裡工作時才想起；
+                                              # 從 memory/ 往下掃一律跳過，由本地根自己掃（lib/atom_locations.atom_search_roots）
 
 # 衍生物：可從 atom 檔重建、不進版控（lib/vcs_ignore 自動設 ignore）
 DERIVED_FILES = (ATOM_INDEX_JSON, ATOM_INDEX)
@@ -77,10 +79,11 @@ SCOPE_DIR_NAMES = (SHARED_DIR_NAME, ROLES_DIR_NAME, PERSONAL_DIR_NAME)
 # ─── Constants（單一規則來源） ───────────────────────────────────────────────
 
 # 子目錄跳過清單（rglob 掃描時用）；feedback/ 是行為 atom，必掃
+# LOCAL_DIR_NAME：以 memory/ 為根看不到本地卡（本地根另掃），否則同一張卡會被兩個根各算一次、被當成核心卡
 SKIP_DIRS = frozenset({
     META_DIR_NAME, REFERENCE_DIR_NAME, STAGING_DIR_NAME, VECTORDB_DIR_NAME, DISTANT_DIR_NAME,
     EPISODIC_DIR_NAME, TEMPLATES_DIR_NAME, PERSONAL_DIR_NAME, WISDOM_DIR_NAME, PENDING_REVIEW_DIR_NAME,
-    REJECTED_DIR_NAME, DRAFTS_DIR_NAME, ARCHIVED_DIR_NAME,
+    REJECTED_DIR_NAME, DRAFTS_DIR_NAME, ARCHIVED_DIR_NAME, LOCAL_DIR_NAME,
 })
 
 # 系統檔前綴（檔名等級跳過）

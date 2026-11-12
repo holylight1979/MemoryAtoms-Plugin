@@ -87,8 +87,8 @@ def parse_memory_index(root: Path) -> dict[str, str]:
 def find_atoms(root: Path) -> dict[str, Path]:
     """yield {stem: path} for all atom .md.
 
-    root 為全域 memory 時委派 lib.atom_locations 多根掃描（memory/ 含 memory/Failures/，
-    加舊址 _AIDocs/Failures/ 與 _AIDocs/_atoms/，不存在的根自動略過）。
+    root 為全域 memory 時委派 lib.atom_locations 多根掃描（memory/ 含 memory/Failures/，加本地根 memory/_local/、
+    舊址 _AIDocs/Failures/ 與相容期的舊本地根 _AIDocs/_atoms/，不存在的根自動略過）。
     其他 root 維持單根 rglob + is_atom_file。
     """
     atoms: dict[str, Path] = {}
@@ -775,7 +775,7 @@ def full_report(atoms: dict[str, Path], aliases: dict[str, str] | None = None,
         fm = parse_frontmatter(path)
         acc = read_access(path)  # 計數欄居 sidecar <atom>.access.json
         related = parse_related(fm)
-        # atom 可居 memory/ 樹外（舊址 _AIDocs/Failures/、_AIDocs/_atoms/）→ 退相對資料根計算
+        # atom 可居 memory/ 樹外（舊址 _AIDocs/Failures/、相容期的舊本地根 _AIDocs/_atoms/；本地根 memory/_local/ 在樹內）→ 退相對資料根計算
         try:
             file_rel = str(path.relative_to(MEMORY_ROOT))
         except ValueError:
@@ -975,8 +975,8 @@ def main():
     # scanning global, since MEMORY_ROOT will be global and project not in extras).
     try:
         if MEMORY_ROOT.resolve() != GLOBAL_MEMORY_ROOT.resolve():
-            # 全域 atom 不只居 memory/（含 memory/Failures/），亦含舊址 _AIDocs/Failures/ 與
-            # _AIDocs/_atoms/（local realm，可深層子目錄如 Tools/.../dotnet/）。
+            # 全域 atom 不只居 memory/（含 memory/Failures/），亦含本地根 memory/_local/（在 memory/ 底下但另列成根）、
+            # 舊址 _AIDocs/Failures/ 與相容期的舊本地根 _AIDocs/_atoms/（local realm，可深層子目錄如 Tools/.../dotnet/）。
             # 只放 global memory 會讓專案 atom 對這些他層 atom 的 up-ref 全被誤報 broken。
             # 用 atom_search_roots() 涵蓋全部根（existing dirs only），與 find_atoms 全域掃描範圍對齊；
             # 真正不存在的 ref（任一根都找不到）仍正確回報。

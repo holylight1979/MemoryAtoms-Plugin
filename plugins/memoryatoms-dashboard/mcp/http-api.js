@@ -466,26 +466,34 @@ function apiProjects(req, res) {
 
 // --- Atom index path helpers（純函式，供 apiAtoms / apiProjects 與驗證腳本共用） ---
 // index 的 path 是相對 CLAUDE_DIR 的 posix 路徑，例：
-//   memory/decisions.md · memory/Failures/<主題>/x.md · _AIDocs/Failures/x.md · _AIDocs/_atoms/<domain>/x.md
+//   memory/decisions.md · memory/Failures/<主題>/x.md · _AIDocs/Failures/x.md · memory/_local/<domain>/x.md
+//   （本地卡新址 memory/_local/；相容期舊址 _AIDocs/_atoms/<domain>/x.md 也認）
+
+// 本地範疇的路徑開頭（新址 + 相容期舊址）；判斷要排在 memory/ 之前，否則新址的本地卡會被當 global/core
+const LOCAL_ATOM_PREFIXES = ["memory/_local/", "_AIDocs/_atoms/"];
+function isLocalRelPath(r) {
+  return LOCAL_ATOM_PREFIXES.some((p) => r.startsWith(p));
+}
 
 function normalizeRelPath(rel) {
   return String(rel || "").replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
-// dashboard 分層：failures（兩處 Failures 樹）/ local（本地範疇 _AIDocs/_atoms）/ global（其餘）
+// dashboard 分層：local（本地範疇 memory/_local，相容期含 _AIDocs/_atoms）/ failures（兩處 Failures 樹）/ global（其餘）
 function layerFromRelPath(rel) {
   const r = normalizeRelPath(rel);
+  if (isLocalRelPath(r)) return "local";
   if (r.startsWith("memory/Failures/") || r.startsWith("_AIDocs/Failures/")) return "failures";
-  if (r.startsWith("_AIDocs/_atoms/")) return "local";
   return "global";
 }
 
-// 範疇段：去掉根層前綴（memory/ 或 _AIDocs/_atoms/）與檔名後剩下的目錄段。
+// 範疇段：去掉根層前綴（memory/、memory/_local/ 或相容期的 _AIDocs/_atoms/）與檔名後剩下的目錄段。
 //   memory/x.md → []            memory/a/b/x.md → ["a","b"]
-//   _AIDocs/Failures/x.md → ["Failures"]   _AIDocs/_atoms/a/b/x.md → ["a","b"]
+//   _AIDocs/Failures/x.md → ["Failures"]   memory/_local/a/b/x.md → ["a","b"]   _AIDocs/_atoms/a/b/x.md → ["a","b"]
 function categorySegmentsFromRelPath(rel) {
   const parts = normalizeRelPath(rel).split("/").filter(Boolean);
   parts.pop();  // 檔名
+  if (parts[0] === "memory" && parts[1] === "_local") return parts.slice(2);
   if (parts[0] === "memory") return parts.slice(1);
   if (parts[0] === "_AIDocs") return parts[1] === "_atoms" ? parts.slice(2) : parts.slice(1);
   return parts;
@@ -493,7 +501,7 @@ function categorySegmentsFromRelPath(rel) {
 
 // 注入範疇：本地（僅 ~/.claude 內注入）vs 核心（全專案注入）
 function realmFromRelPath(rel) {
-  return normalizeRelPath(rel).startsWith("_AIDocs/_atoms/") ? "local" : "core";
+  return isLocalRelPath(normalizeRelPath(rel)) ? "local" : "core";
 }
 
 // 本機私人卡的登記（memory/personal/_personal_index.json，不進版控）；沒有或壞掉回空陣列
@@ -571,7 +579,7 @@ function parseAtomFile(filePath, fileName, layerLabel, defaultScope) {
 }
 
 // 全部 atom 清單：global 層以 memory/_atom_index.json 為真相（含 memory/<範疇>/…、
-// memory/Failures/…、_AIDocs/Failures/…、_AIDocs/_atoms/…），專案層照舊掃 registry / projects/。
+// memory/Failures/…、_AIDocs/Failures/…、memory/_local/…、相容期的 _AIDocs/_atoms/…），專案層照舊掃 registry / projects/。
 function apiAtoms(req, res) {
   const atoms = [];
   const seenAtomFiles = new Set();

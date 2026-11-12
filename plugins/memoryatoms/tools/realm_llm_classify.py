@@ -6,7 +6,7 @@
 
 回傳 realm ∈ {local, core, unsure, error}：
   - error  ＝基礎設施失敗（連不到 backend / 空回應）→ caller **defer 留原地**（不誤降級）。
-  - unsure ＝LLM 跑了但判不出 / 低信心 → caller 落 _AIDocs/_atoms/Else（catch-all）。
+  - unsure ＝LLM 跑了但判不出 / 低信心 → caller 落 memory/_local/Else（catch-all）。
   - core   ＝LLM 確信跨專案核心 → caller 留 core。
   - local  ＝LLM 判本地範疇 → caller 搬 domain_path（已 canon）。
 

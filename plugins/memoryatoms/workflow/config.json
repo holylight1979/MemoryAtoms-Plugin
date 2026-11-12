@@ -284,7 +284,8 @@
     "_comment": "Memory self-healing: backend=ollama runs locally, free, one at a time; cloud + max_concurrent>1 allows parallel runs in the cloud (needs an adapter)."
   },
   "realm": {
-    "auto_migrate": true,
+    "_doc": "auto_migrate: put cards into the local realm automatically (a global card written without realm, a user decision extracted while working in the data folder, and the SessionEnd sweep, all judged by memory/_meta/realm-lexicon.json). Local cards are recalled only when the working folder is inside the data folder, so for most users an automatic move hides the card. false = only an explicit realm=local, tools/atom-set-realm.py or refile puts a card there, and the write gate's duplicate check skips the local layer unless the new card itself goes there. Only an explicit true turns it on; a missing key counts as false.",
+    "auto_migrate": false,
     "llm_fallback": {
       "enabled": false,
       "max_per_session": 5,

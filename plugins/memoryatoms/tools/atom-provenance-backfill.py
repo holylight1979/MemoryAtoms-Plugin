@@ -47,6 +47,7 @@ for _p in (str(CODE_DIR), str(CODE_DIR / "hooks")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from lib.atom_locations import LEGACY_LOCAL_ATOMS_REL  # noqa: E402
 from lib.atom_spec import (  # noqa: E402
     DISTANT_DIR_NAME, EPISODIC_DIR_NAME, META_DIR_NAME, REFERENCE_DIR_NAME, STAGING_DIR_NAME,
     TEMPLATES_DIR_NAME, VECTORDB_DIR_NAME, WISDOM_DIR_NAME,
@@ -286,9 +287,10 @@ def _iter_md(root: Path) -> Iterable[Path]:
 def collect_atoms(layer: str = "all") -> List[Tuple[str, Path]]:
     out: List[Tuple[str, Path]] = []
     if layer in ("root", "all"):
+        # 本地卡新址（memory/_local/）在 memory/ 底下，這裡已涵蓋；aidocs 層只掛相容期的舊本地根（在 memory/ 之外，不重複）
         out += [("root", p) for p in _iter_md(CLAUDE_DIR / "memory")]
     if layer in ("aidocs", "all"):
-        out += [("aidocs", p) for p in _iter_md(CLAUDE_DIR / "_AIDocs" / "_atoms")]
+        out += [("aidocs", p) for p in _iter_md(CLAUDE_DIR / LEGACY_LOCAL_ATOMS_REL)]
     if layer in ("project", "all"):
         try:
             import wg_core

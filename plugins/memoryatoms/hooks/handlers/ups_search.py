@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from wg_core import (
     MEMORY_DIR, MEMORY_INDEX, WORKFLOW_DIR,
-    discover_all_project_memory_dirs, _is_under_claude_dir,
+    discover_all_project_memory_dirs, local_cards_recalled_at,
     _atom_debug_log, _atom_debug_error, append_guard_log, cwd_to_project_slug, resolve_staging_dir,
 )
 import i18n  # lib/（wg_core 已放進 sys.path）：給人看的提示走語言表
@@ -406,7 +406,7 @@ def collect_matched_atoms(
     _org_layers = [f"shared:{cwd_to_project_slug(str(Path(org_base_str).parent))}"] if org_base_str else None
     _vis_layers = visible_vector_layers(
         atom_index.get("project_slug", ""), _v4_user, _v4_roles,
-        include_local=bool(_sess_cwd) and _is_under_claude_dir(_sess_cwd),
+        include_local=bool(_sess_cwd) and local_cards_recalled_at(_sess_cwd),   # 本地層：和候選池同一支判法
         extra_layers=_org_layers,
     )
     # 向量什麼時候問：global_layer 不是 bm25（出廠 vector）→ 每句都問，涵蓋全域層與專案層。
