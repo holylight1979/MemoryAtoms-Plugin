@@ -67,6 +67,31 @@ NOISE_LINE_PATTERNS = [
 ]
 
 
+def use_memory_root(root: Path) -> bool:
+    """Switch the scan root to ROOT. atom-heal calls this too, so both agree on which refs count as valid.
+
+    Returns True when ROOT is a layer other than the global root (a project layer).
+    Auto-enables cross-layer ref resolution when scanning a non-global root:
+    project-layer atoms may legitimately reference global atoms (up-ref).
+    Does NOT affect down-ref detection (global→project refs still flagged when
+    scanning global, since MEMORY_ROOT will be global and project not in extras).
+    """
+    global MEMORY_ROOT, EXTRA_SCAN_ROOTS
+    MEMORY_ROOT = root
+    try:
+        other_layer = root.resolve() != GLOBAL_MEMORY_ROOT.resolve()
+    except OSError:
+        return False
+    if other_layer:
+        # 全域 atom 不只居 memory/（含 memory/Failures/），亦含本地根 memory/_local/（在 memory/ 底下但另列成根）、
+        # 舊址 _AIDocs/Failures/ 與相容期的舊本地根 _AIDocs/_atoms/（local realm，可深層子目錄如 Tools/.../dotnet/）。
+        # 只放 global memory 會讓專案 atom 對這些他層 atom 的 up-ref 全被誤報 broken。
+        # 用 atom_search_roots() 涵蓋全部根（existing dirs only），與 find_atoms 全域掃描範圍對齊；
+        # 真正不存在的 ref（任一根都找不到）仍正確回報。
+        EXTRA_SCAN_ROOTS = [r for r in atom_search_roots() if r.is_dir()]
+    return other_layer
+
+
 def parse_memory_index(root: Path) -> dict[str, str]:
     """Parse MEMORY.md to build alias→stem mapping (e.g. spec→SPEC_Atomic_Memory_System)."""
     index_path = root / "MEMORY.md"
@@ -961,28 +986,12 @@ def main():
     parser.add_argument("--memory-root", type=str, default=None, help="Override memory root path")
     args = parser.parse_args()
 
-    global MEMORY_ROOT, EXTRA_SCAN_ROOTS
     if args.memory_root:
-        MEMORY_ROOT = Path(args.memory_root)
+        use_memory_root(Path(args.memory_root))
 
     if not MEMORY_ROOT.exists():
         print(f"Error: {MEMORY_ROOT} does not exist", file=sys.stderr)
         sys.exit(1)
-
-    # Auto-enable cross-layer ref resolution when scanning a non-global root:
-    # project-layer atoms may legitimately reference global atoms (up-ref).
-    # Does NOT affect down-ref detection (global→project refs still flagged when
-    # scanning global, since MEMORY_ROOT will be global and project not in extras).
-    try:
-        if MEMORY_ROOT.resolve() != GLOBAL_MEMORY_ROOT.resolve():
-            # 全域 atom 不只居 memory/（含 memory/Failures/），亦含本地根 memory/_local/（在 memory/ 底下但另列成根）、
-            # 舊址 _AIDocs/Failures/ 與相容期的舊本地根 _AIDocs/_atoms/（local realm，可深層子目錄如 Tools/.../dotnet/）。
-            # 只放 global memory 會讓專案 atom 對這些他層 atom 的 up-ref 全被誤報 broken。
-            # 用 atom_search_roots() 涵蓋全部根（existing dirs only），與 find_atoms 全域掃描範圍對齊；
-            # 真正不存在的 ref（任一根都找不到）仍正確回報。
-            EXTRA_SCAN_ROOTS = [r for r in atom_search_roots() if r.is_dir()]
-    except OSError:
-        pass
 
     atoms = find_atoms(MEMORY_ROOT)
     mojibake = mojibake_names(MEMORY_ROOT)

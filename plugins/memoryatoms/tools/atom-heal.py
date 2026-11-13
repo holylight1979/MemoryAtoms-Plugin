@@ -16,8 +16,9 @@
   tools/ollama_client.get_client      本地 LLM 判斷（預設 backend；雲端為選配）
 
 用法：
-  python atom-heal.py --atom <name> [--apply] [--backend ollama|cloud|none] [--json]
+  python atom-heal.py --atom <name> [--apply] [--backend ollama|cloud|none] [--json] [--memory-root <dir>]
     無 --apply＝dry-run（只診斷分級 + L2 出提案，不寫檔）
+    --memory-root 修專案層的卡（給 <專案>/.claude/memory）；不給就修全域的卡
 """
 import sys, io, json, re, argparse, difflib, importlib.util
 from datetime import datetime
@@ -41,7 +42,6 @@ MEMORY = claude_data_dir() / "memory"                  # 使用者資料根（WG
 from lib.atom_io import edit_metadata                  # noqa: E402
 from lib.atom_spec import validate_atom_content        # noqa: E402
 from lib.sensitive_gate import is_secret_path          # noqa: E402
-from lib.atom_locations import LEGACY_FAILURES_DIR     # noqa: E402  舊址 _AIDocs/Failures/（遷移期讀端相容）
 
 # atom-health-check.py 檔名含連字號、無法直接 import → importlib 載入，重用其偵測/解析函式
 _spec = importlib.util.spec_from_file_location("atom_health_check", TOOLS / "atom-health-check.py")
@@ -50,20 +50,6 @@ _spec.loader.exec_module(ahc)
 
 
 # ── 共用小工具 ─────────────────────────────────────────────────────────────
-def atom_file(name):
-    """找出 atom 的 .md 路徑：memory/ 遞迴（含 memory/Failures/<主題>/，跳過 _ 前綴目錄），
-    再退舊址 _AIDocs/Failures/（尚未遷入的 feedback-*）。"""
-    if not name:
-        return None
-    for p in MEMORY.rglob(f"{name}.md"):
-        if not any(part.startswith("_") for part in p.relative_to(MEMORY).parts[:-1]):
-            return p
-    if LEGACY_FAILURES_DIR.is_dir():
-        for p in LEGACY_FAILURES_DIR.rglob(f"{name}.md"):
-            return p
-    return None
-
-
 def related_of(path):
     """讀該 atom 目前的 Related 清單（重用 ahc 的解析，與偵測同源）。"""
     try:
@@ -77,10 +63,10 @@ def scan(name, atoms, aliases):
     return ahc.single_atom_report(name, atoms, aliases)
 
 
-def classify(report):
+def classify(report, atoms):
     broken = report.get("broken_refs") or []
     stale = report.get("stale_atoms") or []
-    path = atom_file(report.get("atom"))
+    path = atoms.get(report.get("atom"))                # 卡的檔案位置取自掃描結果（含本地根 memory/_local/）
     fmt_err = validate_atom_content(path.read_text(encoding="utf-8")) if path and path.exists() else None
     if broken or fmt_err:
         return "L2", fmt_err
@@ -136,13 +122,15 @@ def _propose(name, content, bad_ref, candidates, backend):
     return {"action": "needs_human", "target": None, "reason": t("cli.atom_heal.backend_disabled", backend=backend)}
 
 
-def heal_L2(name, report, atoms, aliases, apply, backend):
+def heal_L2(name, report, atoms, aliases, apply, backend, upper=None):
+    """atoms＝正在修的那一層的卡；upper＝全域的卡，修專案層時才給，只當死連結改接的對象。"""
     broken = report.get("broken_refs") or []
-    path = atom_file(name)
+    path = atoms.get(name)
+    targets = {**(upper or {}), **atoms}
     content = path.read_text(encoding="utf-8") if path else ""
     fmt_err = validate_atom_content(content) if content else t("cli.atom_heal.atom_file_missing")
     # 別的卡不接到 secret 卡：寫進 Related 的卡名會隨 repo 外流；secret 卡自己要接什麼都行
-    candidates = sorted(n for n, p in atoms.items() if is_secret_path(path) or not is_secret_path(p))
+    candidates = sorted(n for n, p in targets.items() if is_secret_path(path) or not is_secret_path(p))
     related = related_of(path) if path else []
     new_related = list(related)
     proposals, needs_human = [], False
@@ -151,7 +139,7 @@ def heal_L2(name, report, atoms, aliases, apply, backend):
         bad = b["missing_ref"]
         prop = _propose(name, content, bad, candidates, backend)
         proposals.append({"missing_ref": bad, **prop})
-        if prop["action"] == "repoint" and prop.get("target") in atoms:
+        if prop["action"] == "repoint" and prop.get("target") in targets:
             new_related = [prop["target"] if x == bad else x for x in new_related]
         elif prop["action"] == "remove":
             new_related = [x for x in new_related if x != bad]
@@ -188,15 +176,21 @@ def heal_L3(name, report):
             "stale": report.get("stale_atoms") or [], "note": t("cli.atom_heal.stale_note")}
 
 
-def write_heal_review(name, result):
-    """修不好 → 寫 _heal_review 診斷卡（JSON、非 atom 格式）+ 審計 append _merge_history.log。"""
+def write_heal_review(name, result, memory_root=None):
+    """修不好 → 寫 _heal_review 診斷卡（JSON、非 atom 格式）+ 審計 append _merge_history.log。
+
+    診斷卡一律放資料根的 memory/_heal_review/（/heal-review 只看這裡）；專案層的卡多記 memory_root，
+    heal-review 重掃時才對得回同一個記憶目錄。"""
     review_dir = MEMORY / "_heal_review"
     review_dir.mkdir(parents=True, exist_ok=True)
     card = {"atom": name, "created_at": datetime.now().isoformat(), **result}
+    if memory_root:
+        card["memory_root"] = memory_root
+    layer = "project" if memory_root else "global"
     (review_dir / f"{name}.json").write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
     try:
         with open(MEMORY / "_merge_history.log", "a", encoding="utf-8", newline="\n") as f:
-            f.write(f"{datetime.now().isoformat()}\theal_failed\t{name}\tglobal\t{HEAL_SOURCE}\t{result.get('action', '')}\n")
+            f.write(f"{datetime.now().isoformat()}\theal_failed\t{name}\t{layer}\t{HEAL_SOURCE}\t{result.get('action', '')}\n")
     except Exception:
         pass
     return str(review_dir / f"{name}.json")
@@ -210,8 +204,18 @@ def main():
     ap.add_argument("--backend", default="ollama", choices=["ollama", "cloud", "none"],
                     help=t("cli.atom_heal.backend"))
     ap.add_argument("--json", action="store_true", help=t("cli.atom_heal.json"))
+    ap.add_argument("--memory-root", default=None, help=t("cli.atom_heal.memory_root"))
     a = ap.parse_args()
 
+    memory_root, upper = None, None                    # 預設修全域的卡
+    if a.memory_root:
+        root = Path(a.memory_root)
+        if not root.is_dir():
+            print(t("cli.atom_heal.memory_root_missing", path=a.memory_root), file=sys.stderr)
+            sys.exit(1)
+        if ahc.use_memory_root(root):                  # 專案層：往全域卡的引用照樣算有效，不會被當死連結拿去修
+            memory_root = str(root.resolve())
+            upper = ahc.find_atoms(ahc.GLOBAL_MEMORY_ROOT)   # 全域的卡也是改接候選；重掃只掃這一層
     atoms = ahc.find_atoms(ahc.MEMORY_ROOT)
     aliases = ahc.parse_memory_index(ahc.MEMORY_ROOT)
     report = scan(a.atom, atoms, aliases)
@@ -220,12 +224,12 @@ def main():
         out = {"atom": a.atom, "level": "missing", "action": "none",
                "fixed": False, "needs_human": True, "reason": t("cli.atom_heal.atom_not_found")}
     else:
-        level, fmt_err = classify(report)
+        level, fmt_err = classify(report, atoms)
         if level == "L2" and a.auto:
             out = {"level": "L2", "action": "needs_manual", "fixed": False, "needs_human": False,
                    "note": t("cli.atom_heal.l2_manual_note"), "broken_refs": report.get("broken_refs")}
         elif level == "L2":
-            out = heal_L2(a.atom, report, atoms, aliases, a.apply, a.backend)
+            out = heal_L2(a.atom, report, atoms, aliases, a.apply, a.backend, upper)
         elif level == "L3":
             out = heal_L3(a.atom, report)
         else:
@@ -235,7 +239,7 @@ def main():
         out["backend"] = a.backend
         # 修不好（驗證不過）→ 寫 _heal_review 退人工審查（僅 L2 實修失敗）
         if a.apply and out.get("needs_human") and out.get("level") == "L2":
-            out["heal_review_card"] = write_heal_review(a.atom, out)
+            out["heal_review_card"] = write_heal_review(a.atom, out, memory_root)
 
     out["health_before"] = {
         "broken": len(report.get("broken_refs") or []),

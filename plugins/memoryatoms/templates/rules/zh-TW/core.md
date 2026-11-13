@@ -41,4 +41,4 @@
 - 「用識流…」→ /memoryatoms:consciousness-stream；/resume → /memoryatoms:continue。
 - 獨立子任務可新開對話，拆分前確保知識已存入；Context 壓縮即將發生 → 提醒開新 session。
 - **Plan Mode 查讀**目前用 Read / Grep / Glob 工具，不用 Bash 的 cat/grep/sed 替代（Plan Mode 暫停 bypass，Bash 要過唯讀判定會彈窗）；Bash 指令不加 `cd <資料夾>` 前綴，直接寫絕對路徑。
-- 並行 sub-agent／知識檢索 fan-out：裝了 workflow-nudge 插件時 hook 命中會提示；**沒命中（或沒裝）而明顯受益**（多個互不衝突切面／幫我查・研究一下型請求）仍主動評估；判準 [[workflow-parallel-agents]]、[[workflow-research-fanout]]。
+- **並行多開 agent**：至少兩份不寫同一批檔、每份都要讀很多檔或做好幾分鐘的工作，就自己開 agent 並行，不必先問、也不為用量先問；不符合就自己做。怎麼拆、配哪個模型、派工單、收回對帳見技能 `parallel-dispatch`。檢索型請求（幫我查、研究一下）的 fan-out 判準見 [[workflow-research-fanout]]。

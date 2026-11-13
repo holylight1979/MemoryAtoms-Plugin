@@ -98,8 +98,9 @@ Run `tools/memory-audit.py` and `tools/atom-health-check.py` together:
    When the report shows **Broken References (dead links)**, **ask** the user whether to run the L2 LLM repair (never run it automatically; Native-first: no long-lived extras).
    If they agree, for each atom with dead links in the report (de-duplicate `broken_refs[].atom`), call the CLI one at a time:
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/tools/atom-heal.py" --atom <name> --apply --backend ollama --json
+   python "${CLAUDE_PLUGIN_ROOT}/tools/atom-heal.py" --atom <name> --apply --backend ollama --json [--memory-root $PROJECT_MEM_DIR]
    ```
+   If the dead link is in the project-layer report (the step 3 run with `--memory-root`), pass the same `--memory-root` here; without it only global cards are searched, and a project card comes back "Atom not found".
    Calling the CLI directly is the **default path**: headless, no server dependency, no dashboard plugin needed. Read each JSON result:
    - `fixed:true` -> fixed (repointed a typo / removed an invalid link); report what changed.
    - `needs_human:true` -> could not be fixed automatically; `atom-heal.py` has written a diagnostic card to `memory/_heal_review/<atom>.json` -> tell the user to use `/memoryatoms:heal-review` for a manual ruling.

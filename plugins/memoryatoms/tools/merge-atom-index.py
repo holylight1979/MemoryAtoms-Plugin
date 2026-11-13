@@ -11,7 +11,8 @@ repo 全部 LF（.gitattributes eol=lf + lib 寫檔一律 LF）之後這型不�
      - _atom_index.json：以 path 為 key 逐條合併。單側改取單側；兩側都改逐欄位合、triggers 取聯集；
        一側刪一側改 → 留改的那側（不丟資料，懸空條目交 sync-atom-index --fix-scope-from-path 清）；
        一側搬檔（刪舊 path、加同名新 path）另一側改舊列 → 只留新 path 一列，舊列的改動併進來（collapse_moved）
-     - _ATOM_INDEX.md：表列同上（key=Path 欄），表頭取 ours
+     - _ATOM_INDEX.md：表列同上（key=Path 欄），表頭取 ours；結果和某一側一樣的列照那側原樣輸出，兩側都改的列才重接
+       （格子裡的「|」由 lib/atom_index_json 寫成 &#124;；舊版鏡像格子裡沒跳脫的「|」切開再接回會多出欄位）
      - MEMORY.md：「| Category | Atoms | Drill down |」表（舊檔的「| 範疇 | atom 數 | 深入 |」一樣認）的計數 = ours + theirs − base（各自新增互不知情，差量可加）；
        表以外的人寫文字仍走 git merge-file 逐行三方，真衝突照留 <<<<<<< 標記並 exit 1
      - 根層衍生索引檔（各層 _INDEX.md、_local_catalog.md；同樣由 sync-memory-index 產生）：通用表格文件三方——
@@ -263,17 +264,19 @@ def merge_json(base_t: str, ours_t: str, theirs_t: str) -> Tuple[str, str]:
 
 # ─── _ATOM_INDEX.md ────────────────────────────────────────────────────────
 
-def _parse_atom_table(text: str) -> Tuple[List[str], Dict[str, List[str]]]:
-    """回 (表頭前所有行含表頭/分隔線, {Path: cells})。表後尾行忽略（重組時補單一尾換行）。"""
+def _parse_atom_table(text: str) -> Tuple[List[str], Dict[str, List[str]], Dict[str, str]]:
+    """回 (表頭前所有行含表頭/分隔線, {Path: cells}, {Path: 原列})。表後尾行忽略（重組時補單一尾換行）。"""
     head: List[str] = []
     rows: Dict[str, List[str]] = {}
+    raw: Dict[str, str] = {}
     for ln in text.split("\n"):
         if ln.startswith("|") and not ATOM_TABLE_HEADER_RE.match(ln) and not TABLE_SEP_RE.match(ln):
             cells = _split_cells(ln)
-            rows[cells[1] if len(cells) > 1 else ln] = cells
+            key = cells[1] if len(cells) > 1 else ln
+            rows[key], raw[key] = cells, ln
         elif not rows:
             head.append(ln)
-    return head, rows
+    return head, rows, raw
 
 
 def merge_cells_row(b: Any, o: List[str], t: List[str], trigger_col: Optional[int] = 2) -> List[str]:
@@ -294,13 +297,22 @@ def merge_cells_row(b: Any, o: List[str], t: List[str], trigger_col: Optional[in
 
 
 def merge_atom_index_md(base_t: str, ours_t: str, theirs_t: str) -> Tuple[str, str]:
-    bh, br = _parse_atom_table(base_t)
-    oh, orw = _parse_atom_table(ours_t)
-    th, trw = _parse_atom_table(theirs_t)
+    bh, br, _ = _parse_atom_table(base_t)
+    oh, orw, oraw = _parse_atom_table(ours_t)
+    th, trw, traw = _parse_atom_table(theirs_t)
     merged, st = merge_keyed(br, orw, trw, merge_cells_row)
     merged, st["moved"] = collapse_moved(merged, br, orw, trw, lambda cells: cells[0], merge_cells_row)
     head = merge_scalar(bh, oh, th)
-    lines = list(head) + [_join_cells(cells) for _, cells in merged] + [""]
+
+    def row_line(key: str, cells: List[str]) -> str:
+        """結果和某一側那列一樣就照那側原樣輸出；不重接沒人改的列，舊版鏡像格子裡沒跳脫的「|」才不會被拆成多欄。"""
+        if orw.get(key) == cells:
+            return oraw[key]
+        if trw.get(key) == cells:
+            return traw[key]
+        return _join_cells(cells)
+
+    lines = list(head) + [row_line(key, cells) for key, cells in merged] + [""]
     return "\n".join(lines), _fmt_stats(len(br), len(merged), st)
 
 

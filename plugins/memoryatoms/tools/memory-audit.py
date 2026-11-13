@@ -28,6 +28,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -37,9 +38,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 _CODE_ROOT = Path(__file__).resolve().parent.parent   # 程式碼根：lib.* 從本樹載
 if str(_CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(_CODE_ROOT))
-from lib.atom_io import narrative_date_error, write_raw, write_index_full  # noqa: E402
+from lib.atom_io import narrative_date_error, write_index, write_raw, write_index_full  # noqa: E402
 from lib.edition import layered_config  # noqa: E402  插件版出廠設定墊底
 from lib.project_root import vector_service_port  # noqa: E402
+from lib.wg_platform import no_window_flags  # noqa: E402
 from lib.i18n import t  # noqa: E402
 
 _AUDIT_SOURCE = "tool:memory-audit"
@@ -52,6 +54,7 @@ from lib.atom_spec import (
     INDEX_MAX_LINES, PROJECT_INDEX_MAX_LINES, ATOM_MAX_LINES, TRIGGER_MIN, TRIGGER_MAX,
     MEMORY_INDEX,
     parse_depends, resolve_depends_path, classify_depends_path, depends_base_for_file, depends_warnings, evidence_warning,
+    parse_frontmatter,
 )
 from lib.atom_locations import (
     GLOBAL_MEMORY_DIR, FAILURES_DIR, LEGACY_FAILURES_DIR, LEGACY_LOCAL_ATOMS_DIR, LOCAL_ATOMS_DIR,
@@ -59,11 +62,11 @@ from lib.atom_locations import (
 )
 # 晉升判定權威來源（server.js 的 py 鏡像）：confirmations 主軌 + usefulness Wilson 下界軌。
 # ReadHits 已退役（純曝光、不參與晉升）。
-from lib.atom_access import read_access, usefulness_promote_eligible, move_atom_pair
+from lib.atom_access import read_access, usefulness_promote_eligible, move_atom_pair, write_access_field
 # _atom_index.json 為索引唯一機器源：delete/restore 必同步（含 _ATOM_INDEX.md mirror regen）
 from lib.atom_index_json import (
     delete_atom as index_delete_atom,
-    upsert_atom as index_upsert_atom, find_index_dir,
+    find_index_dir,
     load_atom_index_json,
 )
 # 範疇資料夾硬規則：memory/ 根下散檔須歸入 memory/<範疇>/。gate 由 workflow/config.json
@@ -808,100 +811,149 @@ def _restore_index_home(dest: Path, fallback_mem: Path) -> Tuple[Path, Path]:
     return fallback_mem, fallback_mem.parent
 
 
+# 本工具自己寫進卡尾 `## 演化日誌` 的列：退役（delete_atom）那列，與舊版 --enforce 自動淘汰那列。
+# 寫入端與還原端（_strip_tool_log）共用這兩個來源字串：一邊改字，另一邊才不會認不得。
+RETIRE_LOG_SOURCE = "memory-audit --delete"
+ENFORCE_LOG_SOURCE = "memory-audit --enforce"
+_TOOL_LOG_ROW_RE = re.compile(
+    r"^\|\s*\d{4}-\d{2}-\d{2}\s*\|.*\|\s*(?:"
+    + "|".join(re.escape(s) for s in (RETIRE_LOG_SOURCE, ENFORCE_LOG_SOURCE))
+    + r")\s*\|$")
+_TABLE_SEP_RE = re.compile(r"^\|(?:\s*:?-+:?\s*\|)+$")
+
+
+def _strip_tool_log(text: str) -> str:
+    """拉回活躍區前，拿掉本工具留在 `## 演化日誌` 的列（_TOOL_LOG_ROW_RE）。這段因此沒有內容了
+    （只剩標題、表頭、分隔線；先跑過 atom-date-lint --fix 的卡也是這樣）就整段拿掉，連同段前的空行。
+    人寫的歷史列原樣留著，交給還原前的敘事日期閘判。沒有這段、或沒東西可拿就原樣回傳。"""
+    lines = text.split("\n")
+    start = next((i for i, ln in enumerate(lines) if ln.strip() == "## 演化日誌"), None)
+    if start is None:
+        return text
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    body = [ln for ln in lines[start + 1:end] if not _TOOL_LOG_ROW_RE.match(ln.strip())]
+    removed = (end - start - 1) - len(body)
+    filled = [ln.strip() for ln in body if ln.strip()]
+    if len(filled) >= 2 and _TABLE_SEP_RE.match(filled[1]):
+        filled = filled[2:]   # 表頭＋分隔線不算內容
+    has_content = any(not _TABLE_SEP_RE.match(ln) for ln in filled)
+    if has_content and not removed:
+        return text
+    if has_content:
+        kept = lines[:start + 1] + body + lines[end:]
+    else:
+        head = lines[:start]
+        while head and not head[-1].strip():
+            head.pop()
+        kept = head + [""] + lines[end:]
+    new = "\n".join(kept)
+    return new if new.endswith("\n") else new + "\n"
+
+
+def _sync_catalog(index_dir: Path) -> Optional[str]:
+    """重產這個記憶根的目錄（tools/sync-memory-index.py --write --memory-dir <根>）：全域＝MEMORY.md、
+    _local_catalog.md、各層 _INDEX.md 與文件計數；專案層＝MEMORY.md 的 atom-catalog 區塊。
+    同 MCP 退役之後的那一步（funnel.js syncMemoryIndex）。成功回 None，失敗回原因，由呼叫端照實回報。"""
+    cmd = [sys.executable, str(_CODE_ROOT / "tools" / "sync-memory-index.py"),
+           "--write", "--memory-dir", str(index_dir)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              cwd=str(_CODE_ROOT), timeout=120, creationflags=no_window_flags(),
+                              env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return str(e)
+    if proc.returncode == 0:
+        return None
+    return (proc.stderr or proc.stdout).strip()[-300:] or f"rc={proc.returncode}"
+
+
+def _trigger_vector_reindex() -> bool:
+    """請向量服務做增量重索引（best effort：服務不在線屬預期，不算失敗）。回有沒有送到。"""
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{vector_service_port()}/index/incremental", data=b"{}",
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        urllib.request.urlopen(req, timeout=2)
+        return True
+    except Exception:  # noqa: BLE001 — 服務不在線屬預期
+        return False
+
+
 def restore_from_distant(atom_path: Path) -> Tuple[bool, str]:
-    """Move atom from _distant/ back to active area, reset Confidence to [臨]."""
+    """退役的反操作：卡從 _distant/ 搬回 _distant 的上一層（退役前的資料夾），照退役前的樣子還原。
+    - 先拿掉本工具寫進演化日誌的那列（_strip_tool_log），剩下的整卡再過敘事日期閘；擋下時什麼都不動。
+    - Confidence 不動；使用紀錄 .access.json 跟著卡搬回（注入排序讀它），只把 last_used 設成今天，
+      免得下一輪遺忘又馬上收走。
+    - 索引條目照卡片檔頭重登：觸發詞、Scope、Related、Aka、Entry、Depends（走 write_index，與 atom_write 同一個入口）。
+    - 重產目錄與計數（_sync_catalog），再請向量服務增量重索引（退役時刪了它的向量片段）。
+    搬回之後的步驟失敗不回滾卡片，但一律寫進回傳訊息（可觀測性鐵律）。"""
+    atom_path = Path(atom_path).resolve()   # 命令列常給相對路徑：要算得出卡在索引根底下的相對位置
     if not atom_path.exists():
         return False, t("cli.memory_audit.file_missing", path=atom_path)
 
-    # Find the memory/ dir (go up until we leave _distant)
     parts = atom_path.parts
-    distant_idx = None
-    for i, p in enumerate(parts):
-        if p == DISTANT_DIR:
-            distant_idx = i
-            break
-
+    distant_idx = next((i for i, p in enumerate(parts) if p == DISTANT_DIR), None)
     if distant_idx is None:
         return False, t("cli.memory_audit.not_in_distant", path=atom_path)
-
     memory_dir = Path(*parts[:distant_idx])
     dest = memory_dir / atom_path.name
-
     if dest.exists():
         return False, t("cli.memory_audit.active_exists", path=dest)
 
-    # Read, reset Confidence, write to dest
     try:
-        text = atom_path.read_text(encoding="utf-8-sig")
+        original = atom_path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError) as e:
         return False, t("cli.memory_audit.read_failed", error=e)
+    text = _strip_tool_log(original)
 
     # _distant 不受 lint 掃，恢復＝整張舊卡重新進索引：先過寫入閘的同一份判式（看整卡，與 lint 掃法相同）
     date_err = narrative_date_error(text.split("\n"))
     if date_err:
         return False, t("cli.memory_audit.date_lint_first", error=date_err, path=atom_path)
 
-    # Reset confidence to [臨]
-    text = re.sub(
-        r"^(-\s+Confidence:\s*).*$",
-        r"\g<1>[臨]",
-        text,
-        count=1,
-        flags=re.MULTILINE,
-    )
-
-    # Last-used / Confirmations / ReadHits 存於 access.json（非 .md），
-    # restore 後在 dest path 改寫 access 旁路檔（重置為 0、last_used 設今天）
-    today_str = date.today().isoformat()
-
     try:
-        # 走 funnel
-        _r = write_raw(dest, text, source=_AUDIT_SOURCE, op="audit_demote")
-        if not _r.ok:
-            raise OSError(_r.error)
-        # 同步 access 旁路檔重置
-        try:
-            from lib.atom_access import write_access_field
-            write_access_field(dest, field="confirmations", value=0,
-                               source="tool:memory-audit")
-            write_access_field(dest, field="read_hits", value=0,
-                               source="tool:memory-audit")
-            write_access_field(dest, field="last_used", value=today_str,
-                               source="tool:memory-audit")
-        except (ImportError, OSError, ValueError):
-            pass
-        atom_path.unlink()
-        # _distant 側殘留的 access sidecar 一併清除（計數已在 dest 重置歸零）
-        old_access = atom_path.with_suffix(".access.json")
-        if old_access.exists():
-            try:
-                old_access.unlink()
-            except OSError:
-                pass
-        # Clean up empty year_month dir
-        parent = atom_path.parent
-        if parent.is_dir() and not any(parent.iterdir()):
-            parent.rmdir()
-        # _atom_index.json SoT 同步（唯一機器源；含 mirror regen）——
-        # 失敗不回滾檔案，但必浮訊號（可觀測性鐵律）
-        index_note = ""
-        try:
-            from lib.atom_spec import parse_frontmatter
-            fm = parse_frontmatter(text)
-            triggers = [t.strip() for t in re.split(r"[,，]", fm.get("Trigger", ""))
-                        if t.strip()]
-            idx_dir, idx_root = _restore_index_home(dest, memory_dir)
-            rel = dest.relative_to(idx_root).as_posix()
-            index_upsert_atom(idx_dir, dest.stem, rel, triggers,
-                              scope=fm.get("Scope", "global") or "global")
-        except (OSError, ValueError) as e:
-            index_note = t("cli.memory_audit.index_update_failed", error=e)
-        return True, t("cli.memory_audit.restored", path=dest, note=index_note)
+        if text != original:
+            # 在 _distant 裡改好再搬：搬之前任一步失敗，卡都還在 _distant，重跑即可
+            r = write_raw(atom_path, text, source=_AUDIT_SOURCE, op="audit_restore")
+            if not r.ok:
+                raise OSError(r.error)
+        move_atom_pair(atom_path, dest)   # .md 與 .access.json 一起搬（lib.atom_access 單一來源）
     except OSError as e:
         return False, t("cli.memory_audit.write_failed", error=e)
+    try:
+        if not any(atom_path.parent.iterdir()):
+            atom_path.parent.rmdir()   # 搬空的 _distant/<yyyy_mm>/
+    except OSError:
+        pass
+
+    notes: List[str] = []
+    try:
+        write_access_field(dest, field="last_used", value=date.today().isoformat(), source=_AUDIT_SOURCE)
+    except (OSError, ValueError) as e:
+        notes.append(t("cli.memory_audit.restore_last_used_failed", error=e))
+
+    idx_dir, idx_root = _restore_index_home(dest, memory_dir)
+    fm = parse_frontmatter(text)
+    triggers = [s.strip() for s in re.split(r"[,，]", fm.get("Trigger", "")) if s.strip()]
+    depends = [s.strip() for s in re.split(r"[,，]", fm.get("Depends", "")) if s.strip()]
+    try:
+        r = write_index(idx_dir, dest.stem, dest.relative_to(idx_root.resolve()).as_posix(), triggers, _AUDIT_SOURCE,
+                        scope=fm.get("Scope") or None, depends=depends or None, content=text)
+        if not r.ok:
+            notes.append(t("cli.memory_audit.index_update_failed", error=r.error))
+    except (OSError, ValueError) as e:
+        notes.append(t("cli.memory_audit.index_update_failed", error=e))
+
+    err = _sync_catalog(idx_dir)
+    if err:
+        notes.append(t("cli.memory_audit.restore_catalog_failed", error=err, memory_dir=idx_dir))
+    _trigger_vector_reindex()
+    return True, t("cli.memory_audit.restored", path=dest, note="".join(notes))
 
 
-def _append_evolution_entry(atom_path: Path, change: str, source: str = "memory-audit --enforce") -> None:
+def _append_evolution_entry(atom_path: Path, change: str, source: str = ENFORCE_LOG_SOURCE) -> None:
     """Append an entry to the atom's evolution log."""
     try:
         text = atom_path.read_text(encoding="utf-8-sig")
@@ -1292,8 +1344,6 @@ def delete_atom(
       ⑤ 搬檔到 _distant/<yyyy_mm>/（或 purge）→ 演化日誌寫 reason → 觸發增量重索引 → audit.log
     失敗時檔案仍在原位、定位走檔案系統 → 重跑同一退役可從頭成功。
     """
-    import urllib.request
-
     info: Dict[str, Any] = {
         "atom": atom_name, "layer": layer, "old_path": None, "new_path": None,
         "index_ok": None, "steps_done": [], "steps_failed": [], "references": [],
@@ -1406,20 +1456,14 @@ def delete_atom(
             return _fail("move", "\n".join(actions))
         new_path = _distant_dest(atom_path)
         info["new_path"] = str(new_path)
-        _append_evolution_entry(new_path, f"退役移入 _distant/：{reason or '(no reason)'}",
-                                "memory-audit --delete")
+        # 理由攤成一行：多行會把表格列拆斷，還原時就認不出這是本工具寫的列
+        _append_evolution_entry(new_path, f"退役移入 _distant/：{' '.join((reason or '').split()) or '(no reason)'}",
+                                RETIRE_LOG_SOURCE)
     done.append("move")
 
     # 增量重索引（best effort；向量已在 ② 刪，服務離線不算失敗）
-    try:
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{vector_service_port()}/index/incremental", data=b"{}",
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
-        urllib.request.urlopen(req, timeout=2)
-        actions.append("  Incremental re-index triggered")
-    except Exception:  # noqa: BLE001 — 服務不在線屬預期
-        actions.append("  Incremental re-index: service not available (skipped)")
+    actions.append("  Incremental re-index triggered" if _trigger_vector_reindex()
+                   else "  Incremental re-index: service not available (skipped)")
 
     _write_audit_entry({"action": mode, "atom": atom_name, "layer": layer,
                         "reason": reason, "old_path": info["old_path"], "new_path": info["new_path"]})

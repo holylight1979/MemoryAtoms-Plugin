@@ -17,6 +17,8 @@ V5 改讀 `_atom_index.json`，append 走 `lib.atom_index_json.upsert_atom`。
   --sync-depends         frontmatter 有 `- Depends:` 行的 atom，把條目寫進索引 depends（frontmatter 為真相；
                          沒有該行的存量不碰、--check 也不對它們報漂移）
   --check                同 default，僅報 exit code（PreCommit 用，輸出最小化）
+  各模式的漂移報告都含 mirror_stale：`_ATOM_INDEX.md` 在、內容卻和 JSON 重產的不同（合併驅動拆壞的列、上次沒換成）；
+  --add-from-frontmatter 或 --rebuild 會重產它
   --split-personal       私人卡登記搬出共用索引：磁碟上有、索引缺的私人卡先從 frontmatter 補，再整份重寫一次讓 save 分流
                          （SessionStart 看到 personal_split_pending 會自動跑）
 
@@ -110,10 +112,12 @@ class DriftReport:
     orphan_index: List[str] = field(default_factory=list)
     scope_drift: List[Dict] = field(default_factory=list)
     depends_drift: List[Dict] = field(default_factory=list)
+    mirror_stale: List[str] = field(default_factory=list)   # [鏡像檔名]：鏡像和 JSON 重產的不同（見 mirror_drift）
 
     def has_drift(self) -> bool:
         return any([self.missing_in_index, self.missing_frontmatter,
-                    self.trigger_drift, self.orphan_index, self.scope_drift, self.depends_drift])
+                    self.trigger_drift, self.orphan_index, self.scope_drift, self.depends_drift,
+                    self.mirror_stale])
 
     def to_dict(self) -> Dict:
         return {
@@ -123,6 +127,7 @@ class DriftReport:
             "orphan_index": self.orphan_index,
             "scope_drift": self.scope_drift,
             "depends_drift": self.depends_drift,
+            "mirror_stale": self.mirror_stale,
             "has_drift": self.has_drift(),
         }
 
@@ -287,6 +292,14 @@ def detect_drift(atoms_by_path: Dict[str, AtomFile],
             rep.depends_drift.append(dd)
 
     return rep
+
+
+def mirror_drift(memory_dir: Path) -> List[str]:
+    """鏡像 `_ATOM_INDEX.md` 在、內容卻和 JSON 重產的不同 → [檔名]；缺檔不算（開場會補產）。
+    合併驅動只看得到鏡像自己的三份，被拆壞的列不會反映在 JSON；只比卡片和 JSON，壞列會跟著合併提交進去。"""
+    if not (memory_dir / ATOM_INDEX).exists():
+        return []
+    return [ATOM_INDEX] if atom_index_md_stale(memory_dir, load_atom_index_json(memory_dir)) else []
 
 
 def sync_depends_from_frontmatter(atoms_by_path: Dict[str, AtomFile],
@@ -614,6 +627,7 @@ def _run_one(memory_dir: Path, args, *, quiet: bool = False,
             index_rows = load_index_rows(memory_dir)
 
     rep = detect_drift(atoms_by_path, index_rows, claude_root)
+    rep.mirror_stale = mirror_drift(memory_dir)
 
     if collector is not None:
         entry = {"project": slug or memory_dir.parent.parent.name, "memory_dir": str(memory_dir),

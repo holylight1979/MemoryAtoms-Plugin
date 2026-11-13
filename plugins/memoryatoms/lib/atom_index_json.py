@@ -61,6 +61,16 @@ _MIRROR_NOTE = {
     "zh-TW": "> 本檔由 lib/atom_index_json.py 自動生成；勿手改。",
 }
 
+# 鏡像格子裡的「|」寫成 HTML 字元參照：表格拿「|」分欄，觸發詞或 depends 含「|」原樣寫進去，那一列就多出欄位，
+# 合併驅動（tools/merge-atom-index.py）切開再接回時拆成好幾格。Markdown 顯示時照樣是「|」。
+# 不用反斜線「\|」：照「|」切欄、不認反斜線的讀取端（別台還沒更新的合併驅動、hooks/wg_atoms_index 的備援讀取）照樣會切；
+# 字元參照裡沒有「|」，誰都切不開。
+MIRROR_PIPE = "&#124;"
+
+
+def _mirror_cell(value: Any) -> str:
+    return str(value).replace("|", MIRROR_PIPE)
+
 
 def _generated_language() -> str:
     try:
@@ -506,7 +516,7 @@ def regenerate_atom_index_md(mem_dir: Path) -> None:
 
 
 def render_atom_index_md(data: Dict[str, Any]) -> str:
-    """索引 data → _ATOM_INDEX.md 全文（LF）。"""
+    """索引 data → _ATOM_INDEX.md 全文（LF）。格子裡的「|」寫成 MIRROR_PIPE，每列欄數和表頭一樣。"""
     # Depends 欄只在索引裡至少一條有 depends 時才出現：沒人用 depends 的索引 mirror byte 不變，
     # 多機不會因為 mirror 格式換版而在合併時各自重生、互相衝突（索引三檔合併必衝突的教訓）。
     has_depends = any(isinstance(a.get("depends"), list) and a["depends"] for a in data["atoms"])
@@ -520,13 +530,13 @@ def render_atom_index_md(data: Dict[str, Any]) -> str:
         "|------|------|---------|-------|---------|" if has_depends else "|------|------|---------|-------|",
     ]
     for a in data["atoms"]:
-        name = a.get("name", "")
-        path = a.get("path", "")
-        triggers = ", ".join(a.get("triggers", []))
-        scope = a.get("scope", "global")
+        name = _mirror_cell(a.get("name", ""))
+        path = _mirror_cell(a.get("path", ""))
+        triggers = _mirror_cell(", ".join(a.get("triggers", [])))
+        scope = _mirror_cell(a.get("scope", "global"))
         row = f"| {name} | {path} | {triggers} | {scope} |"
         if has_depends:
-            row += " " + ", ".join(d for d in (a.get("depends") or []) if isinstance(d, str)) + " |"
+            row += " " + _mirror_cell(", ".join(d for d in (a.get("depends") or []) if isinstance(d, str))) + " |"
         lines.append(row)
     lines.append("")
     return "\n".join(lines)
@@ -561,7 +571,7 @@ def parse_legacy_atom_index_md(md_path: Path) -> List[Dict[str, Any]]:
             if not stripped:
                 continue
             break
-        cells = [c.strip() for c in stripped.split("|") if c.strip()]
+        cells = [c.strip().replace(MIRROR_PIPE, "|") for c in stripped.split("|") if c.strip()]
         if len(cells) < 3:
             continue
         name = cells[0]

@@ -61,6 +61,8 @@ python "${CLAUDE_PLUGIN_ROOT}/tools/heal-review.py" dismiss <atom> --json   # de
 ```
 
 `resolve` rescans with `atom-health-check --atom <atom>`; if problems remain it blocks (unless `--force`).
+A project card (the diagnostic card has a `memory_root` field) is rescanned in that same memory folder; no extra argument is needed.
+If the rescan fails (the recorded folder does not exist on this machine, the health check gives no usable result, or the atom is not found), `resolve` also blocks and prints the reason; `--force` clears the card anyway.
 Actions are written to `memory/_merge_history.log` (action=`heal_resolved` / `heal_dismissed`).
 
 ---
