@@ -1,7 +1,7 @@
 {
   "name": "memoryatoms-changelog-roll",
   "description": "Rolls old rows of _CHANGELOG.md into _CHANGELOG_ARCHIVE.md in the background once it passes a row threshold; /changelog-debug runs it by hand.",
-  "version": "6.3.0",
+  "version": "6.3.1",
   "author": {
     "name": "holylight"
   },

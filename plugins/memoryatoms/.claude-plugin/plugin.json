@@ -1,7 +1,7 @@
 {
   "name": "memoryatoms",
   "displayName": "MemoryAtoms",
-  "version": "6.3.0",
+  "version": "6.3.1",
   "description": "Atomic memory for Claude Code: puts the memory cards that fit your prompt in front of Claude, writes and searches cards through an MCP server, and harvests what a session learned into new cards.",
   "author": {
     "name": "holylight"

@@ -602,6 +602,7 @@ def write_index(
     scope: Optional[str] = None,
     depends: Optional[List[str]] = None,
     entry: Optional[List[str]] = None,
+    content: Optional[str] = None,
 ) -> WriteResult:
     """更新或追加 atom 條目到 _atom_index.json (SoT)，並回寫 _ATOM_INDEX.md mirror。
 
@@ -613,8 +614,9 @@ def write_index(
     （TRIGGER_MAX_LEN）——超長在寫入當下拒絕，不留給後續 validate_index 才爆。
     depends：卡片 Depends 條目（`path:<檔>` 或自由文字）；None → 沿用索引既有 depends、`[]` → 清空、
     非空 → 取代；型別不對在寫入當下拒絕（ValueError → ok=False）。
-    entry：切入點代號；None → 跟 Related／Aka 一樣讀剛落檔的 atom 的 `- Entry:` 行（edit_metadata 先寫索引、
-    後寫檔，那時檔還是舊的，所以由它明給）。
+    entry：切入點代號；None → 跟 Related／Aka 一樣從卡片內容讀 `- Entry:` 行。
+    content：讀連結欄（Related／Aka，entry 沒明給時連 Entry）用的卡片內容；None → 讀剛落檔的檔。
+    edit_metadata 先寫索引、後寫檔，那時磁碟上還是舊檔，所以把改好的內容明給。
     """
     if not is_valid_source(source):
         return WriteResult(ok=False, error=f"invalid source: {source}",
@@ -656,24 +658,25 @@ def write_index(
             scope = scope_from_index_path(rel_path, _layer)
         except (ImportError, OSError):
             scope = "global"
-    # 連結欄直接讀剛落檔的 atom：寫入端不必逐一補傳，改 Related 的路徑（edit_metadata）
-    # 也自動跟上。讀不到檔（純索引呼叫）→ None＝沿用既有值。
+    # 連結欄從卡片內容讀：寫入端不必逐一補傳。沒給 content 就讀剛落檔的檔；
+    # 讀不到檔（純索引呼叫）→ None＝沿用既有值。
     related = aka = None
+    text = content
     md_path = (base_dir.parent / rel_path) if rel_path else None
-    if md_path is not None and md_path.exists():
+    if text is None and md_path is not None and md_path.exists():
         try:
             text = md_path.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             text = ""
-        if text:
-            from .atom_spec import find_aka_line, find_entry_line, find_related_line, split_related
-            rm = find_related_line(text)
-            am = find_aka_line(text)
-            related = split_related(rm.group(1)) if rm else []
-            aka = split_related(am.group(1)) if am else []
-            if entry is None:
-                em = find_entry_line(text)
-                entry = split_related(em.group(1)) if em else []
+    if text:
+        from .atom_spec import find_aka_line, find_entry_line, find_related_line, split_related
+        rm = find_related_line(text)
+        am = find_aka_line(text)
+        related = split_related(rm.group(1)) if rm else []
+        aka = split_related(am.group(1)) if am else []
+        if entry is None:
+            em = find_entry_line(text)
+            entry = split_related(em.group(1)) if em else []
     upsert_atom(
         mem_dir=base_dir,
         name=slug,
@@ -989,8 +992,8 @@ def edit_metadata(
     取代直接 Write/Edit atom .md（會被 Guardian guard 擋）與整檔 atom_write replace
     （重建知識區、風險高）。byte-stable：**只改目標那幾行**，其餘行原樣保留。
 
-    SoT 順序（triggers 或 entry 變更時）：先寫 _atom_index.json（機器唯一源），成功才續寫
-    frontmatter（衍生），避免 frontmatter 領先 index 造成不可復原 drift。部分失敗
+    SoT 順序（triggers 或 entry 變更時；related／aka 變更且索引已登錄這張卡時亦同）：先寫 _atom_index.json
+    （機器唯一源），成功才續寫 frontmatter（衍生），避免 frontmatter 領先 index 造成不可復原 drift。部分失敗
     可由 `tools/sync-atom-index.py --fix` 冪等復原，故不建交易層。
 
     Args:
@@ -1042,8 +1045,13 @@ def edit_metadata(
             )
         new_text = replaced
 
-    # ── SoT 先行：triggers 或 entry 變更時先寫 _atom_index.json ──
-    if triggers is not None or entry is not None:
+    # ── SoT 先行：會進索引的欄位變更時先寫 _atom_index.json ──
+    # triggers／entry：找不到索引就報錯，本檔還沒登錄就登錄。
+    # related／aka：索引裡這兩欄抄自卡片，注入端只讀索引建連結圖（hooks/wg_atoms_pool.load_link_graph）；
+    # 只改它們時，索引已登錄這張卡才跟著改，沒有索引或還沒登錄就照舊只寫檔（之後補登、重建索引時從卡片讀）。
+    sot_fields = triggers is not None or entry is not None
+    base_dir: Optional[Path] = None
+    if sot_fields or related is not None or aka is not None:
         slug = Path(file_path).stem
         fp = Path(file_path).resolve()
         try:
@@ -1059,12 +1067,13 @@ def edit_metadata(
             # 專案層 atom：上溯最近 _atom_index.json = 該專案 memory root
             from .atom_index_json import find_index_dir
             base_dir = find_index_dir(fp.parent)
-            if base_dir is None:
+            if base_dir is None and sot_fields:
                 return WriteResult(
                     ok=False, audit_id=audit_id,
                     error=f"no _atom_index.json found at/above: {fp.parent}",
                 )
-            index_root = base_dir.parent.resolve()
+            index_root = base_dir.parent.resolve() if base_dir is not None else None
+    if base_dir is not None and (sot_fields or _index_has_entry(base_dir, slug)):
         try:
             rel_path = fp.relative_to(index_root).as_posix()
         except ValueError:
@@ -1078,10 +1087,11 @@ def edit_metadata(
         scope_for_index: Optional[str] = None
         if not _index_has_entry(base_dir, slug):
             scope_for_index = _scope_from_frontmatter(text) or ("global" if in_claude else "shared")
-        # 只改 entry 時 trigger 照舊：索引既有的優先，本檔還沒入索引就取 frontmatter 的 Trigger 行
+        # 只改 entry 或連結欄時 trigger 照舊：索引既有的優先，本檔還沒入索引就取 frontmatter 的 Trigger 行
         idx_triggers = triggers if triggers is not None else _existing_triggers(base_dir, slug, text)
+        # 連結欄從改好的內容讀：這時檔還是舊的，讓 write_index 自己讀檔會拿到改前的 Related／Aka
         idx_res = write_index(base_dir, slug, rel_path, idx_triggers, source, scope=scope_for_index,
-                              entry=entry)
+                              entry=entry, content=new_text)
         if not idx_res.ok:
             # index 領先失敗 → 不續寫 frontmatter（避免不可復原 drift）
             return idx_res

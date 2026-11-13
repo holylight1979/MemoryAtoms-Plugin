@@ -1,7 +1,7 @@
 {
   "_doc": "版本標識檔。guardian＝Workflow Guardian（hooks + MCP server）版本，Dashboard 標題與 MCP serverInfo 顯示；atom_memory＝原子記憶系統版本；release_date＝此版本正式發布日；release_theme＝此版本主題一句話。程式讀者：tools/workflow-guardian-mcp/lib/paths.js（只取 guardian / atom_memory）與 tools/install.py --verify（確認本檔可讀）；文件讀者 TECH.md。",
-  "guardian": "6.3.0",
+  "guardian": "6.3.1",
   "atom_memory": "6.1",
-  "release_date": "2026-11-12",
-  "release_theme": "本地卡統一放到 memory 底下：本地卡改放 memory/_local/，舊位置 _AIDocs/_atoms/ 相容期照讀照寫、不收新卡；新增 atom-set-realm.py migrate-local 整批搬家（可預覽、可復原）與每場結束只搬殘留的自動收尾；索引、向量、同步、健檢、稽核工具新舊兩處都認；出廠設定關掉自動歸本地（realm.auto_migrate 預設 false，沒寫也算關）；在記憶系統原始碼樹裡工作也想得起本地卡（最近的版控根有 plugin-bundle.json 等三個檔才算；插件版照舊只認資料根）；背景同步在本地卡舊位置搬空後照樣把刪除一起提交，不留沒提交的刪除、不擋自動拉取；合併驅動相關測試的錄製檔照新的 merge-atom-index.py 重錄"
+  "release_date": "2026-11-13",
+  "release_theme": "atom_edit_meta keeps the card index in step: a Related or Aka edit now updates the card's index row from the edited content, so related-card spreading and alias lookups follow the card instead of its old links (Trigger and Entry edits behave as before); shipped cards: 35 cards gain follow-up lessons, and the card on verifying parallel implementation lines is replaced by a new card with the same knowledge, whose triggers also keep the word for a full run that the old card's name carried"
 }
