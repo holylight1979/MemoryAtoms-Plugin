@@ -31,7 +31,7 @@ from project_root import claude_config_dir, claude_data_dir, vector_service_port
 from degraded import notify as degraded_notify  # noqa: E402  缺詞表、缺設定的開場紅字唯一出處
 from wg_platform import console_python  # noqa: E402
 from harness_text import HOOK_RESIDUE_LINE_RE, strip_harness_blocks, user_typed_text  # noqa: E402,F401  使用者原話規則唯一一份
-from config_local import merge_local, with_defaults  # noqa: E402  config.local.json 蓋上去、插件預設墊底下的規則唯一一份
+from config_local import apply_renamed_keys, merge_local, with_defaults  # noqa: E402  config.local.json 蓋上去、插件預設墊底下、改名鍵對新名的規則唯一一份
 from edition import PLUGIN, edition, layered_config  # noqa: E402  插件版出廠設定墊底、資料根 config.json 蓋上（分層讀設定唯一一份）；版別判定同出處
 import i18n  # noqa: E402  給人看的提示走語言表
 from token_estimate import estimate_tokens  # noqa: E402  token 估算唯一口徑
@@ -193,6 +193,7 @@ def load_config() -> Dict[str, Any]:
     疊法（後蓋前）：DEFAULTS → workflow/config.json（頂層同名鍵整段換；插件版是 lib/edition.layered_config 疊好的
     「出廠 config.json → config.plugin.json → 資料根 config.json」）→ 開著的插件帶的出廠預設（plugin.json 的 config 欄，
     墊在底下：只補沒寫的鍵、同名段淺合併、使用者寫的優先）→ workflow/config.local.json。疊的規則在 lib/config_local。
+    疊好之後改過名的鍵對上新名（lib/config_local.apply_renamed_keys：新鍵優先，只寫舊鍵照讀並 stderr 一行請改名）。
     config.json 損毀時跳過那一層但不得靜默（可觀測性鐵律）：log +
     `_config_parse_failed` 旗標，UPS/SessionStart 見旗標注入一行告警。
     """
@@ -203,7 +204,7 @@ def load_config() -> Dict[str, Any]:
         _atom_debug_error("config:parse_failed", ValueError(", ".join(str(f) for f in failed)))
         config["_config_parse_failed"] = True
     config = with_defaults(config, _plugin_config_defaults())
-    return merge_local(config, CONFIG_LOCAL_PATH, "workflow-guardian")
+    return apply_renamed_keys(merge_local(config, CONFIG_LOCAL_PATH, "workflow-guardian"))
 
 
 def _plugin_config_defaults() -> Dict[str, Any]:
@@ -2372,7 +2373,7 @@ def check_cross_realm_write(
 # 這段抹掉，剩下的命令再找根層路徑。否則專案 session 一條命令裡同時「跑根層索引工具」＋
 # 「用 python/cp/rm/git 動自己專案的 .claude/memory」會被當成改根層而誤擋。
 _ROOT_CORE_SUBDIRS_RE = r"(?:hooks|lib|tools|skills|rules|prompts)"
-_ROOT_SENSITIVE_FILES_RE = r"(?:settings\.json|CLAUDE\.md|IDENTITY[^/\\\s]*\.md|USER[^/\\\s]*\.md|TECH\.md|README\.md|Install[^/\\\s]*\.md)"
+_ROOT_SENSITIVE_FILES_RE = r"(?:settings\.json|CLAUDE\.md|IDENTITY[^/\\\s]*\.md|USER[^/\\\s]*\.md|TECH\.md|TECH\.zh-TW\.md|README\.md|Install[^/\\\s]*\.md)"
 _ROOT_HOME_RE = r"(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%|\$env:USERPROFILE|/[a-zA-Z]/Users/[^/\s\"']+|[a-zA-Z]:[\\/]Users[\\/][^\\/\s\"']+)"
 _ROOT_CD_RE = lazy_re(
     rf"(?:\bcd\s+|\bgit\s+-C\s+|\bSet-Location\s+|\bpushd\s+)[\"']?{_ROOT_HOME_RE}[\\/]\.claude(?:[\\/]{_ROOT_CORE_SUBDIRS_RE})?[\\/]?[\"']?(?=\s|;|&&|\|\||$)",

@@ -1,7 +1,7 @@
 """
 handlers/pre_compact.py — PreCompact hook handler
 
-於 context 壓縮前記下已注入的卡名、備好交接單（壓縮會丟掉對話裡的脈絡）。
+於 context 壓縮前記下已注入的卡名（壓縮會丟掉對話裡的脈絡，SessionStart(compact) 憑它把卡送回去）。
 """
 
 import sys

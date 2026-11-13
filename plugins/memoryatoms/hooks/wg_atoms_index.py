@@ -87,7 +87,8 @@ def _parse_trigger_table(text: str) -> List[AtomEntry]:
             if not stripped.startswith("|"):
                 in_table = False
                 continue
-            cells = [c.strip() for c in stripped.split("|") if c.strip()]
+            # 鏡像格子裡的「|」寫成 &#124;（lib/atom_index_json.MIRROR_PIPE）；這裡是 lib 匯入失敗也要能跑的備援，字面寫死不 import
+            cells = [c.strip().replace("&#124;", "|") for c in stripped.split("|") if c.strip()]
             if len(cells) >= 3:
                 name = cells[0]
                 rel_path = cells[1]

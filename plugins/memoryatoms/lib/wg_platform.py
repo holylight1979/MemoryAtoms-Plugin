@@ -224,6 +224,7 @@ def _process_table() -> Dict[int, Tuple[int, str]]:
     if IS_WINDOWS:
         return _windows_process_table()
     import subprocess
+    # no-window-exempt: POSIX 分支（Windows 在上面改走 ctypes 快照），沒有主控台視窗問題
     listed = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,comm="], capture_output=True, text=True, timeout=5).stdout
     table = {}
     for line in listed.splitlines():
@@ -242,6 +243,7 @@ def _process_image(pid: int) -> str:
         if os.path.exists(link):   # Linux：ps 的 comm 只有前 15 字，路徑看 /proc
             return os.path.realpath(link)
         import subprocess
+        # no-window-exempt: POSIX 分支（Windows 在上面改走 QueryFullProcessImageNameW），沒有主控台視窗問題
         shown = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout.strip()
         return shown if os.path.isabs(shown) else ""   # macOS：ps 的 comm 就是完整路徑
     except Exception:  # noqa: BLE001  查不到就當沒有

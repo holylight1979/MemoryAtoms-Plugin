@@ -29,7 +29,7 @@ from typing import Any, Dict, Optional
 _CODE_ROOT = Path(os.environ.get("WG_CORE_ROOT") or Path(__file__).resolve().parents[3])   # extensions/codex/hooks/ → 程式碼根
 sys.path.insert(0, str(_CODE_ROOT / "lib"))
 from project_root import claude_data_dir  # noqa: E402  資料根的唯一算法（和 wg_core、state.py 同一支）
-from config_local import merge_local, plugin_defaults, with_defaults  # noqa: E402  本機覆寫 config.local.json；插件出廠預設墊底
+from config_local import apply_renamed_keys, merge_local, plugin_defaults, with_defaults  # noqa: E402  本機覆寫 config.local.json；插件出廠預設墊底；改名鍵對新名
 from i18n import t  # noqa: E402
 CLAUDE_DIR = claude_data_dir()                # 使用者資料根（workflow、config）
 WORKFLOW_DIR = CLAUDE_DIR / "workflow"
@@ -52,7 +52,8 @@ def _load_config() -> Dict[str, Any]:
     except (json.JSONDecodeError, OSError):
         return {}
     full = with_defaults(full, plugin_defaults(Path(__file__).resolve().parents[1]))   # extensions/codex/plugin.json 的 config 墊底
-    return merge_local(full, CONFIG_PATH.with_name("config.local.json"), "codex").get("codex_companion", {})
+    full = merge_local(full, CONFIG_PATH.with_name("config.local.json"), "codex")
+    return apply_renamed_keys(full).get("codex_companion", {})   # 舊鍵名照讀、新鍵優先（lib/config_local.RENAMED_KEYS）
 
 
 # ─── Always-on error log（standalone：不依賴 wg_core，寫 stderr）─────────────
@@ -125,7 +126,7 @@ def _resolve_plan_artifact(tool_input: Any, tool_trace: list) -> tuple[str, str]
 
 
 def _handoff_review_on(config: Dict[str, Any]) -> bool:
-    """接續單自檢開不開：寫碼守門開著時看 soft_gate.handoff_review_v6（沒寫＝關），寫碼守門關照 soft_gate.handoff_review（沒寫＝開）。
+    """接續單自檢開不開：寫碼守門開著時看 soft_gate.handoff_review_guarded（沒寫＝關），寫碼守門關照 soft_gate.handoff_review（沒寫＝開）。
     要讀 wg_core（約 70 ms），呼叫端先比完檔名再叫；讀不進來當寫碼守門關。"""
     sg = config.get("soft_gate", {})
     try:
@@ -134,7 +135,7 @@ def _handoff_review_on(config: Dict[str, Any]) -> bool:
     except Exception as e:
         _log_err("codex:v6_switch", e)
         v6 = False
-    return bool(sg.get("handoff_review_v6", False)) if v6 else bool(sg.get("handoff_review", True))
+    return bool(sg.get("handoff_review_guarded", False)) if v6 else bool(sg.get("handoff_review", True))
 
 
 def _detect_checkpoint(

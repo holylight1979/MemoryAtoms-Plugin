@@ -60,7 +60,7 @@ If the git-installed edition of MemoryAtoms is active on the same machine, every
 
 ### MCP server
 
-One stdio server, `workflow-guardian` (`node ${CLAUDE_PLUGIN_ROOT}/tools/workflow-guardian-mcp/server.js`), with 9 tools:
+One stdio server, `workflow-guardian` (`node ${CLAUDE_PLUGIN_ROOT}/tools/workflow-guardian-mcp/server.js`), with 10 tools:
 
 | Tool | What it does |
 |---|---|
@@ -71,6 +71,7 @@ One stdio server, `workflow-guardian` (`node ${CLAUDE_PLUGIN_ROOT}/tools/workflo
 | `atom_edit_meta` | Change a card's header fields. |
 | `atom_retire` | Retire a card. |
 | `knowledge_harvest_report` | Report what the session saved, for the Stop harvest check. |
+| `anti_evasion_report` | Closing self-check report: what you asked for and how it was checked, the tradeoffs made, and what Claude decided on its own. Saved as a closing report for you to read; chat keeps one line. |
 | `memory_search` | Search cards the same way prompt injection does. |
 | `atom_source` | Show where a card came from, quoting the original conversation when it still exists. |
 
@@ -164,7 +165,7 @@ Nine optional plugins from the same marketplace. Each one needs `memoryatoms`; i
 | `memoryatoms-codex` | Codex integration: `/memoryatoms-codex:codex` second opinion and build delegation, plus Codex Companion background review. | `/plugin install memoryatoms-codex@memoryatoms` |
 | `memoryatoms-coordination` | Multi-session coordination: warns when another live session edits the same file or is about to finish with git (warns only, never blocks). | `/plugin install memoryatoms-coordination@memoryatoms` |
 | `memoryatoms-dashboard` | Local web dashboard served from the MCP process: dashboard, brain-world and the wrap-up report HUD. | `/plugin install memoryatoms-dashboard@memoryatoms` |
-| `memoryatoms-handoff` | Handoff notes: prepares `next-phase-auto.md` before compaction and at session end, warns when context is nearly full, and provides `/memoryatoms-handoff:handoff`. | `/plugin install memoryatoms-handoff@memoryatoms` |
+| `memoryatoms-handoff` | Handoff on request: warns when context is nearly full, points to `/memoryatoms-handoff:handoff` when you ask for a handoff, and provides that skill. | `/plugin install memoryatoms-handoff@memoryatoms` |
 | `memoryatoms-statusline` | Status line script: edited files, knowledge queue, vector service, wrap-up report (zero tokens). No hooks, no MCP; you turn it on yourself (below). | `/plugin install memoryatoms-statusline@memoryatoms` |
 | `memoryatoms-usage-watch` | Claude account usage monitor: quota checks, anomaly notifications, and a session-start hint when the monitor is not running. | `/plugin install memoryatoms-usage-watch@memoryatoms` |
 | `memoryatoms-wisdom` | Reflection stats: records how each session went and shows at most two self-awareness lines at session start. | `/plugin install memoryatoms-wisdom@memoryatoms` |

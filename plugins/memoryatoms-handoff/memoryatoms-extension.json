@@ -1,30 +1,21 @@
 {
   "name": "handoff",
-  "description": "Automatic handoff notes: prepares next-phase-auto.md before compaction and at session end, warns when context is nearly full, and provides /handoff",
+  "description": "Handoff on request: warns when context is nearly full, points to /handoff when you ask for a handoff, and provides /handoff",
   "python": {
     "path": ["hooks"],
     "on": {
-      "PreCompact": "handoff_plugin:on_pre_compact",
-      "PostCompact": "handoff_compact:on_post_compact",
-      "PostToolBatch": "handoff_compact:on_post_tool_batch",
-      "SessionEnd": "handoff_plugin:on_session_end",
       "Stop.block_note": "handoff_plugin:block_note",
       "UserPromptSubmit.intent": "handoff_plugin:on_intent"
-    },
-    "state": ["pending_handoff_emit", "handoff_stub_path", "handoff_stub_at"]
+    }
   },
   "config": {
     "auto_handoff": {
-      "_doc": "Auto-Handoff (lossless handoff across sessions). PreCompact writes a six-block stub to _staging right before compaction (the safety net; does not depend on token measurement); PostCompact fills the compaction summary into it; after compaction, PostToolBatch injects a prompt asking the model to complete the subjective blocks. The token_warn keys are the Stop-time context-usage warning. enabled=false turns everything off. Token measurement reads the real token counts from the transcript's message.usage; context_window_tokens is the default / floor of the denominator (1M, matching the usual 1M Opus), and the actual window calibrates itself: once usage has gone past 200k the window must be 1M (the harness compacts before a 200k window fills up, so 200k is never reached). context_base_overhead_tokens is only used by the character-count fallback (when there is no usage). The core's DeferralGate and EVASION_CONTEXT_EXEMPT also read context_window_tokens / context_base_overhead_tokens from this section, with the same literal defaults when the plugin is off.",
+      "_doc": "Context-usage warning at Stop. When the wrap-up gate blocks and context usage is at or above token_warn_ratio, one line is appended suggesting /handoff (once per session). Nothing is written for the next session; a handoff note is only written when someone runs /handoff. enabled=false or token_warn=false turns the warning off. Token measurement reads the real token counts from the transcript's message.usage; context_window_tokens is the default / floor of the denominator (1M, matching the usual 1M Opus), and the actual window calibrates itself: once usage has gone past 200k the window must be 1M (the harness compacts before a 200k window fills up, so 200k is never reached). context_base_overhead_tokens is only used by the character-count fallback (when there is no usage). The core's DeferralGate and EVASION_CONTEXT_EXEMPT also read context_window_tokens / context_base_overhead_tokens from this section, with the same literal defaults when the plugin is off.",
       "enabled": true,
-      "precompact_stub": true,
-      "postbatch_emit": true,
       "token_warn": true,
       "token_warn_ratio": 0.85,
       "context_window_tokens": 1000000,
-      "context_base_overhead_tokens": 15000,
-      "sessionend_fallback": true,
-      "stub_filename": "next-phase-auto.md"
+      "context_base_overhead_tokens": 15000
     }
   }
 }

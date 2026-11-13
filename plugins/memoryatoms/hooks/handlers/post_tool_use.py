@@ -505,7 +505,7 @@ def _aidocs_gate(state: Dict[str, Any], config: Dict[str, Any], normalized: str,
     if not ("/_AIDocs/" in normalized or "/_aidocs/" in normalized.lower()):
         return
     fname = normalized.rsplit("/", 1)[-1]
-    once = v6 and config.get("aidocs", {}).get("advisory_v6_once", True)   # 寫碼守門開著時同一個檔一個 session 只提醒一次
+    once = v6 and config.get("aidocs", {}).get("advisory_once", True)   # 寫碼守門開著時同一個檔一個 session 只提醒一次
     if is_plan_filename(fname) and not (once and normalized in state.get("aidocs_advisory_sent", [])):
         state["_aidocs_advisory"] = i18n.t("hook.post_tool_use.aidocs_temp", fname=fname)
         if once:

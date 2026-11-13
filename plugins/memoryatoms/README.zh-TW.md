@@ -60,7 +60,7 @@ English: [README.md](README.md)
 
 ### MCP 伺服器
 
-一個 stdio 伺服器 `workflow-guardian`（`node ${CLAUDE_PLUGIN_ROOT}/tools/workflow-guardian-mcp/server.js`），9 個工具：
+一個 stdio 伺服器 `workflow-guardian`（`node ${CLAUDE_PLUGIN_ROOT}/tools/workflow-guardian-mcp/server.js`），10 個工具：
 
 | 工具 | 做什麼 |
 |---|---|
@@ -71,6 +71,7 @@ English: [README.md](README.md)
 | `atom_edit_meta` | 改卡片檔頭欄位。 |
 | `atom_retire` | 讓卡退役。 |
 | `knowledge_harvest_report` | 回報這場存了什麼，給 Stop 收割核對。 |
+| `anti_evasion_report` | 收尾檢核報告：你要的事做了什麼、怎麼確認，取捨，以及 Claude 自己決定的事。存成收尾報告給你看，對話只留一行。 |
 | `memory_search` | 用和每句注入相同的方式找卡。 |
 | `atom_source` | 看卡片從哪來；原對話還在就引原句。 |
 
@@ -164,7 +165,7 @@ Claude Code 內建的自動記憶插件關不掉；見上面的 `/memory` 建議
 | `memoryatoms-codex` | Codex 整合：`/memoryatoms-codex:codex` 第二意見與交辦施工，加上 Codex Companion 背景審查。 | `/plugin install memoryatoms-codex@memoryatoms` |
 | `memoryatoms-coordination` | 多 session 協作：另一個還開著的 session 改同一個檔、或要收尾動 git 時提醒（只提醒，不擋）。 | `/plugin install memoryatoms-coordination@memoryatoms` |
 | `memoryatoms-dashboard` | MCP 行程內的本機網頁儀表板：dashboard、brain-world、收尾報告 HUD。 | `/plugin install memoryatoms-dashboard@memoryatoms` |
-| `memoryatoms-handoff` | 交接單：壓縮前與 session 結束時備好 `next-phase-auto.md`、context 快滿時提醒，並提供 `/memoryatoms-handoff:handoff`。 | `/plugin install memoryatoms-handoff@memoryatoms` |
+| `memoryatoms-handoff` | 要交接時才寫交接單：context 快滿時提醒、說要交接時指向 `/memoryatoms-handoff:handoff`，並提供這個技能。 | `/plugin install memoryatoms-handoff@memoryatoms` |
 | `memoryatoms-statusline` | 狀態列腳本：改過的檔、知識佇列、向量服務、收尾報告（不花 token）。沒有 hook、沒有 MCP，要你自己打開（見下方）。 | `/plugin install memoryatoms-statusline@memoryatoms` |
 | `memoryatoms-usage-watch` | Claude 帳號用量監控：額度檢查、異常通知，監控沒在跑時開場提示一行。 | `/plugin install memoryatoms-usage-watch@memoryatoms` |
 | `memoryatoms-wisdom` | 反思統計：記錄每場 session 的狀況，開場最多兩行自我提醒。 | `/plugin install memoryatoms-wisdom@memoryatoms` |

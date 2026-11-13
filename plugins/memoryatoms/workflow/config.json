@@ -422,6 +422,7 @@
     ],
     "root_extra_pathspecs": [
       "TECH.md",
+      "TECH.zh-TW.md",
       "_AIDocs/_INDEX.md"
     ],
     "org_extra_pathspecs": [

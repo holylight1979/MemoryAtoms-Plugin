@@ -9,7 +9,7 @@ disable-model-invocation: true
 > Toggles the Codex Companion supervision system. When on, Codex (GPT) gives an independent second opinion at plan review, turn audit, and acceptance judging (the last also needs the coding gate on); turning it off stops all three.
 > Global skill, works in any project.
 >
-> **Handoff self-check**: Codex review of handoff files is controlled by `soft_gate.handoff_review` or `handoff_review_v6` (which one applies depends on the coding gate); both are off by default, so turning this switch on does not start it. Handoffs rely on the skills/handoff Step 3.5 self-review; for a second opinion, call skill `codex`.
+> **Handoff self-check**: Codex review of handoff files is controlled by `soft_gate.handoff_review` (coding gate off) or `soft_gate.handoff_review_guarded` (coding gate on); both are off by default, so turning this switch on does not start it. Handoffs rely on the skills/handoff Step 3.5 self-review; for a second opinion, call skill `codex`.
 >
 > **Architecture**: this skill only flips a config flag and does not manage a service lifecycle; the Codex audit runs as a short-lived subprocess `tools/codex-companion/audit.py` (in-process state), with no resident daemon.
 

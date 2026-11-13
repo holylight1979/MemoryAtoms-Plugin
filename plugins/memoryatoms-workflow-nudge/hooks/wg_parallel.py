@@ -16,7 +16,7 @@ Config (workflow/config.json `parallel_agents`):
   - max_per_session: int (default 2) — 同類建議一個 session 最多出幾次（state.parallel_suggest_count）
   - cooldown_turns: int (default 3)
   - min_prompt_chars: int (default 15)
-  - v6_once: bool (default true) — 寫碼守門開著時一個 session 只送一次；寫碼守門關照 cooldown_turns 冷卻
+  - notice_once: bool (default true) — 寫碼守門開著時一個 session 只送一次；寫碼守門關照 cooldown_turns 冷卻
 """
 
 from __future__ import annotations
@@ -173,7 +173,7 @@ def detect_parallel_opportunity(
     cfg = config.get("parallel_agents", {})
     if not cfg.get("enabled", True):
         return None
-    if "parallel_last_inject_turn" in state and cfg.get("v6_once", True):
+    if "parallel_last_inject_turn" in state and cfg.get("notice_once", True):
         from wg_core import v6_enabled
         if v6_enabled(config):
             return None

@@ -166,6 +166,8 @@
  "hook.chain_store.why_tail_no_prev": "no previous assistant message within the last {bytes} bytes of the transcript",
  "hook.chain_store.why_transcript_unreadable": "transcript unreadable",
  "hook.config_local.read_failed": "[{tag}] failed to read {path}; skipping the local override: {error}",
+ "hook.config_local.renamed_key": "[config] {old} is an old key name and is still read; please rename it to {new}",
+ "hook.config_local.renamed_key_ignored": "[config] both {old} and {new} are set; using {new} and not reading the old key {old}",
  "hook.core.cross_realm_mcp_block": "[Guardian:CrossRealmMcpBlock] Detected a global MCP change from a session in an outside project:\nCommand: {cmd}\nsession cwd: {cwd}\nReason blocked: {reason}.\nWhat to do instead:\n  (1) For an MCP the project needs -> `claude mcp add <name> -s project ...` (writes the project's .mcp.json, which can be shared through version control)\n  (2) If you really need to register/remove it globally -> do it from a session opened in ~/.claude, or temporarily turn this gate off with config guard.cross_realm_write.enabled=false",
  "hook.core.mcp_add_user_scope": "add with `-s user` (writes the global ~/.claude.json mcpServers)",
  "hook.core.mcp_remove_unscoped": "remove without `-s project|local` (may remove a global server)",

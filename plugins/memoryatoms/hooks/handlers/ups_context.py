@@ -54,7 +54,7 @@ def build_context(
 
     # ─── _AIDocs keyword matching ──────────────────
     # 只在命中明顯（關鍵字命中數 ≥ aidocs.min_prompt_hits，預設 2）才指、最多 aidocs.max_prompt_matches（預設 1）條、
-    # 命中最多的優先；同一份文件一個 session 只指一次（aidocs.v6_once 沒寫＝開，不看寫碼守門總開關）；超過 5 份命中不送照舊判
+    # 命中最多的優先；同一份文件一個 session 只指一次（aidocs.notice_once 沒寫＝開，不看寫碼守門總開關）；超過 5 份命中不送照舊判
     aidocs_cfg = config.get("aidocs", {})
     aidocs_state = state.get("aidocs", {})
     aidocs_kw_map = aidocs_state.get("keywords", {})
@@ -65,7 +65,7 @@ def build_context(
         scored = [(n, f) for n, f in scored if n >= min_hits]
         scored.sort(key=lambda t: -t[0])
         matched_docs: List[str] = [f for _n, f in scored]
-        if matched_docs and len(matched_docs) <= 5 and aidocs_cfg.get("v6_once", True):
+        if matched_docs and len(matched_docs) <= 5 and aidocs_cfg.get("notice_once", True):
             pointed = state.setdefault("aidocs_pointed", [])
             matched_docs = [d for d in matched_docs if d not in pointed]
             pointed.extend(matched_docs[:max_matches])

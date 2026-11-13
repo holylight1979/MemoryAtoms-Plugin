@@ -84,7 +84,7 @@ DEFAULTS: Dict[str, Any] = {
     "root_pathspecs": ["memory", "_AIDocs/_atoms"],
     "project_pathspecs": [".claude/memory"],
     # 根層非記憶但隨 atom 寫入連動的檔（sync_doc_counts 的計數標記）：只進 pathspec、不進 mem_dirs
-    "root_extra_pathspecs": ["TECH.md", "_AIDocs/_INDEX.md", "_AIDocs/DocIndex-System.md"],
+    "root_extra_pathspecs": ["TECH.md", "TECH.zh-TW.md", "_AIDocs/_INDEX.md", "_AIDocs/DocIndex-System.md"],
     "org_extra_pathspecs": ["usage-snapshots"],
     "exclude": ["**/*.access.json", "memory/_meta/**"],
     "timeout_s": 60,

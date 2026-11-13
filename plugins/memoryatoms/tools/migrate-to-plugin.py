@@ -29,6 +29,7 @@ if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 from lib.i18n import t  # noqa: E402
 from lib.project_root import claude_global_config  # noqa: E402
+from lib.wg_platform import no_window_kwargs  # noqa: E402
 
 MCP_NAME = "workflow-guardian"
 PLUGIN_ID = "memoryatoms@memoryatoms"
@@ -130,7 +131,8 @@ def claude_command(override: str) -> Optional[list[str]]:
 
 def run_claude(cmd: list[str], args: list[str]) -> tuple[int, str]:
     try:
-        r = subprocess.run(cmd + args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+        r = subprocess.run(cmd + args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+                           **no_window_kwargs())
     except (OSError, subprocess.TimeoutExpired) as e:
         return 1, str(e)
     return r.returncode, (r.stderr or r.stdout or "").strip()

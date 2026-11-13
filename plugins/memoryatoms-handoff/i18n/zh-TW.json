@@ -1,9 +1,4 @@
 {
- "ext.handoff.cannot_read_stub": "[auto-handoff] 讀不到交接單，補全提示照完整版送：{error}",
- "ext.handoff.compaction_summary_failed": "[auto-handoff] 壓縮摘要沒寫進交接單（交接單照舊只有客觀區塊）：{etype}: {error}",
- "ext.handoff.compaction_summary_written": "[auto-handoff] 壓縮摘要已寫進交接單：{written}",
- "ext.handoff.context_nearly_full": "\n[Auto-Handoff] context 估佔 ~{pct}%（依 API 實際 token 用量），接近自動壓縮點。建議主動 `/memoryatoms-handoff:handoff` 備妥六區塊交接、或開新 session 前先存檔（壓縮真發生時系統會自動備 stub 保底）。是否已『處理失真』由你語意判斷。",
- "ext.handoff.intent_detected": "[Guardian:Handoff] 偵測到 handoff 意圖。接手的 session 裡的 Claude 不會看到本次對話脈絡。請執行 /memoryatoms-handoff:handoff 走 6 區塊強制模板，不要徒手寫 prompt。",
- "ext.handoff.stub_prepared": "[Auto-Handoff] 剛發生壓縮。已自動備妥 handoff stub 於 `{stub_path}`（客觀區塊已填）。請**補全其中 `{todo}` 三區塊**（why / 做法 / 決策依據）使其達六區塊自足，確保接手的 session 用 `/continue` 無損接續。",
- "ext.handoff.summary_filled": "[Auto-Handoff] 剛發生壓縮。handoff stub `{stub_path}` 的壓縮摘要已填入，只需確認下一步並補 `{todo}`，確保接手的 session 用 `/continue` 無損接續。"
+ "ext.handoff.context_nearly_full": "\n[Auto-Handoff] context 估佔 ~{pct}%（依 API 實際 token 用量），接近自動壓縮點。建議主動 `/memoryatoms-handoff:handoff` 備妥六區塊交接、或開新 session 前先存檔。是否已『處理失真』由你語意判斷。",
+ "ext.handoff.intent_detected": "[Guardian:Handoff] 偵測到 handoff 意圖。接手的 session 裡的 Claude 不會看到本次對話脈絡。請執行 /memoryatoms-handoff:handoff 走 6 區塊強制模板，不要徒手寫 prompt。"
 }

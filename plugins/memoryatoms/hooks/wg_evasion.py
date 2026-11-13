@@ -1343,7 +1343,7 @@ def _load_oscillation_warnings(state: Dict[str, Any], config: Optional[Dict[str,
         return None
     entry = _read_osc_pools(WORKFLOW_DIR / "oscillation_state.json").get(key) or {}
     oscillations = entry.get("oscillations", [])
-    names = _notice_new_items(state, config, "oscillation_v6_once", "oscillation_notice_sent",
+    names = _notice_new_items(state, config, "oscillation_once", "oscillation_notice_sent",
                               [o["atom"] for o in oscillations])
     if not names:
         return None

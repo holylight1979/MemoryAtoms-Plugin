@@ -62,7 +62,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.atom_io import write_index_full  # noqa: E402
 from lib.i18n import t  # noqa: E402
 from lib.edition import generated_language, layered_config, layered_meta  # noqa: E402  插件版出廠設定、詞表墊底
-from lib.atom_index_json import has_indexable_cards, load_atom_index_json  # noqa: E402
+from lib.atom_index_json import MIRROR_PIPE, has_indexable_cards, load_atom_index_json  # noqa: E402
+from lib.atom_index_json import _mirror_cell as _cell  # noqa: E402  說明欄的「|」寫成 MIRROR_PIPE，和 _ATOM_INDEX.md 鏡像同一套
 from lib.atom_locations import (  # noqa: E402
     CORE_ATOMS_REL,
     FAILURES_REL,
@@ -190,7 +191,7 @@ def parse_existing_captions(memory_path: Path) -> dict:
         cells = [c.strip() for c in s.strip("|").split("|")]
         if len(cells) != 2:
             continue
-        name, cap = cells
+        name, cap = cells[0], cells[1].replace(MIRROR_PIPE, "|")   # 寫入端把說明裡的「|」寫成 MIRROR_PIPE，讀回原字
         if not name or name == "Atom" or set(name) <= {"-"}:
             continue  # 跳過表頭 / 分隔列
         caps[name] = cap
@@ -436,7 +437,7 @@ def _render_core_flat(individual, feedback_rows, failures_other, local_atoms) ->
         "|------|------|",
     ]
     for name, cap, _ in individual:
-        lines.append(f"| {name} | {cap} |")
+        lines.append(f"| {name} | {_cell(cap)} |")
     if feedback_rows:
         fb_dir = (LEGACY_FAILURES_REL
                   if all(is_legacy_failures_path(rp) for _n, rp in feedback_rows)
@@ -446,7 +447,7 @@ def _render_core_flat(individual, feedback_rows, failures_other, local_atoms) ->
             f" → [`{fb_dir}/`](../{fb_dir}/) |"
         )
     for name, cap, rel_path in failures_other:
-        lines.append(f"| {name} | {cap} → [`{rel_path}`](../{rel_path}) |")
+        lines.append(f"| {name} | {_cell(cap)} → [`{rel_path}`](../{rel_path}) |")
     if local_atoms:
         lines += ["", _gt("local_pointer")]
     return "\n".join(lines)
@@ -578,7 +579,7 @@ def render_language_view(groups: dict) -> str:
     lines += [f"| {lang} | {len(items)} |" for lang, items in groups.items()]
     for lang, items in groups.items():
         lines += ["", f"## {lang}", "", f"| {lang} | {_gt('description')} |", "|------|------|"]
-        lines += [f"| `{rel_path}` | {cap} |" for rel_path, cap in items]
+        lines += [f"| `{rel_path}` | {_cell(cap)} |" for rel_path, cap in items]
     return "\n".join(lines)
 
 
@@ -715,7 +716,7 @@ def render_project_catalog(rows: List[Tuple[str, str, str]], claude_root: Path,
     if flat:
         lines += ["", _gt("uncategorized_header"), "|------|------|"]
         for name, cap, _rel in sorted(flat):
-            lines.append(f"| {name} | {cap} |")
+            lines.append(f"| {name} | {_cell(cap)} |")
     return "\n".join(lines)
 
 
@@ -815,7 +816,7 @@ def render_level_index(node: _Node, rel_dir: str, hierarchical: Optional[bool] =
     if node.atoms:
         lines += ["", _gt("level_atoms"), "", _gt("atom_header"), "|------|------|"]
         for name, cap, _ in sorted(node.atoms):
-            lines.append(f"| {name} | {cap} |")
+            lines.append(f"| {name} | {_cell(cap)} |")
     if node.children:
         lines += ["", _gt("level_children"), "", _gt("level_children_header"), "|------|---------|------|"]
         for cn in sorted(node.children):

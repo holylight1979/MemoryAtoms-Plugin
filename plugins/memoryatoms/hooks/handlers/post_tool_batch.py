@@ -5,7 +5,7 @@ PostToolBatch：一批（含並行）工具呼叫全解析後觸發一次，於�
 payload: tool_calls[]；反編譯實證支援 hookSpecificOutput.additionalContext）。
 
 職責：壓縮後卡片內文的補位——SessionStart(compact) 沒送成時，把 PostCompact 暫存的內文「一次性」送出
-（SessionStart 送過就只清旗標）；插件點 PostToolBatch 回的話（例：交接單插件壓縮後的補全提示）、PreToolUse 沒攔到的提問事後提醒
+（SessionStart 送過就只清旗標）；插件點 PostToolBatch 回的話、PreToolUse 沒攔到的提問事後提醒
 （wg_ask_gate）併進同一段送出。
 收尾類守門的提醒（規則 REMIND_ON_PRIOR_RESULT；判定與送法照 wg_release_rules 檔尾的 RULE_MODE）：這一批改了程式檔，就算出目前欠的
 各一行（closing_reminders：等值意圖、搬目錄、改了 MCP 檔、退縮歸屬、收尾檢核、同步、深度檢討、取用稽核）；

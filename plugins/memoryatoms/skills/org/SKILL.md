@@ -10,7 +10,7 @@ metadata:
 # /memoryatoms:org — Org-layer shared memory
 
 > The org memory repo is a memory layer that every project can see and write to. This skill wraps four tasks into one entry
-> so the user can just ask in plain words, with no commands to remember. For mechanism details see `TECH.md` §4.4 in the install folder (Traditional Chinese only for now); for script arguments,
+> so the user can just ask in plain words, with no commands to remember. For mechanism details see `TECH.md` §4.4 in the install folder; for script arguments,
 > `python "${CLAUDE_PLUGIN_ROOT}/tools/org-memory.py" --help` is authoritative.
 
 ## Usage

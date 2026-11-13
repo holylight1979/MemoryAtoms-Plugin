@@ -33,6 +33,7 @@ if str(CODE_ROOT) not in sys.path:
 from lib.i18n import t  # noqa: E402
 from lib.project_root import claude_data_dir  # noqa: E402
 from lib.vector_venv import venv_dir, venv_has_lancedb, venv_python  # noqa: E402
+from lib.wg_platform import no_window_kwargs  # noqa: E402
 
 LOCK_FILE = CODE_ROOT / "tools" / "memory-vector-service" / "requirements.lock"
 RELEASE_API = "https://api.github.com/repos/ollama/ollama/releases/latest"
@@ -52,7 +53,8 @@ class RealExec:
 
     def run(self, argv: List[str], timeout: Optional[float] = None) -> Tuple[int, str]:
         try:
-            done = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+            done = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                                  **no_window_kwargs())
         except (OSError, subprocess.TimeoutExpired) as e:
             return 1, str(e)
         return done.returncode, (done.stdout or "") + (done.stderr or "")
