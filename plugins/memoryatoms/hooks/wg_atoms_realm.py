@@ -126,7 +126,7 @@ def _scan_doc_refs(moved: List[Dict[str, Any]]) -> Dict[str, List[str]]:
             if _is_atom_physical_rel(rel):
                 continue
             docs.append(p)
-    for fn in ("README.md", "TECH.md"):
+    for fn in ("README.md", "README.zh-TW.md", "TECH.md", "TECH.zh-TW.md"):
         p = CLAUDE_DIR / fn
         if p.exists():
             docs.append(p)

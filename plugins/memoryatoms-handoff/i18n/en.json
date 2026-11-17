@@ -1,4 +1,4 @@
 {
- "ext.handoff.context_nearly_full": "\n[Auto-Handoff] Context is at about {pct}% (from actual API token usage), close to the auto-compaction point. Consider running `/memoryatoms-handoff:handoff` now to prepare the six-section handoff, or save your work before starting a new session. Whether the risk of losing context has already been handled is your call.",
+ "ext.handoff.context_nearly_full": "\n[Handoff] Context is at about {pct}% (from actual API token usage), close to the auto-compaction point. Consider running `/memoryatoms-handoff:handoff` now to prepare the six-section handoff, or save your work before starting a new session. Whether the risk of losing context has already been handled is your call.",
  "ext.handoff.intent_detected": "[Guardian:Handoff] Handoff intent detected. The Claude in the receiving session will not see this conversation. Run /memoryatoms-handoff:handoff to fill in the mandatory 6-section template; do not write the prompt by hand."
 }

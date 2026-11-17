@@ -2,8 +2,8 @@
 handlers/post_tool_use_writes.py — 改檔帳：modified_files、未知寫入、commit
 
 從 post_tool_use.py 拆出。做什麼：記本 session 改了哪些檔（同檔去重、子代理另記一份）；寫入目標判不出來時記「未知寫入」並從版控狀態補算；
-git／svn commit 記 last_commit_turn_seq 與 committed_new_code；失敗的指令前段已寫下去的檔照記。
-誰叫它：post_tool_use.handle_post_tool_use、handle_judge_post_tool_use（裁判最小記帳）、handle_post_tool_use_failure。
+git／svn commit 記 last_commit_turn_seq；失敗的指令前段已寫下去的檔照記。
+誰叫它：post_tool_use.handle_post_tool_use、handle_post_tool_use_failure。
 """
 
 import json
@@ -36,41 +36,20 @@ _VCS_COMMIT_RE = re.compile(r"\b(?:git|svn)\b[^|&;\n]*?\bcommit\b", re.IGNORECAS
 
 def _note_commit(state: Dict[str, Any], command: str, config: Optional[Dict[str, Any]] = None,
                  session_id: str = "") -> bool:
-    """跑了 git／svn commit → state["last_commit_turn_seq"]＝本回合；回有沒有記。一般與裁判 PostToolUse 共用這一條：
-    ScanReport 閘據此豁免收尾檢核（工作已寫進 VCS 歷史＝可稽核），寫碼查核判「改過又原樣還原」也看它（改完 commit 了，
-    工作樹乾淨不代表沒改）。同時記 committed_new_code（_note_committed_new_code）。"""
+    """跑了 git／svn commit → state["last_commit_turn_seq"]＝本回合；回有沒有記。
+    ScanReport 閘據此豁免收尾檢核（工作已寫進 VCS 歷史＝可稽核）。"""
     if not _VCS_COMMIT_RE.search(command):
         return False
     state["last_commit_turn_seq"] = int(state.get("turn_seq", 0))
-    own = [m for m in (state.get("modified_files") or []) if (m or {}).get("session_id", session_id) == session_id]
-    _note_committed_new_code(state, own, _vl.reconcile_cfg(config or {}))
     return True
-
-
-def _note_committed_new_code(state: Dict[str, Any], own: List[Dict[str, Any]], cfg: Dict[str, Any]) -> None:
-    """commit 之後，本 session 改過的檔所在的每個 git 根，記下 HEAD 那筆提交新增、改名、複製進來的程式檔
-    （state["committed_new_code"][根]＝{shas, paths}）。讀者：寫碼查核判「內容等於已提交版本」（committed_equal_paths）認本 session 自己的提交。
-    讀不到只少這份證據，stderr 由 head_new_code 說。"""
-    rec = state.setdefault("committed_new_code", {})
-    seen = set()
-    for m in own:
-        hit = _vl._git_root_of(str((m or {}).get("path") or ""))
-        if not hit or hit[0] in seen:
-            continue
-        seen.add(hit[0])
-        sha, new = _vl.head_new_code(hit[1], cfg)
-        r = rec.setdefault(hit[0], {"shas": [], "paths": []})
-        if sha and sha not in r["shas"]:
-            r["shas"] = (r["shas"] + [sha])[-50:]
-            r["paths"] = list(dict.fromkeys(r["paths"] + new))[-200:]
 
 
 def _note_modified(state: Dict[str, Any], session_id: str, file_path: str, tool_name: str, agent_id: str = "",
                    via: str = "") -> None:
     """modified_files 以 (path, session_id) 去重：重複編輯只累加 count、刷 at／tool／last_turn_seq，
-    不無限累積 entry。turn_seq＝第一次改的回合、last_turn_seq＝最近一次改的回合（對帳閘「本 turn 改了哪些」用）。
+    不無限累積 entry。turn_seq＝第一次改的回合、last_turn_seq＝最近一次改的回合（收尾各閘判「本 turn 改了哪些」用）。
     消費端計「編輯次數」者（wisdom track_retry）讀 count 欄（legacy 無 count → 預設 1）。
-    子代理（agent_id 非空）改的檔另記一份到 agent_modified_files[agent_id]（SubagentStop 的對帳／量尺閘只看子代理自己的）；
+    子代理（agent_id 非空）改的檔另記一份到 agent_modified_files[agent_id]（子代理收尾只看子代理自己的）；
     主 session 的 modified_files 照舊也記，主 session 行為不變。
     sha＝寫完之後的內容雜湊（small_content_sha，太大的檔不記）；檔已不存在（rm、搬走）就留上一次的：判不出目標的寫入事後補帳時
     （UNKNOWN_WRITE_RECOVERED，_unchanged_since_noted）拿它認「記過之後沒再改」。
@@ -131,7 +110,6 @@ def _upsert_modified(state: Dict[str, Any], mods: List[Dict[str, Any]], session_
 
 
 UNKNOWN_WRITES_CAP = 20
-EXEC_TURN_KEYS_CAP = 50          # exec_turn_seq 最多記幾個 session／子代理（主 session＋每個子代理各一個鍵）
 
 
 def _note_unknown_write(state: Dict[str, Any], session_id: str, target: str, command: str, tool_name: str,
@@ -166,7 +144,7 @@ def _recover_unknown_write(state: Dict[str, Any], session_id: str, command: str,
     記進 modified_files（via=vcs_status）。本 session 已經記過的檔：內容雜湊跟上次一樣、或上次記下之後 mtime 沒再變（太大的檔
     沒有雜湊，靠這一條）→ 這次沒改到它，不刷成本回合改的；暫存路徑照 Edit 的規矩濾掉。整棵查逾時的根記在
     state unknown_write_slow_roots，同 session 之後只查點名的檔。
-    回 (補到的檔, 補不到或只補到一部分的原因)；耗時（含雜湊與啟動器檢查）與結果留 guard-unknown_write.jsonl。
+    回 (補到的檔, 補不到或只補到一部分的原因)；耗時（含雜湊）與結果留 guard-unknown_write.jsonl。
     出錯只 stderr＋留帳、照記已補到的，不影響這次工具。"""
     import wg_unknown_write as uw
     t0 = time.monotonic()
@@ -196,7 +174,6 @@ def _recover_unknown_write(state: Dict[str, Any], session_id: str, command: str,
             _note_modified(state, session_id, p, tool_name, agent_id, via=uw.VIA)
             noted.append(p)
             _ensure_lf(p)             # LF_AFTER_WRITE：內嵌 python 寫檔（open(..., 'w')）的 CRLF 主要從這條進來
-            _note_launcher(p)         # LAUNCHER_NOT_CODE：內嵌碼寫出來的啟動器也認
         except Exception as e:  # noqa: BLE001
             print(i18n.t("hook.post_tool_use_writes.note_failed", path=p, error=f"{type(e).__name__}: {e}"), file=sys.stderr)
             why = "; ".join(x for x in (why, i18n.t("hook.post_tool_use_writes.note_failed_why", name=Path(p).name, error=type(e).__name__)) if x)
@@ -224,14 +201,6 @@ def _unchanged_since_noted(path: str, prev: Optional[Dict[str, Any]]) -> bool:
         return os.path.getmtime(path) < at + 1
     except (ValueError, OSError):
         return False
-
-
-def _note_launcher(path: str) -> None:
-    """note_git_launcher 包一層：讀不了的內容（非 UTF-8 的 .py）、查 git 出錯只 stderr，不讓同一批後面的改檔記不到。"""
-    try:
-        _vl.note_git_launcher(path)
-    except Exception as e:  # noqa: BLE001
-        print(i18n.t("hook.post_tool_use_writes.launcher_check_failed", name=Path(path).name, error=f"{type(e).__name__}: {e}"), file=sys.stderr)
 
 
 def _note_failed_writes(state: Dict[str, Any], input_data: Dict[str, Any], tool_name: str, session_id: str,

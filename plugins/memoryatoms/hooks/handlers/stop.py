@@ -3,25 +3,19 @@ handlers/stop.py — Stop hook handler
 
 閘序：
 1. Test-Fail Gate（測試未綠 + 宣告完成 → 擋；寫碼守門開或關同一套，不看擋次預算）
-1b. Reconcile Gate（收尾宣稱 vs 驗證收據：說修好要 PASS、說量了要 DONE、說試過要有執行、搬程式目錄要有掃描與抽樣、AEC 要 j／k）；
-    獨立預算 reconcile_gate.max_blocks_per_turn
 1e. Equivalence Gate（G7：重構／效能意圖、本回合改過程式檔、宣告完成 → 等值證法三類與熱路徑一問；自己的預算，擋滿問使用者）
 2. Evasion 偵測（軟糾正）／Deferral Gate（退縮歸屬）
 3. KnowledgeHarvest Gate（宣告完成 → 要求 knowledge_harvest_report；Harvest-Pending 擋核不過的 item）
 4. Scan-Report Gate（宣告完成但缺 anti_evasion_report emit → 硬阻）
 5. Sync Reminder Gate（modified_files>0 仍未 commit/push → 軟阻；vcs-sync worker 活鎖中的 root 跳過）
 + 一般 sync block 邏輯
-寫碼查核（Reconcile）的預算：每個使用者回合 reconcile_gate.max_blocks_per_turn 次，
-擋滿後不自行放行：改送擋滿訊息要模型用 AskUserQuestion 問使用者（wg_release）；使用者在最後一次擋之後放行，才放這一回合並記
-guard-reconcile.jsonl user_release，放行的那幾件之後的回合原因還在也不再要求放行。擋滿的待放行只在同一個使用者回合有效。
-無法互動（headless／SDK、子代理、裁判子 session）不叫它問：擋滿就放行並留帳。查核自己判定出錯：同一個錯誤每個使用者回合
-擋一次，之後放行並留帳。其餘共用 stop_gate_max_blocks 的閘每個使用者回合重新計次，擋滿後本來要擋的那次放行但不無聲
+共用 stop_gate_max_blocks 的閘每個使用者回合重新計次，擋滿後本來要擋的那次放行但不無聲
 （規則 SHARED_BUDGET_RELEASE_NOTICE，stop_output._budget_released：留帳 guard-shared_budget event=budget_released＋systemMessage 一行＋下一個工具結果提醒模型；守門家族關只有取用稽核吃這份預算，不排模型提醒）。
-擋或提醒（寫碼守門；規則 GATE_MODE_TABLE／STOP_REMIND_LEDGER_ONLY，表在 wg_release_rules 檔尾）：每道閘拿到擋訊息後先問 gate_mode／hit_mode：
-照擋的只有對帳 (a) 說修好要有 PASS（子代理同一套）；紅測閘不問、一律擋；知識收割同 session 第偶數次判欠才擋（wg_harvest.harvest_send_mode）；其餘判成提醒的閘判定照跑、一回合一次的記號照記，但只留帳（_remind_logged：
+擋或提醒（寫碼守門；規則 GATE_MODE_TABLE／STOP_REMIND_LEDGER_ONLY，表在 wg_release_rules 檔尾）：每道閘拿到擋訊息後先問 gate_mode：
+紅測閘不問、一律擋；知識收割同 session 第偶數次判欠才擋（wg_harvest.harvest_send_mode）；其餘判成提醒的閘判定照跑、一回合一次的記號照記，但只留帳（_remind_logged：
 guard log event=remind＋stderr 一行），不擋、不續跑、不開放行題、不吃擋滿預算；提醒本身掛在改程式檔那則工具結果（handlers/post_tool_batch）。
 總開關關時 gate_mode 一律回 block，行為同 9e476fd0。
-等背景工作（規則 STOP_DEFERS_WHILE_BACKGROUND_RUNNING，_bg_defer）：Stop 輸入的 background_tasks／session_crons 有項目 → 紅測閘與寫碼查核照跑，
+等背景工作（規則 STOP_DEFERS_WHILE_BACKGROUND_RUNNING，_bg_defer）：Stop 輸入的 background_tasks／session_crons 有項目 → 紅測閘照跑，
 其餘的閘與效用歸因延到背景工作回報那次收尾；同一個背景項目連延 BG_DEFER_MAX 次之後照擋。每次延後與到上限都寫 guard-stop_background.jsonl。
 子代理注入的效用帳（規則 SUBAGENT_RESULT_FROM_SUBAGENT_STOP）：SubagentStop 依 agent_id 把最後回覆填回 subagent_injections 那筆，
 Stop 結算看收到結果的回合；背景子代理還沒收尾的標 waiting、不結。寫碼守門關也記（dispatcher 照樣分派 SubagentStop）。
@@ -31,8 +25,6 @@ Stop 結算看收到結果的回合；背景子代理還沒收尾的標 waiting�
 （誰填哪幾欄寫在欄位旁），步驟開頭把要用的欄位取成區域變數。
 """
 
-import hashlib
-import json
 import os
 import re
 import subprocess
@@ -53,26 +45,12 @@ from wg_release_rules import in_turn, turn_start, user_turn as _user_turn
 from wg_evasion import (
     claims_completion, detect_evasion, deferral_gate_reason,
     get_last_assistant_text, detect_missing_aec_emission,
-    get_current_turn_text, read_transcript_tail, get_current_turn_visible_text,
+    get_current_turn_text, read_transcript_tail,
     is_context_exempt_phrase, _aec_blank, closing_check_waiver, completion_threshold_met, dismissed_recently, CLOSING_CHECK_ITEM,
 )
 from wg_lazy_re import lazy_func, lazy_module
-# 守門家族檔（插件版不出廠）的函式：名字原樣留在入口（測試與插件從這裡取、測試照換得掉），呼叫時才載那支
-receipts_of = lazy_func("wg_verify_ledger", "receipts_of")
-reconcile_cfg = lazy_func("wg_verify_ledger", "reconcile_cfg")
-reconcile_gate_parts = lazy_func("wg_verify_ledger", "reconcile_gate_parts")
-agent_receipt_key = lazy_func("wg_verify_ledger", "agent_receipt_key")
-measure_cmds_of = lazy_func("wg_verify_ledger", "measure_cmds_of")
-load_self_runs = lazy_func("wg_verify_ledger", "load_self_runs")
-measure_parts = lazy_func("wg_verify_ledger", "measure_parts")
-self_run_covered = lazy_func("wg_verify_ledger", "self_run_covered")
-net_unchanged_paths = lazy_func("wg_verify_ledger", "net_unchanged_paths")
-committed_equal_paths = lazy_func("wg_verify_ledger", "committed_equal_paths")
-git_deadline = lazy_func("wg_verify_ledger", "git_deadline")
-copied_glob_source = lazy_func("wg_verify_ledger", "copied_glob_source")
-git_launcher = lazy_func("wg_verify_ledger", "git_launcher")
 from wg_release_rules import (
-    parse_hits, budget_exhausted, budget_tick, exhausted_summary, is_worktree_checkout, push_required_verdict,
+    parse_hits, is_worktree_checkout, push_required_verdict,
     dpm_instruction_text, retry_rounds_text, RELOAD_ADVICE_RE, reload_advice_verdict,
     evasion_context_exempt_verdict,
     red_item_label, cmd_run_line, parse_equivalence_lines,
@@ -88,7 +66,6 @@ from wg_release_rules import format_hit
 from wg_release_rules import gate_mode as _gate_mode, parse_hit_rules as _parse_hit_rules, REMIND as _REMIND, BLOCK as _BLOCK
 # 寫碼守門的模組第一次用到才載（HOOK_IMPORT_ON_USE）：守門關、子代理收尾、或這次收尾走不到那道閘，就一行都不載
 chain_store = lazy_module("chain_store")   # 連鎖斷路器的帳、快照、還原（lib/；判定在 hooks/wg_chain.py）
-_rel = lazy_module("wg_release")           # 擋滿放行：放行題、待放行紀錄
 
 
 def token_warn_payload(state: Dict[str, Any], config: Dict[str, Any], transcript: Any, *, transcript_text: Optional[str] = None) -> str:
@@ -131,11 +108,6 @@ _dpm_instruction = lazy_func("handlers.stop_postmortem", "_dpm_instruction")
 _dpm_marker = lazy_func("handlers.stop_postmortem", "_dpm_marker")
 _dpm_trigger_text = lazy_func("handlers.stop_postmortem", "_dpm_trigger_text")
 _should_deep_postmortem = lazy_func("handlers.stop_postmortem", "_should_deep_postmortem")
-_code_check_text = lazy_func("handlers.stop_code_gate", "_code_check_text")
-_code_gate_no_ask = lazy_func("handlers.stop_code_gate", "_code_gate_no_ask")
-_judge_error = lazy_func("handlers.stop_code_gate", "_judge_error")
-_move_inputs = lazy_func("handlers.stop_code_gate", "_move_inputs")
-_verify_gates = lazy_func("handlers.stop_code_gate", "_verify_gates")
 _equivalence_applies = lazy_func("handlers.stop_equivalence", "_equivalence_applies")
 _equivalence_gate = lazy_func("handlers.stop_equivalence", "_equivalence_gate")
 _equivalence_on = lazy_func("handlers.stop_equivalence", "_equivalence_on")
@@ -184,9 +156,6 @@ def _scan_report_gate_on(config: Dict[str, Any]) -> bool:
     return (config.get("aec") or {}).get("scan_report_gate", True) is not False
 
 
-LEGACY_PENDING = i18n.t("hook.stop.legacy_pending")
-
-
 SUBAGENT_RESULT_CAP = 400   # 子代理結果摘要字元上限（與 post_tool_use._SUBAGENT_SUMMARY_CAP 同長）
 
 
@@ -205,32 +174,13 @@ def _fill_subagent_result(state: Dict[str, Any], agent_id: str, text: Any) -> bo
 
 
 def handle_subagent_stop(input_data: Dict[str, Any], config: Dict[str, Any]) -> None:
-    """SubagentStop：先把子代理的最後回覆填回它的注入紀錄（效用帳，寫碼守門關也記）；寫碼守門開才往下看子代理自己改的檔
-    （agent_modified_files[agent_id]）與自己的收據（agent_receipt_key），寫碼查核照預算擋。"""
+    """SubagentStop：把子代理的最後回覆填回它的注入紀錄（效用帳，寫碼守門關也記）；不擋。"""
     session_id = input_data.get("session_id", "") or ""
     agent_id = str(input_data.get("agent_id") or "")
     state = read_state(session_id) if session_id and agent_id else None
     if state and _fill_subagent_result(state, agent_id, input_data.get("last_assistant_message")):
         write_state(session_id, state)
-    if not (v6_enabled(config) and guard_family_on(config)):   # 子代理寫碼查核屬守門家族
-        output_nothing()
-        return
-    own = list(((state or {}).get("agent_modified_files") or {}).get(agent_id) or [])
-    unknown = list(((state or {}).get("agent_unknown_writes") or {}).get(agent_id) or [])
-    _code_gate_no_ask(input_data, config, state, agent_receipt_key(session_id, agent_id), own,
-                      input_data.get("agent_transcript_path") or "", i18n.t("hook.stop.who_subagent"),
-                      {"event": "subagent_block", "agent_id": agent_id}, unknown)
-
-
-def handle_judge_stop(input_data: Dict[str, Any], config: Dict[str, Any]) -> None:
-    """裁判子 session（CLAUDE_COMPANION_JUDGE=1）的 Stop：dispatcher 其他事件照舊早退，Stop 只跑寫碼查核閘，照預算擋。
-    改檔、未知寫入與收據來自 post_tool_use.handle_judge_post_tool_use 的最小記帳。"""
-    session_id = input_data.get("session_id", "") or ""
-    state = read_state(session_id) if session_id else None
-    own = [m for m in ((state or {}).get("modified_files") or []) if (m or {}).get("session_id", session_id) == session_id]
-    unknown = [u for u in ((state or {}).get("unknown_writes") or []) if (u or {}).get("session_id", session_id) == session_id]
-    _code_gate_no_ask(input_data, config, state, session_id, own, input_data.get("transcript_path") or "",
-                      i18n.t("hook.stop.who_judge"), {"event": "judge_block"}, unknown)
+    output_nothing()
 
 
 def _declared_once(state: Dict[str, Any], key: str, session_id: str, since: int, text: str) -> bool:
@@ -242,13 +192,6 @@ def _declared_once(state: Dict[str, Any], key: str, session_id: str, since: int,
         return False
     seen[session_id] = {"turn": since, "reasons": [*said, text]}
     return True
-
-
-def _mods_sig(mods: List[Dict[str, Any]]) -> str:
-    """改檔情境指紋：本 session 改過的檔與各自最後一次修改的序號／時間（放行之後又改了檔就不一樣）。"""
-    rows = sorted(f"{m.get('path')}|{m.get('last_seq', m.get('seq'))}|{m.get('last_at', m.get('at'))}"
-                  for m in mods if isinstance(m, dict))
-    return hashlib.sha1("\n".join(rows).encode("utf-8")).hexdigest()[:16]
 
 
 def _wrote_code(mods: List[Dict[str, Any]], config: Dict[str, Any]) -> bool:
@@ -292,13 +235,9 @@ def handle_stop(input_data: Dict[str, Any], config: Dict[str, Any]) -> None:
         return
     if _red_test_gate(run) or _timed_out(i18n.t("hook.stop.lap_red_test_gate")):
         return
-    if _reconcile_gate(run):
-        return
     if _wait_for_background(run):
         return
     run.ev_now = _flag_evasion(run)
-    if _timed_out(i18n.t("hook.stop.lap_code_reconcile")):
-        return
     if _equivalence_proof_gate(run) or _timed_out(i18n.t("hook.stop.lap_equivalence")):
         return
     if _deferral_gate(run) or _timed_out(i18n.t("hook.stop.lap_deferral")):
@@ -332,7 +271,7 @@ def handle_stop(input_data: Dict[str, Any], config: Dict[str, Any]) -> None:
 
 def _memory_only_stop(run: "_StopRun") -> None:
     """守門家族關（插件版）的收尾：只跑記憶本體——回收讀過的檔、知識收割兩閘（同 session 第偶數次判欠才擋，wg_harvest.harvest_send_mode）、
-    卡片取用稽核、效用歸因、萃取 worker；紅測、寫碼查核、等值、退縮、收尾檢核、同步、深度檢討、連鎖斷路器一道都不跑、模組也不載。
+    卡片取用稽核、效用歸因、萃取 worker；紅測、等值、退縮、收尾檢核、同步、深度檢討、連鎖斷路器一道都不跑、模組也不載。
     擋或放行的出口與守門開時同一套（output_block／output_nothing）；超時降級照分段打點。"""
     _timed_out = run._timed_out
     _read_transcript(run)
@@ -420,15 +359,10 @@ class _StopRun:
         output_nothing()
         return True
 
-    def _piggyback(self, reason: str, gate: Optional[str] = None, items: Optional[List[str]] = None) -> str:
-        """附後面還會擋的閘／token 預警／驗收提示。gate 有給（對帳閘＝"reconcile"）就記這個閘最後一次擋的位置；
-        那條路是先 write_state 再呼叫本函式，所以記完自己再寫一次 state，擋的位置才不會遺失。
-        items＝這次列給使用者看的那幾件（沒給就照擋訊息取 release_items）：使用者之後放行只放這幾件。"""
-        state, session_id, _tpath = self.state, self.session_id, self.tpath
+    def _piggyback(self, reason: str) -> str:
+        """附後面還會擋的閘／token 預警／驗收提示。"""
+        state = self.state
         _token_warn, _accept_hint = self.token_warn, self.accept_hint
-        if gate:
-            _rel.mark_block(state, session_id, gate, _tpath, int(state.get("turn_seq", 0)),
-                            items if items is not None else _rel.release_items(reason))
         if self.v6 and self.guard:   # 寫碼守門開才預覽後面還會擋的閘（規則 BLOCK_LISTS_LATER_GATES）；守門家族關沒有後面的閘
             try:
                 note = self._later_gates(reason)
@@ -443,8 +377,6 @@ class _StopRun:
         if _accept_hint:
             state["acceptance_hint_emitted"] = True
             reason = reason + _accept_hint
-        if gate:
-            write_state(session_id, state)
         return reason
 
     def _later_gates(self, reason: str, names: Optional[List[str]] = None) -> str:
@@ -538,9 +470,16 @@ def _open_run(input_data: Dict[str, Any], config: Dict[str, Any]) -> Optional[_S
                     v6=v6, guard=guard_family_on(config), turn_seq=turn_seq, since=_since, stop_count=stop_count, phase=phase)
 
 
+def _code_check_text(input_data: Dict[str, Any], transcript, transcript_text: str) -> str:
+    """等值閘與「等值證法｜不適用」留帳看的最後一句：先用 hook 輸入的 last_assistant_message，沒有才退回
+    transcript，且不套退避偵測用的 30 字下限（長說明之後只回一句「修好了，全部完成。」也要判這句）。"""
+    return (str(input_data.get("last_assistant_message") or "")
+            or get_last_assistant_text(transcript, text=transcript_text, min_chars=1))
+
+
 def _read_transcript(run: _StopRun) -> None:
     """讀 transcript（填 run 的「讀 transcript」那組）：本 session 的紅測條目、cwd、transcript 與尾段、最後一則、
-    寫碼查核看的真正最後一句、本回合宣告完成的那一則。"""
+    等值閘看的真正最後一句（_code_check_text）、本回合宣告完成的那一則。"""
     state, session_id, input_data, v6 = run.state, run.session_id, run.input_data, run.v6
     # 只認本 session 自己的條目（共用／merged state 下隔壁 session 的紅測不擋本 session；沒蓋 sid 的舊條目視為他人）
     failing = _own_failing_tests(state, session_id)
@@ -554,7 +493,7 @@ def _read_transcript(run: _StopRun) -> None:
     # usefulness turn 文字）共用同一份尾段，取代先前各自全檔讀取。
     transcript_text = read_transcript_tail(transcript)
     last_text = get_last_assistant_text(transcript, text=transcript_text)          # 退避偵測等：只看 >30 字的段落
-    code_text = (_code_check_text(input_data, transcript, transcript_text) if run.guard   # 寫碼查核：真正的最後一句
+    code_text = (_code_check_text(input_data, transcript, transcript_text) if run.guard   # 等值閘：真正的最後一句
                  else last_text)
     # 收尾閘的「宣告完成」看整回合：被別的閘擋下後補件那則常不重說完成（wg_evasion.turn_completion_text 找出本回合宣告完成的
     # 那一則；最後一則有談到完成與否就照它）。內容檢查（退避詞、宣稱詞）仍看最後一則
@@ -715,154 +654,11 @@ def _red_test_gate(run: _StopRun) -> bool:
     return False
 
 
-def _reconcile_gate(run: _StopRun) -> bool:
-    """寫碼查核（Reconcile Gate，收尾宣稱 vs 驗證收據，寫碼守門開）：擋了回 True。獨立預算、擋滿問使用者、放行與無法互動的放行。"""
-    state, config, session_id, turn_seq, v6, input_data = run.state, run.config, run.session_id, run.turn_seq, run.v6, run.input_data
-    code_text, transcript, transcript_text, _turn_claim, _since, _tpath = (
-        run.code_text, run.transcript, run.transcript_text, run.turn_claim, run.since, run.tpath)
-    own_mod_files, aec, emitted_this_turn = run.own_mod_files, run.aec, run.emitted_this_turn
-    _chain_hold, _piggyback = run._chain_hold, run._piggyback
-    # ── Reconcile Gate（收尾宣稱 vs 驗證收據）──────────
-    # 緊接 TestFailGate 之後、evasion 偵測之前（correctness 閘優先）。不吃共用 stop_gate_max_blocks：
-    # 獨立預算 reconcile_gate.max_blocks_per_turn（state reconcile_gate_turn[sid]={turn,count}）；預算與
-    # 放行的「回合」是使用者本人打字開的回合（_user_turn：同伴訊息、背景通知、hook 回饋續跑都不開新回合、不重置次數）。
-    # 寫碼查核（對帳 (a)(b)(c)(v)）擋滿後不放行：記 pending_release、改送擋滿訊息要模型問使用者；每次擋（不等擋滿）都查
-    # 使用者有沒有在最後一次擋之後放行（wg_release.user_released）→ 放這一回合、清 pending 與計數、guard-reconcile.jsonl
-    # 記 user_release（健檢列 red）；擋之前的舊答案不算。放行記「那幾件」（release_items）：之後的回合同一件原因還在就不再擋、
-    # 不再問，原因消失就從放行紀錄拿掉；新出現的照判。
-    # pending 只在同一個使用者回合有效（wg_release.pending_of）：換了使用者回合預算重給、不拿先前的宣稱重查。
-    # 不看措辭的部分（(v) 搬程式目錄）每次 Stop 都判，last_text 空也判；(a)(b)(c) 對宣稱，同一回合的 pending 帶著第一次擋滿時的
-    # 宣稱原話（claims，之後的文字不附加也擠不掉），換一句話也拿原話重查。pending 只在兩種情況清：重新查核後原因真的消失，
-    # 或使用者合格放行：「沒有執行查核」不等於「查核通過」。沒帶 claims 的 pending → 原宣稱無從重查 → 照擋，只能使用者放行。
-    # 無法互動（headless／SDK）：不叫它問，擋滿就放行並留帳 event=noninteractive_released（比照子代理）。
-    # (e) 收尾報告欄屬記憶與報告類：照舊第 3 次放行並記 reconcile_overflow（健檢 red），不走放行詢問；與寫碼部分同時擋滿時分開列。
-    _rg_cfg = reconcile_cfg(config)
-    if not (v6 and _rg_cfg.get("enabled", True)):
-        return False
-    _pend = _rel.pending_of(state, session_id, "reconcile")
-    _prev_claims = [str(c) for c in (_pend or {}).get("claims") or []]
-    if _turn_claim and not claims_completion(code_text) and _turn_claim not in _prev_claims:
-        _prev_claims.append(_turn_claim)     # 補件那則沒重說完成：(a)(b)(c) 與交付邊界照本回合宣告完成的那一則判
-    _jeb_prev = json.loads(json.dumps((state.get("judge_error_blocked") or {}).get(session_id)))   # GATE_SELF_ERROR 擋過的錯
-    _vg_reminds: List[Tuple[str, str]] = []
-    _code, _report, _vg_kind = _verify_gates(
-        state, session_id, turn_seq, code_text, transcript, transcript_text, own_mod_files,
-        _rg_cfg, aec, emitted_this_turn, claims=_prev_claims, pending=_pend is not None,
-        reminds=_vg_reminds,
-    )
-    for _rule, _text in _vg_reminds:      # 提醒類條目（(b)(c)(v)(e)）：只留帳（STOP_REMIND_LEDGER_ONLY）
-        _remind_logged("reconcile", "ReconcileGate", _rule, _text, session_id, turn_seq)
-    if _pend is not None and "claims" not in _pend:
-        _code = f"{_code}\n{LEGACY_PENDING}" if _code else LEGACY_PENDING
-        _vg_kind = _vg_kind or "reconcile"
-    _pend_cleared = False
-    if _code is None and _pend:
-        _rel.clear_pending(state, session_id, "reconcile")            # 重新查核過了（原因真的消失）→ 清 pending
-        _pend, _pend_cleared = None, True
-    _uturn = _since
-    _kept: List[str] = []
-    _ctx = _mods_sig(own_mod_files)          # 放行之後又改了檔＝情境變了，先前放行的那幾件不再沿用
-    if _code and _rel.released_this_turn(state, session_id, "reconcile", _uturn):
-        print(i18n.t("hook.stop.reconcile_released_turn"), file=sys.stderr)
-        _code = None
-    else:
-        # 先前回合放行過的那幾件：原因還在照放行、拿出擋訊息；原因消失（這次沒有它）就從放行紀錄拿掉
-        _kept = _rel.keep_released(state, session_id, "reconcile", _rel.release_items(_code) if _code else [], _ctx)
-        if _kept:
-            _code = _rel.drop_items(_code, _kept)
-            print(i18n.t("hook.stop.reconcile_kept_released", count=len(_kept),
-                         rest=i18n.t("hook.stop.reconcile_kept_released_rest") if _code else ""), file=sys.stderr)
-    if not (_code or _report):
-        if _pend_cleared or _kept:
-            write_state(session_id, state)
-        return False
-    # 規則 BLOCK_BUDGET_SHARED：寫碼查核每個使用者回合共用一份預算（鍵 "*"，不分是哪一條規則），擋滿 max 才算擋滿；
-    # _count＝本回合擋過幾次（log 沿用）
-    _budget = state.setdefault("reconcile_gate_turn", {})
-    _rec = _budget.get(session_id) if isinstance(_budget.get(session_id), dict) else None
-    _max = int(_rg_cfg.get("max_blocks_per_turn", 2))
-    _full_rules = budget_exhausted(_rec, _uturn, _max, ["*"] if _code else [])
-    _count = int(_rec.get("count", 0)) if _rec and int(_rec.get("turn", -1)) == _uturn else 0
-    _code_full = bool(_code) and (bool(_full_rules) or _pend is not None)
-    if _full_rules:
-        print(i18n.t("hook.stop.reconcile_budget_shared", max=_max), file=sys.stderr)
-    # 每次擋都查放行（不等擋滿）：最後一次擋之後使用者在 AskUserQuestion 選了放行或打字放行 → 放這一回合。無法互動的不查。
-    _noninteractive = non_interactive_reason(input_data, _tpath) if _code else None
-    _how = user_released(state, session_id, "reconcile", _tpath) if _code and not _noninteractive else None
-    if _how:
-        _shown = _rel.shown_items(state, session_id, "reconcile")      # 只放使用者在擋訊息裡看過的那幾件
-        _rel.record_release(state, session_id, "reconcile", _uturn,
-                            [*_kept, *(i for i in _rel.release_items(_code) if _shown is None or i in _shown)], _ctx)
-        _rel.mark_block(state, session_id, "reconcile", _tpath, turn_seq)   # 這個答案用掉了：之後要放行得再答一次
-        _rel.clear_pending(state, session_id, "reconcile")
-        _budget[session_id] = {"turn": _uturn, "count": 0}
-        append_guard_log("reconcile", {
-            "event": "user_release", "session_id": session_id, "turn_seq": turn_seq, "kind": _vg_kind,
-            "via": _how, "count": _count, "reason": _code[:300],
-        })
-        print(i18n.t("hook.stop.reconcile_user_release", how=_how), file=sys.stderr)
-        _code = None
-    elif _code_full and _noninteractive:
-        # 沒有人能回答放行詢問：比照子代理，擋滿就放行並留帳（主 session 之後的收尾照看這些改檔）
-        append_guard_log("reconcile", {
-            "event": "noninteractive_released", "session_id": session_id, "turn_seq": turn_seq, "kind": _vg_kind,
-            "count": _count, "why": _noninteractive, "reason": _code[:300],
-        })
-        print(i18n.t("hook.stop.reconcile_noninteractive_released", reason=_noninteractive, max=_max), file=sys.stderr)
-        _code = None
-    if not _code:
-        _code_full = False
-    # 收尾報告那一份（(e)，記憶與報告類）只數自己的「e」：寫碼查核先擋過幾次不吃掉它的次數
-    _report_full = bool(budget_exhausted(_rec, _uturn, _max, ["e"]))
-    if not _code and _report and _report_full:
-        # 只剩收尾報告那一份：第 3 次放行並記 reconcile_overflow（健檢 red）
-        state.setdefault("reconcile_overflow", {})[session_id] = {
-            "turn": turn_seq, "at": _now_iso(), "kind": "report", "reason": _report[:300],
-        }
-        append_guard_log("reconcile_overflow", {
-            "session_id": session_id, "turn_seq": turn_seq, "kind": "report", "count": _count,
-            "reason": _report[:300],
-        })
-        print(i18n.t("hook.stop.reconcile_report_overflow", max=_max), file=sys.stderr)
-        write_state(session_id, state)
-        return False
-    if not _code and not (_report and not _report_full):
-        write_state(session_id, state)
-        return False
-    if _chain_hold("ReconcileGate", _code or _report):
-        _unmark(state.get("judge_error_blocked"), session_id, _jeb_prev)
-        write_state(session_id, state)
-        return False
-    _budget[session_id] = budget_tick(_rec, _uturn, ["*"] if _code else ["e"])
-    _gate = "ReconcileGate"
-    if _code_full:
-        _rel.set_pending(state, session_id, "reconcile", turn_seq, _now_iso(), _code,
-                         [code_text] if claims_completion(code_text)
-                         else ([_turn_claim] if _turn_claim else []))      # pending 已在就沿用原 claims
-        _summary = exhausted_summary(_code)                          # 列全部命中條目，不只第一條
-        _n = _count if _full_rules else None                       # 擋滿來自本回合先前記的 pending：不報次數
-        _msg = i18n.t("hook.stop.non_interactive_with_original", message=_rel.exhausted_message(_gate, _n, _summary), original=_code)
-        if _report:
-            _msg += i18n.t("hook.stop.reconcile_report_extra", report=_report)
-    else:
-        _msg = "\n".join(x for x in (_code, _report) if x)
-    if _code and not _noninteractive:
-        _msg += f"\n{ASK_HINT}"
-    append_guard_log("reconcile", {
-        "session_id": session_id, "turn_seq": turn_seq, "kind": _vg_kind, "count": _count + 1,
-        "excerpt": _msg.split("\n")[1][:160] if "\n" in _msg else _msg[:160],
-        **({"event": "exhausted_block"} if _code_full else {}),
-    })
-    write_state(session_id, state)
-    output_block(_piggyback(_msg, "reconcile"))
-    return True
-
-
 def _wait_for_background(run: _StopRun) -> bool:
     """等背景工作：還有背景任務或排程在跑 → 後面的閘延到背景回報那次收尾（寫 state、放行，回 True）。"""
     state, session_id, input_data, turn_seq = run.state, run.session_id, run.input_data, run.turn_seq
     # ── 等背景工作（規則 STOP_DEFERS_WHILE_BACKGROUND_RUNNING）─────────────
-    # 紅測閘與寫碼查核看的是「說了完成」，上面照跑；回合只是在等背景子代理／Monitor／排程叫醒時，退避偵測、退縮歸屬、收割、收尾檢核、
+    # 紅測閘看的是「說了完成」，上面照跑；回合只是在等背景子代理／Monitor／排程叫醒時，退避偵測、退縮歸屬、收割、收尾檢核、
     # 同步、深度檢討、效用歸因、底部同步擋都延到背景工作回報那次收尾（同一個背景項目連延 BG_DEFER_MAX 次之後照擋）
     if _bg_defer(state, input_data, session_id, turn_seq):
         write_state(session_id, state)
@@ -960,7 +756,7 @@ def _deferral_gate(run: _StopRun) -> bool:
     # _user_turn（使用者打字開的回合）：同伴訊息、背景通知每則都讓 turn_seq +1，拿它當鍵會每則訊息後又擋一次。
     _uturn = _since
     if last_text and (_coding or not v6):
-        _ah = config.get("auto_handoff", {}) or {}
+        _ah = config.get("handoff", {}) or {}
         try:
             _dg_ratio = estimate_context_usage(
                 transcript,

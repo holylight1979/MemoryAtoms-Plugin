@@ -309,7 +309,6 @@ function todoItems(r) {
     out.push(["AI 自己做的決定、沒驗證的假設", "看第三類，對不對"]);
   }
   if (r.d_pending && r.d_pending.length) { out.push(["記憶寫入被推到之後（AI 會被擋回去補寫）", r.d_pending.join("\\n")]); }
-  if (r.j_missing) { out.push(["驗證證據的路徑缺了或不存在", jOf(r) || "（空）"]); }
   if (r.k_missing) { out.push(["追蹤項是空的", "AI 要一行一項補上，或寫「無」"]); }
   return out;
 }
@@ -414,15 +413,14 @@ function legacyClassesHtml(r) {
     partHtml("② 碰到你的長期原則、方向", [], "舊格式沒有這一類") +
     partHtml("③ AI 自己做主的", picked([["AI 自己做的決定、沒驗證的假設", r.e], ["環境有變動", r.f]]), "這份舊報告沒寫");
 }
-// 附錄：系統帳翻成白話（記住了、改了哪些地方、版控、暫存、驗證收據）＋原始欄位，給要查的時候看
+// 附錄：系統帳翻成白話（記住了、改了哪些地方、版控、暫存）＋原始欄位，給要查的時候看
 function appendixHtml(r) {
   var oldest = r.e == null && !hasClasses(r);   // 最早的格式只有 a～d，d 是暫存清單、不是記憶帳
   var items = picked([
     ["記住了（寫進記憶卡的）", oldest ? null : r.d],
     ["改了哪些地方（檔案:行）", hasClasses(r) ? r.a : null],
     ["版控", r.g],
-    ["AI 說留下的暫存（還在不在看下面「這個 session 留下的東西」）", r.i],
-    ["驗證收據放在", jOf(r)]
+    ["AI 說留下的暫存（還在不在看下面「這個 session 留下的東西」）", r.i]
   ]);
   return '<details class="detail"><summary>附錄：技術細節與系統帳（要查的時候看）</summary>' +
     itemsHtml(items, "沒有") + '<div class="item-h">原始欄位（AI 交的原樣）</div>' + detailHtml(r) + "</details>";
@@ -475,13 +473,11 @@ function detailHtml(r) {
         sectionHtml("g", "版控收尾", r.g) +
         sectionHtml("h", "收尾判定", r.h) +
         sectionHtml("i", "衍生暫存清單（宣告；實際尚存者見下方殘檔面板）", r.i) +
-        (jOf(r) == null ? "" :
-          sectionHtml("j", "證據持久路徑" + (r.j_missing ? ' <span class="badge real">缺或不存在</span>' : ""), jOf(r)) +
+        (kOf(r) == null ? "" :
           sectionHtml("k", "追蹤項" + (r.k_missing ? ' <span class="badge real">空字串</span>' : ""), kOf(r))));
   return html;
 }
-// 報告檔存的是 j_evidence_path／k_followups（tool 參數原名）；早期測試資料用 j／k，兩種都認
-function jOf(r) { return r.j != null ? r.j : r.j_evidence_path; }
+// 報告檔存的是 k_followups（tool 參數原名）；早期測試資料用 k，兩種都認
 function kOf(r) { return r.k != null ? r.k : r.k_followups; }
 
 var gridHtml = "";

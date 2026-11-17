@@ -32,13 +32,12 @@ _CARRY_ON_REBUILD = (
     # 回合編號與使用者回合鍵（規則 USER_TURN_KEY_KEPT）：只搬鍵的話 turn_seq 歸零、鍵比 turn_seq 還大；不搬的話之後只進同伴訊息時
     # user_turn 退回 turn_seq、每則同伴訊息都當成新使用者回合（各閘每回合的擋次重來）。照搬的 modified_files
     # 也帶著舊的 turn_seq，編號接著走才對得上
-    "turn_seq", "turn_prompts_seq", "user_turn_count", "turn_open", "turn_typed", "exec_turn_seq",
+    "turn_seq", "turn_prompts_seq", "user_turn_count", "turn_open", "turn_typed",
     # 事件序號：modified_files 的 last_seq 照搬了，event_seq 不搬就從頭算，壓縮後的收據 seq 全小於舊的 last_seq、等值證法閘整批略過
     "event_seq",
-    # 各閘的「問過／放行／擋過」帳本（鍵都是 session id，compact 不換 session）：不搬的話重建後對帳閘、
+    # 各閘的「問過／放行／擋過」帳本與收據（鍵都是 session id，compact 不換 session）：不搬的話重建後
     # 收據全部重來，使用者剛選的「放行這一回合」當場失效
     "user_released", "pending_release", "last_block", "verify_receipts",
-    "reconcile_gate_turn",
     # 知識收割判欠次數（同一場 session 每兩次擋一次，規則 HARVEST_AT_PHASE_DONE）：不搬的話重建後又從第 1 次算
     "harvest_owed_count",
     # 壓縮前已注入的卡名快照：SessionStart(compact) 沒送成（中途降級）時，PostCompact 要靠它暫存內文給 PostToolBatch 補位

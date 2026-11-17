@@ -1,4 +1,4 @@
 {
- "ext.handoff.context_nearly_full": "\n[Auto-Handoff] context 估佔 ~{pct}%（依 API 實際 token 用量），接近自動壓縮點。建議主動 `/memoryatoms-handoff:handoff` 備妥六區塊交接、或開新 session 前先存檔。是否已『處理失真』由你語意判斷。",
+ "ext.handoff.context_nearly_full": "\n[Handoff] context 估佔 ~{pct}%（依 API 實際 token 用量），接近自動壓縮點。建議主動 `/memoryatoms-handoff:handoff` 備妥六區塊交接、或開新 session 前先存檔。是否已『處理失真』由你語意判斷。",
  "ext.handoff.intent_detected": "[Guardian:Handoff] 偵測到 handoff 意圖。接手的 session 裡的 Claude 不會看到本次對話脈絡。請執行 /memoryatoms-handoff:handoff 走 6 區塊強制模板，不要徒手寫 prompt。"
 }

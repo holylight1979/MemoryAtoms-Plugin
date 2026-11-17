@@ -1,5 +1,5 @@
 """stop_output.py — 收尾的出口與共用句：輸出 JSON／放行／擋的三個出口（會把連鎖斷路器要給使用者看的尾巴一併帶上）、連鎖斷路器的接線、提醒只留帳的記法、共用擋次擋滿放行的告知、要問使用者的固定句。
-由 handlers/stop.py 以及 stop_code_gate、stop_equivalence 叫用；本檔不 import 入口檔。
+由 handlers/stop.py 以及 stop_equivalence 叫用；本檔不 import 入口檔。
 """
 
 import re
@@ -59,7 +59,7 @@ def _chain_gate(session_id: str, turn: int, gate: str, what: str, input_data: Di
     return r.record_only
 
 
-ASK_HINT = i18n.t("hook.stop_output.ask_hint")     # 寫碼查核每次 Stop 都判，用文字發問也會被擋
+ASK_HINT = i18n.t("hook.stop_output.ask_hint")     # 等值閘擋滿時附：要用 AskUserQuestion 問，用文字發問不算
 
 
 def _remind_logged(log_name: str, gate: str, rule: str, text: str, session_id: str, turn_seq: int, **extra: Any) -> None:
@@ -75,7 +75,7 @@ def _budget_released(gate: str, what: str, state: Dict[str, Any], session_id: st
                      stop_count: int, max_blocks: Any, remind: bool = True) -> None:
     """規則 SHARED_BUDGET_RELEASE_NOTICE：吃 stop_gate_max_blocks 的閘這次本來要擋、但本回合共用擋次已滿 → 放行，但不無聲：
     留帳（guard-shared_budget.jsonl event=budget_released）＋stderr＋systemMessage 一行給使用者看（_CHAIN_TAIL：這次收尾每個出口都帶），
-    並記一件提醒等下一個工具結果送給模型（wg_overview.remind_queue；同閘同使用者回合只送一次）。寫碼查核閘不走這裡。
+    並記一件提醒等下一個工具結果送給模型（wg_overview.remind_queue；同閘同使用者回合只送一次）。等值閘不走這裡（自己的預算）。
     remind=False：守門家族關（插件版沒有提醒帳、也沒有送提醒的那段），只留帳與 systemMessage。state 由呼叫端寫回。"""
     head = next((ln.strip() for ln in str(what or "").splitlines() if ln.strip()), "")
     head = re.sub(r"^\[(?:Guardian:[^\]]*|Workflow Guardian)\]\s*", "", head)[:120]     # 擋訊息自帶的閘標記不重複

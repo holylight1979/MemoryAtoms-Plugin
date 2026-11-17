@@ -48,24 +48,21 @@ HANDLERS = {
     "PostToolBatch": ("handlers.post_tool_batch", "handle_post_tool_batch"),  # 選配 #4
     "Stop": ("handlers.stop", "handle_stop"),
     "SubagentStart": ("handlers.subagent_start", "handle_subagent_start"),   # 補不經 Agent 工具的子代理記憶注入（skill fork、Workflow）
-    "SubagentStop": ("handlers.stop", "handle_subagent_stop"),   # 子代理收尾：回填注入紀錄的結果（效用帳）；寫碼守門開再跑寫碼查核閘
+    "SubagentStop": ("handlers.stop", "handle_subagent_stop"),   # 子代理收尾：回填注入紀錄的結果（效用帳）
     "SessionEnd": ("handlers.session_end", "handle_session_end"),
     "InstructionsLoaded": ("handlers.instructions_loaded", "handle_instructions_loaded"),   # 只記帳：規則／索引載入對帳
     "StopFailure": ("handlers.stop_failure", "handle_stop_failure"),   # 回合因 API 錯誤結束：留帳並標 aborted
 }
 
 # 備援裁判子 session（judge_backend.run_claude_judge 起的 headless claude，env CLAUDE_COMPANION_JUDGE=1）：
-# 不注入記憶、不跑其他閘（防裁判觸發裁判）；只留寫碼查核：PreToolUse 只擋「寫入目標判不出」（執行前就擋，不留永久欠帳），
-# PostToolUse 做最小記帳（改了哪些檔、未知寫入、驗證收據），Stop 只跑對帳／量尺閘、沒人能回答放行詢問，擋滿放行留帳。其餘事件早退。
+# 不注入記憶、不跑其他閘（防裁判觸發裁判）；PreToolUse 只跑驗證批次閘（整組驗證一律擋），寫入目標判不出的留帳 judge_write。
+# 其餘事件早退。
 JUDGE_HANDLERS = {
     "PreToolUse": ("handlers.pre_tool_use", "handle_judge_pre_tool_use"),
-    "PostToolUse": ("handlers.post_tool_use", "handle_judge_post_tool_use"),
-    "PostToolUseFailure": ("handlers.post_tool_use", "handle_post_tool_use_failure"),
-    "Stop": ("handlers.stop", "handle_judge_stop"),
 }
 
 # 寫碼守門總開關關閉（wg_core.v6_enabled）時：只分派寫碼守門關時也跑的（9e476fd0 就有的）事件與工具，
-# 加上 SubagentStop（規則 SUBAGENT_RESULT_FROM_SUBAGENT_STOP：子代理注入的效用帳兩種模式都要記；handler 在守門關時記完就走，不跑寫碼查核）；
+# 加上 SubagentStop（規則 SUBAGENT_RESULT_FROM_SUBAGENT_STOP：子代理注入的效用帳兩種模式都要記）；
 # 裁判子 session、hook 分段計時也是寫碼守門開著才有，關閉時照舊一律早退／不計時。
 PRE_V6_EVENTS = {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
                  "PreCompact", "PostCompact", "PostToolBatch", "Stop", "SubagentStart", "SubagentStop", "SessionEnd"}

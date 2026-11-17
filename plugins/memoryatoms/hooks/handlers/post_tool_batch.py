@@ -8,13 +8,12 @@ payload: tool_calls[]；反編譯實證支援 hookSpecificOutput.additionalConte
 （SessionStart 送過就只清旗標）；插件點 PostToolBatch 回的話、PreToolUse 沒攔到的提問事後提醒
 （wg_ask_gate）併進同一段送出。
 收尾類守門的提醒（規則 REMIND_ON_PRIOR_RESULT；判定與送法照 wg_release_rules 檔尾的 RULE_MODE）：這一批改了程式檔，就算出目前欠的
-各一行（closing_reminders：等值意圖、搬目錄、改了 MCP 檔、退縮歸屬、收尾檢核、同步、深度檢討、取用稽核）；
+各一行（closing_reminders：等值意圖、改了 MCP 檔、退縮歸屬、收尾檢核、同步、深度檢討、取用稽核）；
 收尾那批附知識收割欠項與報告待寫。同一條規則同一個對象同一個 session
 只提醒一次（state remind_sent 清單，wg_overview.remind_mark）；Stop 對同一件只留帳、不擋、不續跑（handlers/stop._remind_logged；知識收割例外：同 session 第偶數次判欠照擋）。
 **每批都會跑** → idle 路徑必須極輕（讀 flag → early exit）。設計：plans/deep-wobbling-bentley.md。
 """
 
-import re
 import sys
 from typing import Any, Dict, List, Tuple
 
@@ -58,9 +57,7 @@ def closing_call(name: str) -> bool:
 
 # ─── 收尾類守門的提醒：掛在改程式檔那則工具結果（規則 REMIND_ON_PRIOR_RESULT） ──────────────────────────
 
-_HIT_ROW_RE = re.compile(r"^\s*✗ \(([^)]+)\) ([A-Z][A-Z0-9_]*)[：:](.*?)(?:｜證據：| \| evidence: |$)")
 _MCP_SEGMENT = "/tools/workflow-guardian-mcp/"
-FIX_MOVE = i18n.t("hook.post_tool_batch.scan_old_path_s")
 FIX_EQUIV = i18n.t("hook.post_tool_batch.after_last_code_change")
 FIX_HOT = i18n.t("hook.post_tool_batch.closing_answer_one_question")
 FIX_RELOAD = i18n.t("hook.post_tool_batch.service_must_reloaded_take")
@@ -74,20 +71,9 @@ FIX_HARVEST_ITEM = i18n.t("hook.post_tool_batch.every_item_harvest_list")
 FIX_AEC_PENDING = i18n.t("hook.post_tool_batch.do_atom_write_now")
 
 
-def _hit_rows(text: str) -> List[Tuple[str, str, str]]:
-    """擋訊息裡每一條 `✗ (<字母>) <規則名>：<現象>` → (字母, 規則名, 現象)。"""
-    rows = []
-    for ln in str(text or "").splitlines():
-        m = _HIT_ROW_RE.match(ln)
-        if m:
-            rows.append((m.group(1), m.group(2), m.group(3).strip()))
-    return rows
-
-
 def closing_reminders(state: Dict[str, Any], sid: str, input_data: Dict[str, Any], config: Dict[str, Any]) -> Tuple[List[str], bool]:
     """這一批之後欠的收尾類守門，各一行（remind_line）→ (要附的行, state 有沒有改)。
     時點：這批改了程式檔（modified_files 的 last_seq 比上次看到的大，state remind_mark[sid]）→ 等值意圖、改了 MCP 檔、退縮歸屬、收尾檢核、同步、深度檢討、取用稽核；
-    搬了含程式檔的目錄（moved_code_dirs 多一筆）→ (v)；
     這批是收尾那批（closing_call）→ 知識收割、收割對帳、報告待寫。
     每條規則每個對象每 session 一次（wg_overview.remind_mark：已送鍵存 state remind_sent 清單，與工具前守門的提醒帳同一份）。判定重用各閘的純函式，不另複製；
     一段判不出只少那一段、浮 stderr。沒有任何時點成立就不做事（idle 極輕）。"""
@@ -108,13 +94,7 @@ def closing_reminders(state: Dict[str, Any], sid: str, input_data: Dict[str, Any
     except Exception as e:  # noqa: BLE001
         new_code = []
         print(i18n.t("hook.post_tool_batch.guardian_reminder_cannot_tell", etype=type(e).__name__, error=e), file=sys.stderr)
-    moved = [m for m in state.get("moved_code_dirs") or [] if isinstance(m, dict) and m.get("session_id") == sid]
-    seen_moves = state.setdefault("remind_moves_n", {})
-    new_move = len(moved) > int(seen_moves.get(sid) or 0)
-    if new_move:
-        seen_moves[sid] = len(moved)
-        changed = True
-    if not (new_code or closing or new_move):
+    if not (new_code or closing):
         return [], changed
     from wg_overview import remind_mark   # 提醒帳本只有一份（state remind_sent 清單），與 remind_flush 同一支記法
     lines: List[str] = []
@@ -141,31 +121,9 @@ def closing_reminders(state: Dict[str, Any], sid: str, input_data: Dict[str, Any
         if (config.get("sync_reminder") or {}).get("enabled", True):
             say("SYNC_REMINDER_UNSYNCED", i18n.t("hook.post_tool_batch.session_changed_files", count=len({str(m['path']) for m in own})), FIX_SYNC)
         part(i18n.t("hook.post_tool_batch.deep_review_consumption_audit"), lambda: _postmortem_audit_reminders(state, sid, config, say))
-    if new_move:
-        part(i18n.t("hook.post_tool_batch.directory_move"), lambda: _move_reminder(state, sid, config, say))
     if closing:
         part(i18n.t("hook.post_tool_batch.knowledge_harvest"), lambda: _closing_batch_reminders(state, sid, own, config, turn_seq, say))
     return lines, changed or bool(lines)
-
-
-
-
-def _move_reminder(state, sid, config, say) -> None:
-    """(v) 搬了含程式檔的目錄那則 Bash：照 Stop 同一套（stop._move_inputs 配對事實、reconcile_gate_parts 的 (v) 條目）判欠不欠。"""
-    import wg_verify_ledger as vl
-    from handlers.stop import _move_inputs
-    rg = vl.reconcile_cfg(config)
-    if not rg.get("enabled", True):
-        return
-    moves, move_receipts = _move_inputs(state, sid)
-    if not moves:
-        return
-    rem: List[str] = []
-    vl.reconcile_gate_parts("", vl.receipts_of(state, sid), int(state.get("turn_seq", 0) or 0), [], [], rg, sid=sid, moves=moves,
-                            move_receipts=move_receipts, move_scan_hits=state.get("move_scan_hits") or {}, remind=rem)
-    for letter, rule, what in (r for h in rem for r in _hit_rows(h)):
-        if letter == "v":
-            say(rule, what, FIX_MOVE, what[:80])
 
 
 def _equivalence_reminders(state, config, cwd, say) -> None:

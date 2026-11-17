@@ -151,7 +151,7 @@ These are written in the plugin's `workflow/config.plugin.json`; your own `<data
 | `merge_driver.auto_install: false` | Never edits `~/.gitconfig` to install the card-index merge driver. |
 | `skill_index.enabled: false` | No background rewrite of the skill index (it would write into the plugin folder). |
 | `eol.auto_normalize_project: false` | Never adds a block to your project's `.gitattributes` or sets `svn:eol-style` on project files. |
-| `guard_family.enabled: false` | The coding-guard family (commit gate, cross-layer gates, verification ledger, smell gate and the rest) does not run. It is part of the full edition only. |
+| `guard_family.enabled: false` | The coding-guard family (commit gate, cross-layer gates, verification-batch gate, smell gate and the rest) does not run. It is part of the full edition only. |
 
 Claude Code's built-in auto memory is not something the plugin can switch off; see the `/memory` suggestion above.
 

@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from wg_core import (
     _ensure_state, _now_iso, write_state, output_json, output_nothing,
-    _atom_debug_error, WORKFLOW_DIR, v6_enabled, guard_family_on,
+    _atom_debug_error, v6_enabled, guard_family_on,
 )
 import i18n   # lib/：給人看的提示走語言表
 from wg_platform import background_spawn_kwargs  # noqa: E402
@@ -55,15 +55,13 @@ from handlers._shared import (
 # 拆出去的各件事（各檔檔頭有白話）；入口只留流程。下面幾個名字也是別處（pre_tool_use、session_end、subagent_start）從這裡取的
 from handlers.post_tool_use_subagent import _record_subagent_injection, _SUBAGENT_INJ_CAP  # noqa: F401
 from handlers.post_tool_use_harvest import _apply_harvest, _write_aec_report_file   # 收割回報核對（記憶本體）
-# 守門家族（收尾檢核、搬目錄、紅測與哨兵、寫完轉 LF；插件版不出廠）：名字留在模組上給測試換，呼叫時才載
+# 守門家族（收尾檢核、紅測與哨兵、寫完轉 LF；插件版不出廠）：名字留在模組上給測試換，呼叫時才載
 _collect_aec_evidence = lazy_func("handlers.post_tool_use_aec", "_collect_aec_evidence")
-_note_moved_code_dirs = lazy_func("handlers.post_tool_use_move", "_note_moved_code_dirs")
-_note_move_scan_hits = lazy_func("handlers.post_tool_use_move", "_note_move_scan_hits")
 _track_test_result = lazy_func("handlers.post_tool_use_verify", "_track_test_result")
 _track_sentinels = lazy_func("handlers.post_tool_use_verify", "_track_sentinels")
 _ensure_lf = lazy_func("handlers.post_tool_use_lf", "_ensure_lf")   # LF_AFTER_WRITE：會改使用者檔案的內容（只動換行）
 from handlers.post_tool_use_writes import (
-    _VCS_COMMIT_RE, EXEC_TURN_KEYS_CAP, _note_commit, _note_modified, _note_launcher, _note_unknown_write, _note_failed_writes,
+    _VCS_COMMIT_RE, _note_commit, _note_modified, _note_unknown_write, _note_failed_writes,
 )
 from handlers.post_tool_use_reads import (  # noqa: F401
     _note_tool_result, _read_tracking, replay_read_log, replay_reads_before_tool,
@@ -167,55 +165,21 @@ def _chain_action(state: Dict[str, Any], input_data: Dict[str, Any], config: Dic
                                 config, what=what)
 
 
-def handle_judge_post_tool_use(input_data: Dict[str, Any], config: Dict[str, Any]) -> None:
-    """裁判子 session（CLAUDE_COMPANION_JUDGE=1）的 PostToolUse 最小記帳：只記改了哪些檔、目標不明的寫入、commit 回合與驗證收據，
-    給 stop.handle_judge_stop 的寫碼查核閘用；不注入、不跑其他閘、不建完整 state（不重建 atom index，防裁判觸發裁判）。"""
-    session_id = input_data.get("session_id", "") or ""
-    if not session_id:
-        output_nothing()
-        return
-    from wg_core import read_state as _read_state
-    tool_name = input_data.get("tool_name", "") or ""
-    tool_input = input_data.get("tool_input") or {}
-    cwd = input_data.get("cwd", "") or ""
-    state = _read_state(session_id) or {"session": {"id": session_id, "cwd": cwd}, "turn_seq": 0, "judge": True}
-    if tool_name in ("Write", "Edit", "NotebookEdit", "MultiEdit"):
-        fp = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
-        if fp and not _is_ephemeral_path(fp):
-            _note_modified(state, session_id, fp, tool_name)
-    elif tool_name in ("Bash", "PowerShell"):
-        command = tool_input.get("command", "") or ""
-        targets = _write_paths_from_tool(tool_name, tool_input, cwd) if _write_paths_from_tool is not None else []
-        for p in targets or []:
-            if p and p.startswith("UNKNOWN:"):
-                _note_unknown_write(state, session_id, p, command, tool_name, "", input_data)
-            elif p and not _is_ephemeral_path(p):
-                _note_modified(state, session_id, p, tool_name)
-        _note_commit(state, command, config, session_id)
-        _track_sentinels(state, input_data, command, tool_name, config, session_id)
-    write_state(session_id, state)
-    output_nothing()
-
-
 def handle_post_tool_use_failure(input_data: Dict[str, Any], config: Dict[str, Any]) -> None:
     """PostToolUseFailure：工具失敗時 Claude Code 不送 PostToolUse、改送這個。Bash／PowerShell 指令非零結束時：
     - 前段已經寫下去的檔照樣進 modified_files（寫碼查核讀它）；例：`cat > a.py <<EOF … && pytest`
       測試紅了，a.py 已經改了。目標用成功路徑同一支 write_paths_from_tool 算；失敗的指令不一定寫到，只記這次開始後改過的現存檔，目標不明的不記。
     - 測試指令紅了記紅測（failing_tests）與驗證收據，跟成功路徑同一套函式；失敗事件沒有 tool_response，錯誤全文（"Exit code N\\n輸出…"）
       在 error 欄，當字串回應餵進去。error 裡讀不到結束碼（指令沒跑或沒跑完，例：被 hook 擋下）不算測試結果。
-    只記帳不擋、不送提示；裁判子 session 只讀既有 state（不重建 atom index）、不記紅測。"""
+    只記帳不擋、不送提示；裁判子 session 不記（不建 state、不重建 atom index）。"""
     tool_name = input_data.get("tool_name", "") or ""
     session_id = input_data.get("session_id", "") or ""
-    if tool_name not in ("Bash", "PowerShell") or not session_id or not guard_family_on(config):   # 守門家族關：沒有寫碼查核要記
+    if (tool_name not in ("Bash", "PowerShell") or not session_id or not guard_family_on(config)   # 守門家族關：沒有寫碼查核要記
+            or os.environ.get("CLAUDE_COMPANION_JUDGE")):
         output_nothing()
         return
     cwd = input_data.get("cwd", "") or ""
-    judge = bool(os.environ.get("CLAUDE_COMPANION_JUDGE"))
-    if judge:
-        from wg_core import read_state as _read_state
-        state = _read_state(session_id) or {"session": {"id": session_id, "cwd": cwd}, "turn_seq": 0, "judge": True}
-    else:
-        state = _ensure_state(session_id, input_data, config)
+    state = _ensure_state(session_id, input_data, config)
     if not state:
         output_nothing()
         return
@@ -225,7 +189,7 @@ def handle_post_tool_use_failure(input_data: Dict[str, Any], config: Dict[str, A
              else False)
     event = {**input_data, "tool_response": str(input_data.get("error") or "")}
     if _vl.exit_code_of(event["tool_response"]) is not None:
-        if not judge and _track_test_result(state, event, command, tool_name, config):
+        if _track_test_result(state, event, command, tool_name, config):
             dirty = True
         try:
             if _track_sentinels(state, event, command, tool_name, config, session_id):
@@ -235,7 +199,7 @@ def handle_post_tool_use_failure(input_data: Dict[str, Any], config: Dict[str, A
             _atom_debug_error("post_tool_use_failure:verify_ledger", e)
     if dirty:
         write_state(session_id, state)
-    if not judge and v6_enabled(config) and _vl.exit_code_of(event["tool_response"]) is not None:
+    if v6_enabled(config) and _vl.exit_code_of(event["tool_response"]) is not None:
         _chain_action(state, input_data, config, event["tool_response"])     # 指令真的跑了（紅的重跑也是動作）
     output_nothing()
 
@@ -419,8 +383,6 @@ def _record_edit(run: _PostRun) -> None:
     _note_modified(state, session_id, file_path, tool_name, str(input_data.get("agent_id") or ""))
     if run.guard:
         _ensure_lf(file_path)           # LF_AFTER_WRITE：寫完含 CRLF、repo 對它設 eol=lf → 就地轉 LF；寫碼守門關也照轉
-    if v6 and run.guard:
-        _note_launcher(file_path)       # LAUNCHER_NOT_CODE：worktree 根的一次性 git 啟動器記標記，收尾不當程式算
 
     edit_counts = state.setdefault("edit_counts", {})
     edit_counts[file_path] = edit_counts.get(file_path, 0) + 1
@@ -533,28 +495,19 @@ def _docdrift_check(run: _PostRun, normalized: str) -> None:
 
 
 def _record_shell(run: _PostRun) -> None:
-    """指令：執行回合、版控查詢、改檔目標、搬目錄、commit、紅測、驗證收據。寫碼守門關時只記版控查詢、commit 回合與紅測。"""
+    """指令：版控查詢、改檔目標、commit、紅測、驗證收據。寫碼守門關時只記版控查詢、commit 回合與紅測。"""
     state, session_id, config, input_data = run.state, run.session_id, run.config, run.input_data
     tool_name, tool_input, v6 = run.tool_name, run.tool_input, run.v6
     command = tool_input.get("command", "")
-    # 寫碼查核 (c)「說試過／跑了」看本回合有沒有執行過指令：記最後一次執行的 turn_seq（主 session 用 sid、子代理用它自己的收據鍵），
-    # 同伴訊息讓 transcript 另起一段之後，同一個使用者回合裡較早跑的指令照樣算（規則 TURN_SINCE_USER_PROMPT）
-    if v6:
-        _note_exec_turn(run)
     if re.search(r"\b(git\s+(log|blame|show|diff)|svn\s+(log|blame|diff))\b", command):
         vcs = state.setdefault("vcs_queries", [])
         vcs.append({"command": command[:200], "at": _now_iso()})
         run.dirty = True
 
     # Bash／PowerShell 改檔目標（>、>>、tee、sed -i、cp、mv、Set-Content…）也進 modified_files；
-    # 先記目標再落帳，帳本的 modified_files_turn 才含本次寫入；commit 的記帳也在記完之後才做
-    # （`sed -i a.py && git commit` 這種同一條指令改檔又 commit，committed_new_code 要找得到 a.py 所在的根）
+    # 先記目標，commit 與驗證收據的記帳在記完之後才做（`sed -i a.py && git commit` 這種同一條指令改檔又 commit，後面的記帳看得到 a.py）
     if v6 and _write_paths_from_tool is not None:
         _note_shell_writes(run, command)
-    # 規則 MOVE_CODE_DIR_NEEDS_SCAN_AND_SAMPLE：記搬了哪個程式目錄（子代理搬的也記，帶 agent_id）、掃描工具的命中清單
-    # （Stop 寫碼查核 (v) 用）
-    if v6:
-        _note_shell_moves(run, command)
 
     if not v6 and _VCS_COMMIT_RE.search(command):   # 寫碼守門關時只記本回合有 commit（ScanReport 閘豁免收尾檢核）
         state["last_commit_turn_seq"] = int(state.get("turn_seq", 0))
@@ -574,19 +527,6 @@ def _record_shell(run: _PostRun) -> None:
             _atom_debug_error("post_tool_use:verify_ledger", e)
 
 
-def _note_exec_turn(run: _PostRun) -> None:
-    """記本回合最後一次執行指令的 turn_seq（state["exec_turn_seq"]，鍵有上限，超量先丟最久沒執行的）。"""
-    state, session_id, input_data = run.state, run.session_id, run.input_data
-    _exec_aid = str(input_data.get("agent_id") or "")
-    _exec = state.setdefault("exec_turn_seq", {})
-    _exec_key = _vl.agent_receipt_key(session_id, _exec_aid) if _exec_aid else session_id
-    _exec.pop(_exec_key, None)                                          # 重新插入排到最後，超量時先丟最久沒執行的
-    _exec[_exec_key] = int(state.get("turn_seq", 0))
-    for _old in list(_exec)[:-EXEC_TURN_KEYS_CAP]:
-        _exec.pop(_old, None)
-    run.dirty = True
-
-
 def _note_shell_writes(run: _PostRun, command: str) -> None:
     """指令的改檔目標進 modified_files（含 CRLF 的轉 LF）；目標不明的記未知寫入；暫存檔不記帳。
     出錯只進 debug log（這一批後面的目標就不記了）。"""
@@ -601,7 +541,6 @@ def _note_shell_writes(run: _PostRun, command: str) -> None:
             elif _p and not _is_ephemeral_path(_p):
                 _note_modified(state, session_id, _p, tool_name, _aid)
                 _ensure_lf(_p)            # LF_AFTER_WRITE
-                _note_launcher(_p)        # LAUNCHER_NOT_CODE：用 shell 寫出來的啟動器也認；刪掉時標記不動
             elif not (_p and note_ephemeral_skip(state, _p)):    # 暫存檔不記帳；暫存目錄專案第一次說一聲（EPHEMERAL_WRITE_NOTED_ONCE）
                 continue
             run.dirty = True
@@ -609,26 +548,11 @@ def _note_shell_writes(run: _PostRun, command: str) -> None:
         _atom_debug_error("post_tool_use:write_paths_from_tool", e)
 
 
-def _note_shell_moves(run: _PostRun, command: str) -> None:
-    """記搬了哪個程式目錄、掃描工具的命中清單；出錯只 stderr。"""
-    state, session_id, config, input_data = run.state, run.session_id, run.config, run.input_data
-    tool_name, tool_input = run.tool_name, run.tool_input
-    try:
-        _mv_cwd = input_data.get("cwd", "") or state.get("session", {}).get("cwd", "") or ""
-        if _note_moved_code_dirs(state, session_id, tool_name, tool_input, _mv_cwd, config,
-                                 agent_id=str(input_data.get("agent_id") or "")):
-            run.dirty = True
-        if _note_move_scan_hits(state, command, input_data.get("tool_response"), _mv_cwd):
-            run.dirty = True
-    except Exception as e:  # noqa: BLE001
-        print(i18n.t("hook.post_tool_use.move_fact_failed", error=f"{type(e).__name__}: {e}"), file=sys.stderr)
-
-
 # ─── 收尾檢核（anti_evasion_report）─────────────────────────────────
 
 
 def _record_closing_report(run: _PostRun) -> None:
-    """收尾檢核四段：組報告 → 收割清單與欠寫項 → 證據路徑與追蹤項 → 落 state 與報告檔。"""
+    """收尾檢核四段：組報告 → 收割清單與欠寫項 → 追蹤項 → 落 state 與報告檔。"""
     # MCP 結構化收尾 emit（one-writer spine）：MCP tool 只回 chip、不碰 state；
     # 由此 PostToolUse 分支獨佔寫 state + 落 per-turn 報告檔 + 判 HUD fallback。
     # session_id 用原始 input_data["session_id"]（與 modified_files 的 session_id 戳
@@ -636,7 +560,7 @@ def _record_closing_report(run: _PostRun) -> None:
     # emit 不誤放行本 session。turn_seq 由 UserPromptSubmit 每真 prompt +1。
     report, vals, sev, turn_seq, i_paths = _aec_build_report(run)
     _aec_owed_items(run, report, vals, turn_seq)
-    _aec_evidence_fields(run, report, vals)
+    _aec_followups_field(run, report, vals)
     _aec_save(run, report, sev, turn_seq, i_paths)
     run.dirty = True
 
@@ -648,10 +572,9 @@ def _aec_build_report(run: _PostRun) -> Tuple[Dict[str, Any], Dict[str, str], st
     # (c) 不收（與 85% 預警重複），舊客戶端送來不存；e／f 不在 schema（內容歸 ai_decided），舊客戶端送來照存、HUD 照舊格式畫
     _AEC_KEYS = ("a", "b", "d", "e", "f", "g", "h", "i")
     vals = {k: str(tool_input.get(k, "") or "") for k in _AEC_KEYS}
-    # (j)(k)：鍵不存在＝舊格式呼叫（MCP 還沒載到新 schema），不寫進報告、Stop 也不拿它擋；明給空字串才擋
-    for _k in ("j_evidence_path", "k_followups") if v6 else ():
-        if _k in tool_input:
-            vals[_k] = str(tool_input.get(_k) or "")
+    # (k)：鍵不存在＝舊格式呼叫（MCP 還沒載到新 schema），不寫進報告、不回告；明給空字串才回告
+    if v6 and "k_followups" in tool_input:
+        vals["k_followups"] = str(tool_input.get("k_followups") or "")
     a, b = vals["a"], vals["b"]
     # (i) 是給使用者裁決的路徑清單：「無（…括號解釋…）」一律正規化成目前語言的「無」，
     # 模型的多嘴說明（執行期狀態檔、已刪了什麼）不得變成 HUD 上要人裁決的一列。
@@ -726,30 +649,12 @@ def _aec_owed_items(run: _PostRun, report: Dict[str, Any], vals: Dict[str, str],
         )
 
 
-def _aec_evidence_fields(run: _PostRun, report: Dict[str, Any], vals: Dict[str, str]) -> None:
-    """收尾檢核③ (j) 證據持久路徑（有驗證收據時要給真存在的路徑，留空就帶入帳本）與 (k) 追蹤項；缺的回告模型。"""
-    state, session_id = run.state, run.session_id
-    aec_reject_msgs = run.aec_reject_msgs
-    # (j) 證據持久路徑：本 session 有驗證收據時必須給真存在的路徑；模型留空／「無」而帳本在 → 系統帶入帳本絕對路徑
-    # （帳本在資料根，跟專案 cwd 不同根）。(k) 追蹤項：空字串不收（「無」可）。
-    # 判定落 report 供 HUD 標紅；Stop 的對帳閘 (e) 讀 report 裡（帶入後）的 j，以同一對函式擋。
-    if "j_evidence_path" in vals:
-        _has_receipts = bool(_vl.receipts_of(state, session_id))
-        _ledger = str(_vl.ledger_path(session_id, WORKFLOW_DIR))
-        _j = _vl.aec_evidence_autofill(vals["j_evidence_path"], _has_receipts, _ledger)
-        if _j != vals["j_evidence_path"]:
-            vals["j_evidence_path"] = report["j_evidence_path"] = _j
-            report["j_autofilled"] = True
-            aec_reject_msgs.append(i18n.t("hook.post_tool_use.aec_evidence_autofill", path=_j))
-        report["j_missing"] = _vl.aec_evidence_missing(_j, _has_receipts)
+def _aec_followups_field(run: _PostRun, report: Dict[str, Any], vals: Dict[str, str]) -> None:
+    """收尾檢核③ (k) 追蹤項：空字串不收（「無」可），判定落 report 供 HUD 標紅，並回告模型。"""
     if "k_followups" in vals:
         report["k_missing"] = _vl.aec_followups_missing(vals["k_followups"])
-    if report.get("j_missing"):
-        aec_reject_msgs.append(
-            i18n.t("hook.post_tool_use.aec_evidence_missing", ledger=_vl.ledger_path(session_id, WORKFLOW_DIR))
-        )
     if report.get("k_missing"):
-        aec_reject_msgs.append(i18n.t("hook.post_tool_use.aec_followups_empty"))
+        run.aec_reject_msgs.append(i18n.t("hook.post_tool_use.aec_followups_empty"))
 
 
 def _aec_save(run: _PostRun, report: Dict[str, Any], sev: str, turn_seq: int, i_paths: str) -> None:

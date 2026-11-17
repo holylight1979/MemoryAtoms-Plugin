@@ -120,7 +120,7 @@ def handle_session_end(input_data: Dict[str, Any], config: Dict[str, Any]) -> No
 
     _se_sentinel_arm(session_id)
     v6 = v6_enabled(config)     # 關＝只跑 9e476fd0 就有的收尾
-    guard = guard_family_on(config)   # 關（插件版）＝DocDrift 摘要、連鎖斷路器清理、驗證收據清理不跑；萃取、衝突偵測、向量重建照跑
+    guard = guard_family_on(config)   # 關（插件版）＝DocDrift 摘要、連鎖斷路器清理不跑；萃取、衝突偵測、向量重建照跑
 
     state["ended_at"] = _now_iso()
     state["phase"] = "done"
@@ -143,14 +143,6 @@ def handle_session_end(input_data: Dict[str, Any], config: Dict[str, Any]) -> No
         print(f"SessionEnd cleanup error: {e}", file=sys.stderr)
     if guard:
         chain_store.session_cleanup(session_id)   # 連鎖斷路器：這個 session 的快照；7 天沒動的別 session 快照與連鎖帳（刪不掉浮 stderr）
-    try:
-        # run_verify 自寫的驗證收據（workflow/verify-ledger/_runs/）：留最新 200 份、刪 30 天以上；單份刪不掉在函式內浮 stderr
-        if v6 and guard:
-            from wg_core import CLAUDE_DIR as _CD
-            from self_receipt import prune_self_runs
-            prune_self_runs(_CD)
-    except Exception as e:
-        print(i18n.t("hook.session_end.sessionend_self_written_receipt", etype=type(e).__name__, error=e), file=sys.stderr)
 
     rc = config.get("response_capture", {})
     # session_end 全文萃取 worker 的唯一下游是 session_end_flush（已停產）；

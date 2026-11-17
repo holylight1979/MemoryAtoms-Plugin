@@ -191,9 +191,10 @@ def load_config() -> Dict[str, Any]:
     """Load config with defaults fallback。
 
     疊法（後蓋前）：DEFAULTS → workflow/config.json（頂層同名鍵整段換；插件版是 lib/edition.layered_config 疊好的
-    「出廠 config.json → config.plugin.json → 資料根 config.json」）→ 開著的插件帶的出廠預設（plugin.json 的 config 欄，
-    墊在底下：只補沒寫的鍵、同名段淺合併、使用者寫的優先）→ workflow/config.local.json。疊的規則在 lib/config_local。
-    疊好之後改過名的鍵對上新名（lib/config_local.apply_renamed_keys：新鍵優先，只寫舊鍵照讀並 stderr 一行請改名）。
+    「出廠 config.json → config.plugin.json → 資料根 config.json」）→ workflow/config.local.json。疊的規則在 lib/config_local。
+    疊好之後改過名的段與鍵對上新名（lib/config_local.apply_renamed_keys：新名優先，只寫舊名照讀並 stderr 一行請改名），
+    最後墊開著的插件帶的出廠預設（plugin.json 的 config 欄，墊在底下：只補沒寫的鍵、同名段淺合併、使用者寫的優先）。
+    出廠預設放在改名之後：它帶的是新段名，先墊的話只寫舊段名的使用者設定會被當成「新舊都寫」而不讀。
     config.json 損毀時跳過那一層但不得靜默（可觀測性鐵律）：log +
     `_config_parse_failed` 旗標，UPS/SessionStart 見旗標注入一行告警。
     """
@@ -203,8 +204,8 @@ def load_config() -> Dict[str, Any]:
     if failed:
         _atom_debug_error("config:parse_failed", ValueError(", ".join(str(f) for f in failed)))
         config["_config_parse_failed"] = True
-    config = with_defaults(config, _plugin_config_defaults())
-    return apply_renamed_keys(merge_local(config, CONFIG_LOCAL_PATH, "workflow-guardian"))
+    config = apply_renamed_keys(merge_local(config, CONFIG_LOCAL_PATH, "workflow-guardian"))
+    return with_defaults(config, _plugin_config_defaults())
 
 
 def _plugin_config_defaults() -> Dict[str, Any]:

@@ -109,6 +109,41 @@ def parse_memory_index(root: Path) -> dict[str, str]:
     return aliases
 
 
+def parse_aka_aliases(atoms: dict[str, Path], root: Path) -> dict[str, str]:
+    """舊名→現名：卡片 `- Aka:` 行與索引 `_atom_index.json` 的 aka 欄，與注入端認別名同一套。
+
+    名字本身是真卡就不當別名（真卡優先）；同一個舊名兩處指向不同現名時取先讀到的。
+    """
+    pairs: list[tuple[str, str]] = []
+    for name, path in atoms.items():
+        try:
+            fm = parse_frontmatter(path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        pairs.extend((old, name) for old in split_related(fm.get("Aka", "")))
+    pairs.extend(_index_aka_pairs(root / "_atom_index.json"))
+    aka: dict[str, str] = {}
+    for old, name in pairs:
+        if old and old not in atoms and name in atoms:
+            aka.setdefault(old, name)
+    return aka
+
+
+def _index_aka_pairs(index_path: Path) -> list[tuple[str, str]]:
+    """索引 aka 欄 → (舊名, 現名)；索引不在就沒有，讀不了印一行 stderr 也當沒有。"""
+    if not index_path.exists():
+        return []
+    try:
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        print(f"⚠️ {index_path} unreadable, index aka skipped: {e}", file=sys.stderr)
+        return []
+    pairs: list[tuple[str, str]] = []
+    for a in data.get("atoms", []):
+        pairs.extend((old, a.get("name")) for old in a.get("aka") or [])
+    return pairs
+
+
 def find_atoms(root: Path) -> dict[str, Path]:
     """yield {stem: path} for all atom .md.
 
@@ -997,6 +1032,8 @@ def main():
     mojibake = mojibake_names(MEMORY_ROOT)
     atoms = {k: v for k, v in atoms.items() if not _under_mojibake(v, MEMORY_ROOT)}
     aliases = parse_memory_index(MEMORY_ROOT)
+    for old, cur in parse_aka_aliases(atoms, MEMORY_ROOT).items():
+        aliases.setdefault(old, cur)
 
     if not any([args.validate_refs, args.fix_refs, args.auto_fix_broken,
                 args.stale_check, args.deps_check, args.shadow_check,

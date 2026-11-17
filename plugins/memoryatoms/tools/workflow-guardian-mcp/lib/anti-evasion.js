@@ -7,8 +7,6 @@
 // sendToolResult 來自 mcp.js（循環相依：mcp.handleToolCall lazy-require 本檔，故 tool handler
 // 內 lazy-require mcp 即可，載入順序無虞）。
 
-const fs = require("fs");
-
 // ─── severity（純函式；與 Python wg_evasion.aec_severity 同規則、single source of truth）──
 // (b) 真偷埋通報非空 → real-evasion；(a) 有真修補行 → notable；(a)(b) 皆「無」/空 → routine。
 // (c)–(i) 為資訊性，不升級 severity（severity 只衡量「退避」訊號）。
@@ -24,29 +22,8 @@ function aecSeverity(a, b) {
   return "routine";
 }
 
-// ─── (j) 證據持久路徑／(k) 追蹤項（純函式；MIRROR hooks/wg_verify_ledger.py aec_evidence_missing /
-// aec_evidence_autofill / aec_followups_missing；keep in sync）。Node 端不知道本 session 有沒有驗證收據、
-// 也不知道 session id（state 與帳本路徑是 Python 的），tool handler 不印 (j)：帶入帳本路徑與缺漏回告由
-// Python PostToolUse 做，擋的判定在 Python Stop。
-function aecEvidenceMissing(j, receiptsNonEmpty) {
-  if (!receiptsNonEmpty) return false;
-  if (aecBlank(j)) return true;
-  for (const raw of String(j == null ? "" : j).split("\n")) {
-    const p = raw.trim().split(" \u2014 ")[0].split(" - ")[0].trim().replace(/^`|`$/g, "");
-    if (!p) continue;
-    let ok = false;
-    try { ok = fs.existsSync(p.replace(/^~(?=[\\/]|$)/, require("os").homedir())); } catch { ok = false; }
-    if (!ok) return true;
-  }
-  return false;
-}
-// 有收據、j 空／「無」、帳本檔在 → 回帳本絕對路徑；其餘回原 j（模型填了別的路徑就用模型填的）。
-function aecEvidenceAutofill(j, receiptsNonEmpty, ledger) {
-  let has = false;
-  try { has = fs.existsSync(ledger); } catch { has = false; }
-  if (receiptsNonEmpty && aecBlank(j) && has) return ledger;
-  return String(j == null ? "" : j);
-}
+// ─── (k) 追蹤項（純函式；MIRROR hooks/wg_verify_ledger.py aec_followups_missing；keep in sync）。
+// 缺漏回告由 Python PostToolUse 做，擋的判定在 Python Stop；tool handler 不印 (k)。
 function aecFollowupsMissing(k) {
   return String(k == null ? "" : k).trim() === "";
 }
@@ -139,7 +116,7 @@ async function toolAntiEvasionReport(id, args) {
 }
 
 module.exports = {
-  aecBlank, aecSeverity, aecEvidenceMissing, aecEvidenceAutofill, aecFollowupsMissing,
+  aecBlank, aecSeverity, aecFollowupsMissing,
   REPORT_CLASSES, AI_DECIDED_KINDS,
   aecChipText, aecArgErrors, toolAntiEvasionReport,
 };

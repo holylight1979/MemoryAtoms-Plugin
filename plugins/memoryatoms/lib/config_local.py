@@ -4,7 +4,7 @@
 規則和 hooks/wg_core.load_config 同一套：頂層同名鍵兩邊都是物件就淺合併（上面那層的鍵優先），否則上面那層的值整個取代；
 檔案不存在＝沒有本機覆寫；讀壞了 stderr 一行、照共用設定跑。
 呼叫端傳 config.json 旁邊的 config.local.json（測試把 config.json 換到暫存目錄時，本機覆寫也跟著換掉）。
-改過名的鍵（RENAMED_KEYS）由 apply_renamed_keys 在疊好之後對上新名：新鍵優先，只寫舊鍵照讀。
+改過名的段（RENAMED_SECTIONS）與鍵（RENAMED_KEYS）由 apply_renamed_keys 在疊好之後對上新名：新名優先，只寫舊名照讀。
 """
 from __future__ import annotations
 
@@ -50,6 +50,10 @@ def with_defaults(config: Dict[str, Any], defaults: Dict[str, Any]) -> Dict[str,
     return _overlay(copy.deepcopy(defaults), config)
 
 
+# 改過名的頂層段：(舊段名, 新段名)。讀取端只讀新段；舊段留著不刪（同 RENAMED_KEYS）。
+RENAMED_SECTIONS = (
+    ("auto_handoff", "handoff"),
+)
 # 改過名的設定鍵：(段的路徑（點分層）, 舊鍵, 新鍵)。讀取端只讀新鍵；舊鍵留在段裡不刪，還沒改讀新鍵的程式照樣讀得到。
 RENAMED_KEYS = (
     ("coordination", "v6_once", "notice_once"),
@@ -63,8 +67,17 @@ _renamed_hinted: set = set()   # 同一支程式同一個舊鍵只提示一次�
 
 
 def apply_renamed_keys(config: Dict[str, Any]) -> Dict[str, Any]:
-    """疊好的設定照 RENAMED_KEYS 對上新名（原地改並回傳）：新鍵有寫就用新鍵；只寫舊鍵 → 值抄到新鍵、stderr 一行請改名；
-    兩個都寫 → 取新鍵、stderr 一行說舊鍵沒讀。補新鍵前整個頂層段換成新的一份，不改到別處共用的那一份（例：wg_core.DEFAULTS）。"""
+    """疊好的設定照 RENAMED_SECTIONS、RENAMED_KEYS 對上新名（原地改並回傳）：新名有寫就用新名；只寫舊名 → 值抄到新名、stderr 一行請改名；
+    兩個都寫 → 取新名、stderr 一行說舊名沒讀。補新鍵前整個頂層段換成新的一份，不改到別處共用的那一份（例：wg_core.DEFAULTS）。
+    插件出廠預設要在這之後才墊（wg_core.load_config）：先墊的話新段名一定在，只寫舊段名的使用者設定會被當成「兩個都寫」不讀。"""
+    for old, new in RENAMED_SECTIONS:
+        if old not in config:
+            continue
+        if new in config:
+            _renamed_hint(old, i18n.t("hook.config_local.renamed_key_ignored", old=old, new=new))
+            continue
+        config[new] = copy.deepcopy(config[old])
+        _renamed_hint(old, i18n.t("hook.config_local.renamed_key", old=old, new=new))
     for path, old, new in RENAMED_KEYS:
         sec = _section(config, path)
         if sec is None or old not in sec:

@@ -431,10 +431,9 @@ const TOOL_DEFINITIONS = [
         g: { type: "string", description: t("mcp.anti_evasion_report.param_g") },
         h: { type: "string", description: t("mcp.anti_evasion_report.param_h") },
         i: { type: "string", description: t("mcp.anti_evasion_report.param_i") },
-        j_evidence_path: { type: "string", description: t("mcp.anti_evasion_report.param_j_evidence_path") },
         k_followups: { type: "string", description: t("mcp.anti_evasion_report.param_k_followups") },
       },
-      required: ["goal", "principles", "ai_decided", "a", "b", "d", "g", "h", "i", "j_evidence_path", "k_followups"],
+      required: ["goal", "principles", "ai_decided", "a", "b", "d", "g", "h", "i", "k_followups"],
     },
   },
   {

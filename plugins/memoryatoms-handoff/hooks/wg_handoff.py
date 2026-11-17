@@ -24,7 +24,7 @@ def token_warn_payload(
     （token_warn_ratio）全在此判定。**不設旗標**——旗標由呼叫端在「實際 append
     到會 output_block 的 reason」時才標，避免 warning 未顯示就被當成已發。
     """
-    ah = config.get("auto_handoff", {}) or {}
+    ah = config.get("handoff", {}) or {}
     if not ah.get("enabled", True) or not ah.get("token_warn", True):
         return None
     if state.get("token_warn_emitted"):

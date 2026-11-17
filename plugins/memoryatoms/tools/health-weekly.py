@@ -437,26 +437,6 @@ def _pytest_regex_block(cfg: dict) -> list[str]:
     return yellow
 
 
-def _reconcile_overflow_block(days: int) -> list[str]:
-    """對帳閘預算用完放行（guard-reconcile_overflow.jsonl）近 N 天有事件 → 紅（放行要可見）。"""
-    p = CLAUDE_DIR / "Logs" / "guard-reconcile_overflow.jsonl"
-    cut = datetime.now().astimezone() - timedelta(days=days)
-    n = 0
-    try:
-        for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
-            try:
-                at = datetime.fromisoformat(str(json.loads(line).get("at", "")))
-            except (ValueError, TypeError, json.JSONDecodeError):
-                continue
-            if at.tzinfo is None:
-                at = at.astimezone()
-            if at >= cut:
-                n += 1
-    except OSError:
-        return []
-    return [t("cli.health_weekly.reconcile_overflow", count=n, days=days)] if n else []
-
-
 def _user_release_block(days: int) -> list[str]:
     """閘擋滿後使用者放行（Logs/guard-*.jsonl 的 event=user_release）近 N 天有事件 → 紅（放行要可見，按閘分計）。"""
     cut = datetime.now().astimezone() - timedelta(days=days)
@@ -650,8 +630,7 @@ def collect() -> dict:
     sr, si, selftests = _selftests_block(_load_config().get("tool_selftests") or [], CODE_DIR)
     red.extend(sr)
     info.extend(si)
-    # 2d. 對帳閘預算用完放行（舊 overflow 紀錄）＋擋滿後使用者放行
-    red.extend(_reconcile_overflow_block(FRESH_DAYS))
+    # 2d. 擋滿後使用者放行
     red.extend(_user_release_block(FRESH_DAYS))
     info.extend(_instructions_loaded_block())
     # 2d'. config 內建 PYTEST／PYTEST_MEASURE regex 停在舊版（只更新 hooks、沒對 config 的機器）

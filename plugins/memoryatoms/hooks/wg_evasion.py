@@ -50,13 +50,11 @@ _PHRASES_JSON = layered_meta("forbidden-phrases.json", MEMORY_DIR)
 
 
 # 詞表必備的段（_extract_phrases 回傳的鍵）：缺任一段，對應的偵測就比對不到任何字，開場紅字要講
-_REQUIRED_PHRASE_KEYS = ("evasion", "dismiss", "scan_report", "completion", "completion_exclude", "deferral", "context_exempt",
-                         "fixed", "fixed_exclude", "measured", "measured_exclude", "tried", "tried_exclude")
-_CLAIM_KINDS = (("fixed", "fixed_claim"), ("measured", "measured_claim"), ("tried", "tried_claim"))
+_REQUIRED_PHRASE_KEYS = ("evasion", "dismiss", "scan_report", "completion", "completion_exclude", "deferral", "context_exempt")
 
 
 def _load_phrases(path: Optional[Path] = None) -> Dict[str, List[str]]:
-    """Read forbidden-phrases.json → {evasion, dismiss, scan_report, completion, fixed, measured, tried…} pattern lists.
+    """Read forbidden-phrases.json → {evasion, dismiss, scan_report, completion, deferral, context_exempt…} pattern lists.
 
     Any read/parse error → empty dict（對應的偵測明確停用，模組載入時走開場紅字；不藏備用表）。
     """
@@ -98,10 +96,6 @@ def _extract_phrases(data: Dict[str, Any]) -> Dict[str, Any]:
         "context_exempt": context_exempt,
         "categories": cats,
     }
-    for kind, section in _CLAIM_KINDS:
-        sec = data.get(section) or {}
-        out[kind] = list(sec.get("patterns", []) or []) if isinstance(sec, dict) else []
-        out[f"{kind}_exclude"] = list(((sec.get("exclude_patterns") or {}) if isinstance(sec, dict) else {}).get("patterns", []) or [])
     return out
 
 
@@ -141,23 +135,6 @@ def evasion_category(phrase: str) -> Dict[str, str]:
 def is_context_exempt_phrase(phrase: str) -> bool:
     """命中的退避詞是不是可以靠 context 豁免的延後語（延後到下個／新 session、之後／下次再；規則 EVASION_CONTEXT_EXEMPT）。"""
     return bool(phrase) and bool(_CONTEXT_EXEMPT_RE.search(phrase))
-
-
-def _claim_regexes(ph: Dict[str, List[str]]) -> Dict[str, Pattern]:
-    out: Dict[str, Pattern] = {}
-    for kind, _section in _CLAIM_KINDS:
-        out[kind] = _compile_union(ph.get(kind, []), re.IGNORECASE)
-        out[f"{kind}_exclude"] = _compile_union(ph.get(f"{kind}_exclude", []), re.IGNORECASE)
-    return out
-
-
-def compile_claim_phrases(path: Optional[Path] = None) -> Dict[str, Pattern]:
-    """fixed／measured／tried 三類宣稱 regex（含 exclude）。path 給 fixture 詞表檔；None 用模組載入的詞表。"""
-    return _claim_regexes(_load_phrases(path) if path else _phrases)
-
-
-# wg_verify_ledger.claims_fixed／claims_measured／claims_tried 的預設詞表
-CLAIM_RES: Dict[str, Pattern] = _claim_regexes(_phrases)
 
 
 def is_test_command(cmd: str) -> bool:
@@ -263,14 +240,12 @@ def detect_evasion(text: str, recent_user_prompts: List[str],
     """
     if not text:
         return None
-    from wg_release_rules import is_claim_line, not_doing_hint, not_doing_verdict, parse_not_doing
+    from wg_release_rules import not_doing_hint, not_doing_verdict, parse_not_doing
     decls = parse_not_doing(text)
     prompts = user_typed_prompts(recent_user_prompts)[-3:]
     for m in _EVASION_RE.finditer(strip_quoted_spans(text)):
         phrase, idx = m.group(0), m.start()
         line = _line_at(text, idx)
-        if is_claim_line(line):          # 宣稱行是對閘的回答（「非本回合宣稱」），不是退避句
-            continue
         cat = evasion_category(phrase)
         v = not_doing_verdict(line, decls, prompts, cat["exception"], phrase)
         if not v.owed:
@@ -314,12 +289,10 @@ def detect_deferral(
     """
     if not text:
         return None
-    from wg_release_rules import is_claim_line, not_doing_verdict, parse_not_doing
+    from wg_release_rules import not_doing_verdict, parse_not_doing
     decls = parse_not_doing(text)
     prompts = user_typed_prompts(recent_user_prompts)[-3:]
     for line in strip_markdown_blocks(text).split("\n"):
-        if is_claim_line(line):          # 宣稱行是對閘的回答（「非本回合宣稱」），不是退縮句
-            continue
         for orig_sent in _SENTENCE_SPLIT_RE.split(line):
             sent = strip_quoted_spans(orig_sent)  # 引號內轉述不觸發（同 detect_evasion）
             m = _DEFERRAL_RE.search(sent)
@@ -1178,7 +1151,6 @@ def flush_outcome_stats(
         return None
     except Exception:
         return None
-
 
 
 # ─── V5: Iteration metrics + oscillation + rut + review (was wg_iteration) ──
