@@ -16,7 +16,7 @@ from wg_core import (
     output_json, output_nothing,
     check_memory_path_block,
     check_cross_realm_write, check_cross_realm_mcp_cmd, check_cross_realm_bash,
-    read_state, read_state_status,
+    read_state, read_state_status, write_state,
     _atom_debug_log, v6_enabled, guard_family_on,
 )
 import i18n   # lib/：給人看的提示走語言表
@@ -67,6 +67,26 @@ def pick_subagent_memory(task_text: str, already_injected: List[str]) -> Tuple[s
     from wg_atoms import build_injection_blob   # 惰性 import：wg_atoms 全額 import 成本高，只在派子代理時付
     blob, injected = build_injection_blob(task_text, budget=_SUBAGENT_INJECT_BUDGET, already_injected=already_injected)
     return (blob, injected) if blob and injected else ("", [])
+
+
+_AGENT_MODEL_HINT_MAX = 3   # 一場最多提醒幾次
+
+
+def _agent_model_hint(input_data: Dict[str, Any], tool_input: Dict[str, Any], subagent_type: str) -> str:
+    """Agent／Task 呼叫沒填 model 時回提醒句（只提醒，不填、不改 tool_input、不擋）；fork、已填、超過次數或沒有 state 回空字串。
+    次數記在 state 的 agent_model_hint_n。"""
+    if tool_input.get("model") or subagent_type == "fork":
+        return ""
+    sid = input_data.get("session_id", "") or ""
+    state = read_state(sid) if sid else None
+    if not state:
+        return ""
+    n = int(state.get("agent_model_hint_n") or 0)
+    if n >= _AGENT_MODEL_HINT_MAX:
+        return ""
+    state["agent_model_hint_n"] = n + 1
+    write_state(sid, state)
+    return i18n.t("hook.pre_tool_use.agent_model_missing")
 
 
 def handle_judge_pre_tool_use(input_data: Dict[str, Any], config: Dict[str, Any]) -> None:
@@ -143,6 +163,7 @@ def handle_pre_tool_use(input_data: Dict[str, Any], config: Dict[str, Any]) -> N
                 state = read_state(sid) if sid else None
                 already = list((state or {}).get("injected_atoms") or [])
             blob, injected = pick_subagent_memory(orig_prompt, already)
+            model_hint = _agent_model_hint(input_data, tool_input, subagent_type)
             if blob:
                 new_input = dict(tool_input)
                 new_input["prompt"] = "\n\n".join(p for p in (blob, orig_prompt) if p)
@@ -153,11 +174,21 @@ def handle_pre_tool_use(input_data: Dict[str, Any], config: Dict[str, Any]) -> N
                     f"blob_tokens=~{len(blob) // 4} prompt_head={orig_prompt[:60]!r}",
                     config,
                 )
-                output_json({
+                out: Dict[str, Any] = {
                     "hookSpecificOutput": {
                         "hookEventName": "PreToolUse",
                         "updatedInput": new_input,
                     }
+                }
+                if model_hint:   # 提醒只給主 session，不進塞給子代理的前綴
+                    out["systemMessage"] = model_hint
+                    out["hookSpecificOutput"]["additionalContext"] = model_hint
+                output_json(out)
+                return
+            if model_hint:
+                output_json({
+                    "systemMessage": model_hint,
+                    "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": model_hint},
                 })
                 return
         except Exception as e:

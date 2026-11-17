@@ -240,6 +240,10 @@
     "min_prompt_hits": 2,
     "max_prompt_matches": 1
   },
+  "project_rules": {
+    "_doc": "Session-start size notice for a project's always-loaded rules (CLAUDE.md, CLAUDE.local.md, .claude/CLAUDE.md, and .claude/rules/*.md without a paths: header). When their total characters exceed warn_chars, one [Guardian:ProjectRules] line per session says the size and where to fold it; size only, content is never read for judgement and no project file is changed. 0 turns it off. Not measured when the cwd project is the memory system itself.",
+    "warn_chars": 8000
+  },
   "skill_index": {
     "_doc": "Keeps the skills/ count in sync with its single source of truth (tools/skill-index.py). With enabled=true: when PostToolUse sees a skills/*/SKILL.md added, removed, or changed, it runs --write to regenerate _skill_index.json and rewrite the <!-- skill-count --> markers in the docs; SessionStart runs --check as a safeguard (actual file count differs from the json count -> advisory). Turn off with enabled:false.",
     "enabled": true

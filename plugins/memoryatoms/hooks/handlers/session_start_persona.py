@@ -3,11 +3,11 @@
 做什麼（只在插件版跑；安裝版由 CLAUDE.md @import 與 user-init.sh 負責，這裡直接 exit 0、不輸出）：
 1. 資料根沒有 IDENTITY.md／USER.md 就照語言從 templates/ 種一份（取代 hooks/user-init.sh 在插件版的工作；選模板規則同它：
    該語言的模板在就用，否則用英文版；{{USERNAME}} 換成作業系統使用者名）。
-2. 送 IDENTITY.md、USER.md、<資料根>/memory/MEMORY.md、templates/memory-rules.<語言>.md。
+2. 不帶參數：送 IDENTITY.md、USER.md、<資料根>/memory/MEMORY.md；帶 --rules：只送 templates/rules/<語言>/core.md（核心規則）。
    Claude 設定目錄的 CLAUDE.md 已含 @IDENTITY.md 匯入（遷移過來的人）→ IDENTITY／USER 不重送（CLAUDE.md 已載）。
-3. 原生記憶提醒：Claude 設定目錄 settings.json 的 autoMemoryEnabled 不是 false，且 SessionStart 的 source 是 startup／resume → 加一行建議。
-4. 總長超過 wg_core.HOOK_TEXT_CAP 就走 wg_core.cap_hook_text（溢出全文留檔、截斷）。
-這是 hooks.json 的第二條 SessionStart，自己一份 10,000 字元上限，不與 session_start.py 共用。
+3. 原生記憶提醒（只在不帶參數那段）：settings.json 的 autoMemoryEnabled 不是 false，且 source 是 startup／resume → 加一行建議。
+4. 單段超過 wg_core.HOOK_TEXT_CAP 就走 wg_core.cap_hook_text（溢出全文留檔、截斷）。
+hooks.json 的第二、三條 SessionStart 各跑一次（第三條帶 --rules），每段各自一份 10,000 字元上限，合送會超過上限。
 
 MEMORY.md 在第一場可能還沒產生（出廠卡展開與目錄重建在另一條 SessionStart，同事件的 hook 並行）→ 缺檔就略過，下一場才有。
 """
@@ -83,9 +83,12 @@ def native_memory_on() -> bool:
         return True
 
 
-def build(source: str) -> str:
+def build(source: str, rules_only: bool = False) -> str:
+    """rules_only=True：只回核心規則段；否則回身分、使用者、卡片目錄（與原生記憶提醒）。"""
     data_dir = claude_data_dir()
     lang = _safe_lang(i18n.current_language())
+    if rules_only:
+        return _core_rules(lang)
     seed_missing(data_dir, lang)
     parts: list[str] = []
     if not claude_md_imports_identity():
@@ -96,17 +99,15 @@ def build(source: str) -> str:
     catalog = _read(data_dir / "memory" / "MEMORY.md")
     if catalog:
         parts.append(f"## memory/MEMORY.md\n{catalog}")
-    rules = _template_rules(lang)
-    if rules:
-        parts.append(rules)
     if source in HINT_SOURCES and native_memory_on():
         parts.append(i18n.t("hook.session_start_persona.native_memory_hint"))
     return "\n\n".join(parts)
 
 
-def _template_rules(lang: str) -> str:
+def _core_rules(lang: str) -> str:
+    """核心規則 templates/rules/<語言>/core.md；該語言沒有就用英文版。"""
     for cand in (lang, "en"):
-        body = _read(CODE_ROOT / "templates" / f"memory-rules.{cand}.md")
+        body = _read(CODE_ROOT / "templates" / "rules" / cand / "core.md")
         if body:
             return body
     print(i18n.t("hook.session_start_persona.rules_missing"), file=sys.stderr)
@@ -121,13 +122,14 @@ def main() -> None:
     except ValueError:
         data = {}
     source = str(data.get("source") or "") if isinstance(data, dict) else ""
-    text = build(source)
+    rules_only = "--rules" in sys.argv[1:]
+    text = build(source, rules_only)
     if not text:
         return
     if len(text) > 4000:   # 離上限還遠就不載 wg_core（它載入較重）；cap_hook_text 自己再判上限
         sys.path.insert(0, str(CODE_ROOT / "hooks"))
         import wg_core
-        text = wg_core.cap_hook_text(text, "session_start_persona")
+        text = wg_core.cap_hook_text(text, "session_start_persona_rules" if rules_only else "session_start_persona")
     out = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}
     sys.stdout.buffer.write(json.dumps(out, ensure_ascii=False).encode("utf-8"))
 

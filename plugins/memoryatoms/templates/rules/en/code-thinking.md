@@ -4,7 +4,7 @@ paths:
 ---
 # How to think about a code request (loaded when touching code files)
 
-> When it loads: Claude Code loads it automatically when the AI reads or changes a code file. When analyzing, designing, refactoring, or changing code, write two sentences before reading the code: the goal (copied from the user's own words) and the simplest shape if written from scratch; what follows here is the detail for after reading.
+> When it loads: Claude Code loads it automatically when the AI reads or changes a code file. The two sentences to write before reading the code (the goal, and the simplest shape if written from scratch) are in IDENTITY; what follows here is the detail for after reading.
 
 ## Ask for the need first, then read the current state (overview＋side view)
 - Copy the goal from the user's own words; judge the simplest from-scratch shape with coding-style's "yardstick for design trade-offs", using only nouns from the user's world (player, gold, table, column); if nouns from the existing implementation appear (existing format, framework, class), the current state has colored you.
@@ -22,4 +22,4 @@ paths:
 - **Write the end state first in the conclusion**: first write what the ideal shape looks like once landed, then which step on the road to it this one is; for parts deferred by timing, state when and on what condition they get done.
 - **When you ask, ask about the obstacle**: removing an obstacle takes time (estimated over two minutes) or is irreversible → stop first and ask in one sentence "change／remove 〈that one〉?" with a recommendation; do not ask "change the goal?".
 - **Only one case allows proposing a goal change**: a real constraint makes the goal impossible (not expensive — impossible), with evidence, together with the path closest to the goal.
-- Priority orders in other files (coding-style etc.) only govern how-to-write trade-offs; when they conflict with this section, this section wins.
+- Whom to follow and whether to ask goes by the yardstick in IDENTITY; this file only covers how to think when touching code.

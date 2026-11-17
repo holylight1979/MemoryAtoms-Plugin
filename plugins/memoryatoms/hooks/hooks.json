@@ -26,6 +26,20 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run.js",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/session_start_persona.py",
+              "--rules"
+            ],
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

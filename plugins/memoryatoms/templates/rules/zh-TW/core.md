@@ -1,44 +1,35 @@
 # 核心規則
 
-> 已由 hook／MCP 程式化強制的事（Sync 提醒、並行建議、研究 fan-out、domain 拒寫、版本脈絡 warn、_INDEX 提示）不在此重述；本檔只留「事前就要知道」與「沒有程式閘」的規則。
+> 本檔只放事前就要知道、或沒有程式閘會擋的規則；程式已會擋或會提示的事不重述。
 
 ## 系統自我認知
-- **核心目標**：每一次的知識與經驗全部積累、分門別類，並在需要的那一刻精準送到眼前——該想起的要完整送到，不相關的一行都不佔 token。記憶系統的取捨兩題都要過。
-- **記憶三層**（寫入時的 scope）：
-  - 根層 `~/.claude/memory/`：跨專案通用知識，隨本系統 repo 同步 → `global`
-  - 組織層（`/memoryatoms:org` 接上的組織記憶 repo）：所有專案共用的組織知識與工具卡 → `org`
-  - 專案層 `{專案}/.claude/memory/`：該專案的決策與踩坑，隨專案版控 → `shared`／`personal`
-- 哪層接上沒、裝得完不完整 → 記憶系統的 `tools/install.py --verify`（git 安裝版才有）。
-
-## 治理原則
-- **Native-first**：原生機制（CLAUDE.md / skills / memory / resume）優先；自製只做原生做不到的「結構化 · 可稽核 · 跨-session 高價值」。過度工程的正解是誠實化＋修剪，非推倒重來。
-- **根層只在根層改**：`~/.claude` 核心（hooks/lib/tools/skills/rules、根層設定與文件、根層 repo 版控）只在 `~/.claude` session 改；專案 session 遇到 → 不動手，把需求寫成可貼上的 prompt 交給使用者（閘門會擋，擋下訊息附替代做法）。跑根層工具不算改：用絕對路徑跑（`python "<記憶系統資料夾>/tools/<tool>.py" …`，hook 印的提示行已給完整指令），不 `cd` 進去。
-- **可觀測性鐵律**：所有 fail-open「不阻斷但要告知」——降級／靜默失敗必浮出訊號（告警 / stderr / 收尾報告），不得無聲吞掉。
-- **判斷交 LLM、流程交程式**：固定規則是判斷完之後的產物；還需要判斷的事（該測哪些、影響到誰、是不是誤判）不寫死，留 LLM 宣告判斷、附理由、事後被對帳的入口。
+- 記憶系統的目標：知識與經驗全部積累、分門別類，需要的那一刻完整送到，不相關的不佔 token。
+- **記憶三層**（scope：寫卡時決定這張卡給誰看）：根層 `~/.claude/memory/` 放跨專案通用的 → `global`；組織層（接上的組織記憶 repo）放全組織共用的 → `org`；專案層 `{專案}/.claude/memory/` 放該專案的決策與踩坑 → `shared`／`personal`。
+- **根層只在根層改**：`~/.claude` 的系統檔只在 `~/.claude` 的 session 改；專案 session 遇到就把需求寫成可貼上的 prompt 交給使用者。跑根層工具不算改：用絕對路徑跑記憶系統的 `tools/<工具>.py`（hook 印的提示行會給完整指令），不 `cd` 進去。
+- **可觀測性鐵律**：不阻斷的失敗（fail-open）也要告知——降級或靜默失敗必浮出訊號（告警、stderr、收尾報告），不無聲吞掉。
 
 ## 知識庫
-- 禁憑記憶改碼；斷言嚴重度/blocker/「必爆」前先實證（跑/查/追根源）。細節 [[feedback-未實證先別斷言-從根源驗證-先證再修-反退避反冗長]]
-- 修改核心結構/新認知/踩坑 → 更新 _AIDocs + _CHANGELOG.md（新增時同步 _INDEX.md）；_AIDocs 只放長期參考，規劃/TODO/進行中 → memory/_staging/。
-- live 檔（code/config/test）與 atom 只寫現況，不埋版本脈絡（版本/階段標記、日期戳、變更敘事）；編年歸 `_AIDocs/DevHistory/` 與 `_CHANGELOG.md`。
-- 寫規則檔、決策卡：現在的做法寫「目前用 X」，不寫「一律」；退版、否決要寫是方向錯，還是時機或資源不夠——只寫結論，下一個 AI 會讀成禁令。
+- 禁憑記憶改碼；斷言嚴重度或「必爆」前先實證（跑、查、追根源），細節見 [[feedback-未實證先別斷言-從根源驗證-先證再修-反退避反冗長]]。
+- `_AIDocs`（專案文件庫）只放長期參考；規劃、TODO、進行中的事放 `memory/_staging/`。
+- 程式、設定、測試與卡片只寫現況，不埋版本、日期、變更敘事；編年放 `_AIDocs/DevHistory/` 與 `_CHANGELOG.md`。
+- 寫規則或決策：只把目標寫成一律，做法寫「目前用 X」；退版或否決寫明是方向錯，還是時機或資源不夠。
 
 ## 記憶
-- 使用者說「初始化原子記憶庫」或開場出現 `[Guardian:ProjectMemory]` → 跑記憶系統的 `tools/init-project-memory.py --cwd <專案根>`（`[Guardian:ProjectMemory]` 提示行會印完整指令），不自己手建目錄。
-- 寫入目前走 atom_write MCP（自動驗證去重索引），禁直接 Edit atom .md；已記錄事實直接引用；不寫臨時嘗試/未確認猜測。**新 atom 目前以 [臨] 起跳**（系統拒收新建 [固]/[觀]），晉升靠使用或 append。注入的卡明顯救了你一次或把你帶錯 → `atom_feedback(atom_name, verdict=helpful|misleading)` 投一票（沒真的用到的卡不投）。
-- **Realm**：跨專案通用 → `memory/<範疇>/`（失敗家族 `memory/Failures/<主題>/`）；只在 ~/.claude 內有用 → `realm=local`（`memory/_local/`）。判定三問：① 可重用 ≥2 個專案？② 系統規則，還是特定 app／工具／環境的範疇？③ 月級還是週級有效期？三題偏前者 → core，偏後者 → local；拿不準回 core（[[realm判core還是local-問換一個不用記憶系統的專案還用不用得上-例子取自記憶系統不算local-拿不準回core]]）。
-- **Scope**（問「遷就專案還是遷就人？」）：專案的規則／決策 → `shared`；只關於這個人 → `personal`；本人跨專案偏好 → `personal, cross_project=true`；全組織所有專案都該知道 → `org`。
-- **個人隱私敏感資訊放 secret**（密碼、token、私鑰、憑證、個資、內網位址、任何不想公開的驗證或隱私內容）：`atom_write` 帶 `secret=true`，落 `memory/personal/<user>/secret/`——不進版控、不送向量、只給本人、觸發詞照常注入。其他個人卡（工作偏好）照常進版控，不必躲。值本身別寫進卡，只寫放在哪。寫入閘碰到相關字眼會要你判斷：只是一般技術知識就帶 `not_sensitive=<理由>`；判不準當敏感（放 secret 之後搬出來很容易，公開了收不回）。**一張卡部分隱私、部分不是 → 拆成兩張**，隱私那半才進 secret；寫入閘會擋整張沒隱私字眼、或只有部分行命中的 secret 卡，整張確實都該藏才帶 `secret_reason=<理由>`。已經寫錯地方的卡用 `atom_move` 搬進去（或搬出來）。
-- create 必給 `domain`（Lv1 閉合清單 `memory/_meta/taxonomy.json`），不確定落點先 `dry_run`；分不出範疇的知識不寫。
-- **清單不進 atom**：待辦／backlog／稽核結果／對照表這類「會一直加項目」的東西，正本寫 `memory/_staging/<主題>.md`，atom 只留指標（正本在哪／怎麼改／什麼不寫這裡）。atom 隨 trigger 整顆注入、知識段預設約 200 tok（預算夠時最多 400），長清單仍會被截斷——放進去等於記了但送不到。寫入閘以待辦標記數硬拒（`- [ ]`／`- [x]` ≥3）。
-- **Failures 卡的禁令要帶情境**：Failures 範疇新寫的 `[臨]` 行含「一律／不准／禁止／必須／嚴禁／不得」，同一行或下一行要寫「情境：」（或「何時：」「適用：」）——什麼時候適用、什麼時候不適用；沒寫寫入閘拒收。失敗當下寫的禁令不帶情境，會被拿去否決使用者的新目標，也會跟別張卡互相打架。只管新卡與 append 的新行。
-- atom 被預算擋下時先分辨**這是結論還是清單**：結論 → 壓縮（個案敘事移文件）；清單 → 換形狀。別靠刪既有內容換空間。放寬寫入預算沒用，注入端會先截斷。
+- 使用者說「初始化原子記憶庫」或開場出現 `[Guardian:ProjectMemory]` → 照提示行給的指令跑，不自己手建目錄。
+- 寫卡目前走 atom_write MCP（會驗證、去重、建索引），不直接改卡片 .md；新卡目前以 [臨] 起跳，晉升靠使用或 append；create 必給 `domain`（清單在 `memory/_meta/taxonomy.json`），落點拿不準先 `dry_run`，分不出範疇的不寫。已記錄的事實直接引用，不寫臨時嘗試或未確認的猜測。
+- **Scope** 問「遷就專案還是遷就人」：專案的規則與決策 → `shared`；只關於這個人 → `personal`；本人跨專案的偏好 → `personal, cross_project=true`；全組織所有專案都該知道 → `org`。
+- **Realm**（卡放哪一區）：跨專案通用 → `memory/<範疇>/`；只在 `~/.claude` 內有用 → `realm=local`。判定三問：可重用到兩個以上專案嗎？是系統規則，還是特定 app、工具、環境的事？有效期是以月計還是以週計？偏前者 → core，偏後者 → local；拿不準回 core。
+- **個人隱私敏感資訊放 secret**（密碼、token、私鑰、憑證、個資、內網位址等不想公開的）：`atom_write` 帶 `secret=true`，卡裡只寫值放在哪、不寫值本身；只是一般技術知識就帶 `not_sensitive=<理由>`；判不準當敏感（藏了再搬出來容易，公開了收不回）；一張卡只有部分隱私就拆成兩張；放錯區的卡用 `atom_move` 搬。
+- **清單不進卡**：待辦、backlog、稽核結果、對照表這類會一直加項目的，正本寫 `memory/_staging/<主題>.md`，卡只留指標；卡片整顆注入且有預算，長清單會被截斷。卡被預算擋下時先分辨是結論還是清單：結論就壓縮，清單就換形狀，不靠刪既有內容換空間。
+- Failures 卡（踩坑紀錄）寫禁令時，同行或下一行寫「情境：」說明何時適用、何時不適用。
+- 注入的卡明顯救了你或帶錯你 → `atom_feedback(atom_name, verdict=helpful|misleading)` 投一票；沒真的用到的不投。
 
 ## 版控
-- **記憶卡片與索引由系統自動同步**（若你開了同步）：三層的卡片與索引由背景同步上傳，AI 不碰也不問；不為了上版跑整組。
-- **程式與文件的改動等使用者下口令**（含原子記憶系統本身的程式與文件）（團隊共有物，上傳等於替別人做決定）：改完只報告改了什麼、驗了什麼，等使用者看 diff 下版控口令（預設如「上GIT」，清單在 `workflow/config.json` 的 `commit_order.keywords`），再 commit → push 一氣做完。
+- 記憶卡片與索引由系統背景同步上傳（若你開了同步），AI 不碰也不問。
+- 程式與文件等使用者口令（含原子記憶系統本身的）：改完只報告改了什麼、驗了什麼，等使用者看 diff 下版控口令（預設如「上GIT」，清單在 `workflow/config.json` 的 `commit_order.keywords`）再 commit＋push。
 
 ## 對話
 - 「用識流…」→ /memoryatoms:consciousness-stream；/resume → /memoryatoms:continue。
-- 獨立子任務可新開對話，拆分前確保知識已存入；Context 壓縮即將發生 → 提醒開新 session。
-- **Plan Mode 查讀**目前用 Read / Grep / Glob 工具，不用 Bash 的 cat/grep/sed 替代（Plan Mode 暫停 bypass，Bash 要過唯讀判定會彈窗）；Bash 指令不加 `cd <資料夾>` 前綴，直接寫絕對路徑。
-- **並行多開 agent**：至少兩份不寫同一批檔、每份都要讀很多檔或做好幾分鐘的工作，就自己開 agent 並行，不必先問、也不為用量先問；不符合就自己做。怎麼拆、配哪個模型、派工單、收回對帳見技能 `parallel-dispatch`。檢索型請求（幫我查、研究一下）的 fan-out 判準見 [[workflow-research-fanout]]。
+- 獨立子任務可新開對話，拆前先把知識存好；對話快被壓縮時提醒使用者開新 session。
+- Plan Mode 查讀目前用 Read / Grep / Glob 工具，不用 Bash 的 cat/grep/sed；Bash 指令直接寫絕對路徑，不加 `cd` 前綴。
+- 中大型、可拆的工作（至少兩份不寫同一批檔、每份都要讀很多檔或做好幾分鐘）就自己開 agent 並行，不必先問；每份明填 model，見技能 parallel-dispatch。檢索型請求的拆法見 [[workflow-research-fanout]]。

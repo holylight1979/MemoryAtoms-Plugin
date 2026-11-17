@@ -2,11 +2,12 @@
 handlers/session_start_sentinels.py — SessionStart 的「哨兵與死人開關」
 
 做什麼：開場時檢查幾件「壞了沒人會發現」的事，有異常才回提示行（無事零 context）：
-IDENTITY.md 與必載檔硬契約有沒有被改壞、上個 SessionEnd 有沒有沒跑完、週健檢排程有沒有死、回訪到期項。
+IDENTITY.md 與必載檔硬契約有沒有被改壞、IDENTITY.md 是不是比範本舊、上個 SessionEnd 有沒有沒跑完、週健檢排程有沒有死、回訪到期項。
 誰叫它：handlers/session_start.py 的 handle_session_start（依序呼叫，結果併進開場提示）。
 """
 
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +43,49 @@ def check_identity_integrity(data_dir: Path) -> List[str]:
     if (not sentinel or sentinel in text) and size >= min_bytes:
         return []
     return [i18n.t("hook.session_start_sentinels.identity_damaged", path=identity, size=size)]
+
+
+IDENTITY_STALE_MARKER_ZH = "問不問"   # zh-TW 範本裡那條粗體標籤；en 標籤從 en 範本同一位置讀出
+_BOLD_LABEL_RE = re.compile(r"(?m)^\s*[*-]\s+\*\*(.+?)\*\*")
+
+
+def _template_labels(path: Path) -> List[str]:
+    try:
+        return _BOLD_LABEL_RE.findall(path.read_text(encoding="utf-8-sig"))
+    except OSError:
+        return []
+
+
+def identity_stale_markers(templates_dir: Path) -> List[str]:
+    """兩種語言範本的「問不問」粗體標籤（含 **）。zh-TW 照 IDENTITY_STALE_MARKER_ZH 找出它是第幾條，
+    en 取 en 範本同一條；範本缺或對不上 → 少回那一個（全缺回空，呼叫端就不查）。"""
+    zh = _template_labels(templates_dir / "IDENTITY.template.zh-TW.md")
+    en = _template_labels(templates_dir / "IDENTITY.template.md")
+    if IDENTITY_STALE_MARKER_ZH not in zh:
+        return []
+    markers = [f"**{IDENTITY_STALE_MARKER_ZH}**"]
+    i = zh.index(IDENTITY_STALE_MARKER_ZH)
+    if i < len(en):
+        markers.append(f"**{en[i]}**")
+    return markers
+
+
+def check_identity_template(data_dir: Path, state: Dict[str, Any], templates_dir: Path = CODE_DIR / "templates") -> List[str]:
+    """IDENTITY.md 比範本舊（兩種語言的「問不問」標籤都不在）→ 一行提示；一場只一次（state identity_template_warned）。
+    只提示、不改檔、不重種；缺檔不查（那是 seed 的事）。"""
+    if state.get("identity_template_warned"):
+        return []
+    identity = data_dir / "IDENTITY.md"
+    if not identity.is_file():
+        return []
+    markers = identity_stale_markers(templates_dir)
+    if not markers:
+        return []
+    text = identity.read_text(encoding="utf-8", errors="ignore")
+    if any(m in text for m in markers):
+        return []
+    state["identity_template_warned"] = True
+    return [i18n.t("hook.session_start.identity_template_stale")]
 
 
 def check_always_load_contracts(data_dir: Path) -> List[str]:

@@ -4,7 +4,7 @@ paths:
 ---
 # Coding leanings
 
-> Priority: correctness and safety boundaries > the user's goal this time > real constraints > the project's existing practice > readable, verifiable simplicity > smallest change surface > personal syntax taste. When the goal conflicts with rule files, records, or existing code, follow "Handling conflicting settings" in `rules/code-thinking.md`. Minimalism always ranks after correctness.
+> Priority for how-to-write trade-offs: correctness and safety boundaries > real constraints > the project's existing practice > readable, verifiable simplicity > smallest change surface > personal syntax taste. When the goal conflicts with rule files, records, or existing code, follow "Handling conflicting settings" in `rules/code-thinking.md`. Minimalism always ranks after correctness.
 
 ## The yardstick for design trade-offs (use it both to judge good design and to critique the current state)
 - Classification and handling must be clear:
@@ -48,11 +48,11 @@ paths:
 
 ## Self-check
 > Three stopping points: before acting, when results contradict expectations, before delivering. The bright point = the place where you stop and observe calmly.
-- Each time confirm only four things: the current goal, known facts, working hypotheses, the next distinguishing action.
+- Each time confirm only five things: the current goal, known facts, working hypotheses, the next distinguishing action, the drift from the overall goal.
 - Evidence contradicts expectation: do not defend the original plan or widen the change; update the hypothesis first, then do the smallest check that can tell candidate causes apart.
 - Before delivering, actually run against the changed scope; the report separates verified facts, inferences, and unknowns, and does not fill evidence gaps with a confident tone.
 - Reread along the data flow from a stranger-maintainer's view; sections that cannot be explained continuously get tidied, but that does not automatically mean splitting and rewriting.
 - A verification script ends with one sentinel line `<NAME>_CHECK PASS` or `<NAME>_CHECK FAIL` (format `^[A-Z][A-Z0-9_]*_CHECK (PASS|FAIL)$`), with exit 0／1 matching; printing only `<NAME>_CHECK` without the suffix does not count as PASS.
 - A measurement script ends with `<NAME> DONE k=v k=v` (format `^[A-Z][A-Z0-9_]* DONE( \w+=\S+)*$`); the numbers are a yardstick, not a verdict, and it does not print PASS.
 - When an existing tool's last line has a different format, do not change the tool. The pre-build check list lives in the project's own `.claude/prebuild-checks.json`, not in `overview-hub.json`; add a `sentinel_regex` to that item to map it to one of the two formats above.
-- Verification runs only the changed scope and truly related cases; the full suite runs only when the user names it.
+- Verification runs only the changed scope and truly related cases.

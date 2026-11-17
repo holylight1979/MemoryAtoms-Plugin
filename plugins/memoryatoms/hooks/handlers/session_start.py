@@ -63,7 +63,7 @@ import wg_plugins
 import i18n   # lib/：給人看的提示走語言表
 from wg_hook_timing import lap as _hook_lap
 from handlers.session_start_sentinels import (   # noqa: F401
-    check_identity_integrity, check_always_load_contracts, _check_se_sentinel_residual,
+    check_identity_integrity, check_always_load_contracts, check_identity_template, _check_se_sentinel_residual,
     HEALTH_RUN_STALE_DAYS, _health_advisory, _followup_advisory,
 )
 from handlers.session_start_vector import _vector_package_notice   # noqa: E402
@@ -80,7 +80,7 @@ from handlers.session_start_index import (   # noqa: F401
 )
 from handlers.session_start_project import (   # noqa: F401
     _scope_layout_advisory, _aidocs_opening_lines, _local_catalog_lines, _org_advisory,
-    _project_memory_nudge, _project_root_notice, _first_session_hint_lines,
+    _project_memory_nudge, _project_root_notice, _first_session_hint_lines, _project_rules_advisory,
 )
 from handlers.session_start_state import (   # noqa: F401
     _root_fingerprint_matches, _CARRY_ON_REBUILD, floor_turn_seq, carry_on_rebuild,
@@ -280,7 +280,7 @@ def handle_session_start(input_data: Dict[str, Any], config: Dict[str, Any]) -> 
     _lap_or_degrade("回顧提示", session_id, state, lines)
     _service_notices(lines)
     _lap_or_degrade("服務檢查", session_id, state, lines)
-    _contract_sentinels(lines, v6)
+    _contract_sentinels(lines, v6, state)
     _lap_or_degrade("必載檔哨兵", session_id, state, lines)
     if v6 and guard:
         _take_git_snapshot(state, cwd)
@@ -490,6 +490,7 @@ def _open_new_session(input_data: Dict[str, Any], config: Dict[str, Any], sessio
     # ── 身分與專案提示（沒有自己的計時點，算進開場主段）
     _role_lines(lines, v4_user, v4_roles, v4_mgmt, project_mem_dir, cwd, config)
     lines.extend(_aidocs_opening_lines(aidocs_entries, project_root))
+    lines.extend(_project_rules_advisory(project_root, state, config))
     _project_hook_lines(lines, project_root, cwd, session_id)
     return state, lines, vector_flag
 
@@ -915,14 +916,19 @@ def _service_notices(lines: List[str]) -> None:
         print(f"[mcp-health] Check error: {e}", file=sys.stderr)
 
 
-def _contract_sentinels(lines: List[str], v6: bool) -> None:
-    """可觀測性：IDENTITY.md 完整性哨兵（寫碼守門開才查）與必載檔硬契約哨兵（登記表驅動；USER.md 已由 user-init.sh
-    從 USER-{user}.md 拷好）。兩者都看資料根；資料根沒有這些檔就不查（沒用個人化啟動不算降級）。"""
+def _contract_sentinels(lines: List[str], v6: bool, state: Dict[str, Any]) -> None:
+    """可觀測性：IDENTITY.md 完整性哨兵（寫碼守門開才查）、IDENTITY.md 比範本舊的提示（三版都查，一場一次）
+    與必載檔硬契約哨兵（登記表驅動；USER.md 已由 user-init.sh 從 USER-{user}.md 拷好）。
+    都看資料根；資料根沒有這些檔就不查（沒用個人化啟動不算降級）。"""
     try:
         if v6:
             lines.extend(check_identity_integrity(CLAUDE_DIR))
     except Exception as e:
         print(f"identity integrity check error: {e}", file=sys.stderr)
+    try:
+        lines.extend(check_identity_template(CLAUDE_DIR, state))
+    except Exception as e:
+        print(f"identity template check error: {e}", file=sys.stderr)
     try:
         lines.extend(check_always_load_contracts(CLAUDE_DIR))
     except Exception as e:

@@ -43,7 +43,8 @@ English: [README.md](README.md)
 | 事件 | 時限 | 做什麼 |
 |---|---|---|
 | SessionStart | 20 秒 | 建／更新卡片索引、展開或更新出廠卡、送開場卡片、壓縮後把卡片送回來、印一行式提示（例如「向量搜尋還沒裝」）。 |
-| SessionStart | 10 秒 | 個人化啟動：送 `IDENTITY.md`、`USER.md`、卡片目錄與寫卡規矩；兩個檔不在就用模板建。 |
+| SessionStart | 10 秒 | 個人化啟動：送 `IDENTITY.md`、`USER.md` 與卡片目錄；兩個檔不在就用模板建。 |
+| SessionStart | 10 秒 | 另外單獨送核心規則（`templates/rules/<語言>/core.md`），讓每段都低於 Claude Code 每個 hook 的字數上限。 |
 | UserPromptSubmit | 8 秒 | 找出合用這句話的卡，加進 Claude 的脈絡。 |
 | PreToolUse（Write、Edit、Agent、Task） | 5 秒 | 直接改卡片檔時導回 `atom_write` 工具；子代理開工時給它合用的卡。 |
 | PostToolUse（Write、Edit、Agent、Task 與 MCP 工具 atom_write、atom_retire、knowledge_harvest_report） | 5 秒 | 改過的卡重新索引、記卡片收據與來源、核對收割回報、記子代理拿到哪些卡。 |

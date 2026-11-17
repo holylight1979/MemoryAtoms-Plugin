@@ -1,4 +1,29 @@
 {
-  "_doc": "必載檔硬契約登記表（出廠為空）。contracts 每筆：id、live（每 session 一定進 context 的檔，相對資料根）、template（版控中的來源）、must_contain（必含句）、why、fix；live 為 IDENTITY.md 的那筆另可帶 sentinel（完整性哨兵句，沒寫取 must_contain 第一句）與 min_bytes（小於此大小視為 stub，預設 2000）。SessionStart 檢 live 缺句→告警；登記表沒列的檔不查。登記在此的句子不得只搬去 atom（atom 靠 trigger 命中、有預算上限、會被截斷）。",
-  "contracts": []
+  "_doc": "必載檔硬契約登記表（出廠只登記系統自己的範本；使用者可在資料根同名檔加自己的）。contracts 每筆：id、live（每 session 一定進 context 的檔，相對資料根）、template（版控中的來源）、must_contain（必含句）、why、fix；live 為 IDENTITY.md 的那筆另可帶 sentinel（完整性哨兵句，沒寫取 must_contain 第一句）與 min_bytes（小於此大小視為 stub，預設 2000）。SessionStart 檢 live 缺句→告警；登記表沒列的檔不查。登記在此的句子不得只搬去 atom（atom 靠 trigger 命中、有預算上限、會被截斷）。 出廠句子只用中英文版都會出現的識別字，因為規則檔與 IDENTITY 照這台的語言安裝。",
+  "contracts": [
+    {
+      "id": "core-記憶寫卡與並行指標",
+      "live": "rules/core.md",
+      "template": "templates/rules/en/core.md",
+      "must_contain": [
+        "atom_write",
+        "[臨]",
+        "secret=true",
+        "atom_feedback",
+        "parallel-dispatch"
+      ],
+      "why": "寫卡規則是事前要知道的，少了會白挨寫入閘一次擋；並行指標少了，中大型工作不會自己拆",
+      "fix": "比對 templates/rules/<語言>/core.md 回復"
+    },
+    {
+      "id": "IDENTITY-做事準則骨架",
+      "live": "IDENTITY.md",
+      "template": "templates/IDENTITY.template.md",
+      "must_contain": [
+        "code-thinking"
+      ],
+      "why": "IDENTITY 被覆寫成 stub 時（找不到這個識別字、或檔小於 2000 bytes），開場告警；只登記新舊範本都有的字，升級前寫的 IDENTITY 不會誤報",
+      "fix": "比對 templates/IDENTITY.template.md（或 .zh-TW.md）回復"
+    }
+  ]
 }

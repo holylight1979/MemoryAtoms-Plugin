@@ -71,7 +71,7 @@ def build_context(
             pointed.extend(matched_docs[:max_matches])
         if matched_docs and len(matched_docs) <= 5:
             aidocs_root = aidocs_state.get("project_root", "")
-            pointer_lines = ["[Guardian:AIDocs] Relevant project docs:"]
+            pointer_lines = ["[Guardian:AIDocs] Related project docs (read when this task touches them):"]
             for doc in matched_docs[:max_matches]:
                 desc = ""
                 for f, d in aidocs_state.get("entries", []):
@@ -79,7 +79,7 @@ def build_context(
                         desc = d
                         break
                 doc_path = f"_AIDocs/{doc}" if aidocs_root else doc
-                pointer_lines.append(f"  → Read `{doc_path}` — {desc[:80]}")
+                pointer_lines.append(f"  - `{doc_path}` — {desc[:80]}")
             lines.extend(pointer_lines)
 
     return budget

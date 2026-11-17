@@ -45,7 +45,7 @@ def _aidocs_opening_lines(aidocs_entries, project_root) -> List[str]:
     """開場 _AIDocs 一行：有索引就指 _INDEX.md（檔名清單不印，要用再 Read）；沒有就不印。
     _AIDocs 是選用的：要建，對 AI 說「讀懂這個專案」（/read-project 技能）。不每場提示建立——兩個版本都沒有建它的專用指令。"""
     if aidocs_entries:
-        return [f"[AIDocs] {len(aidocs_entries)} docs → Read _AIDocs/_INDEX.md"]
+        return [i18n.t("hook.session_start_project.aidocs_index", n=len(aidocs_entries))]
     return []
 
 
@@ -114,6 +114,62 @@ def _project_memory_nudge(cwd: str, project_root, project_mem_dir) -> List[str]:
         return []
     command = paste_command(CODE_DIR / "tools" / "init-project-memory.py", "--cwd", f'"{root}"')
     return [i18n.t("hook.session_start_project.project_memory_nudge", root=root, command=command)]
+
+
+def _has_paths_header(text: str) -> bool:
+    """rules file with a `paths:` key in its leading front matter = conditionally loaded."""
+    lines = text.lstrip("﻿").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return False
+    for ln in lines[1:]:
+        if ln.strip() == "---":
+            return False
+        if ln.lstrip().startswith("paths:"):
+            return True
+    return False
+
+
+def _project_rules_chars(project_root) -> int:
+    """Characters of the project's always-loaded rule files: CLAUDE.md, CLAUDE.local.md, .claude/CLAUDE.md,
+    plus .claude/rules/*.md without a `paths:` header. Counts only; never judges content."""
+    root = Path(project_root)
+    files = [root / "CLAUDE.md", root / "CLAUDE.local.md", root / ".claude" / "CLAUDE.md"]
+    rules = root / ".claude" / "rules"
+    if rules.is_dir():
+        files.extend(sorted(rules.glob("*.md")))
+    total = 0
+    for f in files:
+        try:
+            if not f.is_file():
+                continue
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if f.parent == rules and _has_paths_header(text):
+            continue
+        total += len(text)
+    return total
+
+
+def _project_rules_advisory(project_root, state: Dict[str, Any], config: Dict[str, Any]) -> List[str]:
+    """One line when the project's always-loaded rules exceed project_rules.warn_chars (0 = off); once per session.
+    Skipped for the memory system's own tree. Size only, no content judgement, no file changes. Fail-open."""
+    try:
+        if not project_root or state.get("project_rules_warned"):
+            return []
+        cfg = config.get("project_rules") if isinstance(config.get("project_rules"), dict) else {}
+        limit = int(cfg.get("warn_chars", 8000))
+        root = Path(project_root)
+        if limit <= 0 or (root / "hooks" / "workflow-guardian.py").is_file():
+            return []
+        chars = _project_rules_chars(root)
+        if chars <= limit:
+            return []
+        state["project_rules_warned"] = True
+        return [i18n.t("hook.session_start_project.project_rules_bloat", chars=chars, tok=chars // 2)]
+    except Exception as e:  # noqa: BLE001
+        _atom_debug_error("session_start:project_rules_advisory", e)
+        return []
 
 
 def _project_root_notice(res, cwd: str) -> List[str]:

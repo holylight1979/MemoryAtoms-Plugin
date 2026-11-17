@@ -43,7 +43,8 @@ Every hook runs as `node ${CLAUDE_PLUGIN_ROOT}/hooks/run.js <script>.py`. The la
 | Event | Timeout | What it does |
 |---|---|---|
 | SessionStart | 20 s | Builds or refreshes the card index, unpacks or updates shipped cards, sends the session-start cards, re-sends cards after a compaction, prints one-line notices (for example "vector search not set up"). |
-| SessionStart | 10 s | Personal start: sends `IDENTITY.md`, `USER.md`, the card catalog and the card-writing rules; creates the two files from templates if missing. |
+| SessionStart | 10 s | Personal start: sends `IDENTITY.md`, `USER.md` and the card catalog; creates the two files from templates if missing. |
+| SessionStart | 10 s | Sends the core rules (`templates/rules/<language>/core.md`) as a separate part, so each part stays below Claude Code's per-hook text limit. |
 | UserPromptSubmit | 8 s | Finds the cards that fit your prompt and adds them to Claude's context. |
 | PreToolUse (Write, Edit, Agent, Task) | 5 s | Points direct edits of card files to the `atom_write` tool; gives subagents the cards that fit their task. |
 | PostToolUse (Write, Edit, Agent, Task, and the MCP tools atom_write, atom_retire, knowledge_harvest_report) | 5 s | Re-indexes edited cards, records card receipts and sources, checks harvest reports, records which cards a subagent received. |
