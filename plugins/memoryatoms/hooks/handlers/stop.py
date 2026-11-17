@@ -83,7 +83,7 @@ from handlers._shared import (
 
 aec_ledger = lazy_module("handlers.aec_ledger")   # 殘檔帳本（守門家族）：用到才載
 from handlers.stop_output import (  # noqa: F401  搬走的名字原樣留在入口（測試與插件從這裡取）
-    ASK_HINT, _CHAIN_TAIL, _budget_released, _chain_gate, _log_waivers, _remind_logged, _unmark, non_interactive_reason, output_block, output_json, output_nothing, user_released,
+    ASK_HINT, _CHAIN_TAIL, _budget_released, _chain_gate, _log_waivers, _remind_logged, non_interactive_reason, output_block, output_json, output_nothing, user_released,
 )
 # 守門家族（同上：呼叫時才載）
 _detect_uncommitted_files = lazy_func("handlers.stop_sync", "_detect_uncommitted_files")

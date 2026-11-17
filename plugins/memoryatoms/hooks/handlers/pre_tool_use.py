@@ -3,7 +3,7 @@ handlers/pre_tool_use.py — PreToolUse hook 入口
 
 一次工具呼叫依序過這些閘（每道閘一支 pre_tool_use_<事>.py，細節看各檔檔頭）：
   讀檔補帳 → 連鎖停手（chain）→ 提問閘（ask）→ MCP 改卡直接放行 → 子代理記憶注入 → feedback 路由提示（atom_format）
-  → 插件提示 → 記憶卡格式（atom_format）→ 記憶路徑／跨 realm 寫入 → svn 測試路徑閘（svn）→ 合併驅動（merge_driver）
+  → 插件提示 → 記憶卡格式（atom_format）→ 記憶路徑／跨 realm 寫入 → 根層滲透（root_leak）→ 合併驅動（merge_driver）
   → svn 中文路徑提醒（svn）→ 口令閘（commit_order）→ 驗證批次閘 → 隱私閘（privacy）→ 病形閘（smell）→ OverviewHub 寫入檢查（hub）
   → 連鎖快照（chain）→ 輸出。
 deny 一律走 pre_tool_use_chain._deny；裁判子 session 只走 handle_judge_pre_tool_use。
@@ -40,7 +40,7 @@ check_git_privacy = lazy_func("handlers.pre_tool_use_privacy", "check_git_privac
 _smell_once_per_turn = lazy_func("handlers.pre_tool_use_smell", "_smell_once_per_turn")
 check_smell_gate = lazy_func("handlers.pre_tool_use_smell", "check_smell_gate")
 check_svn_encoding = lazy_func("handlers.pre_tool_use_svn", "check_svn_encoding")
-check_svn_test_block = lazy_func("handlers.pre_tool_use_svn", "check_svn_test_block")
+check_root_leak = lazy_func("handlers.pre_tool_use_root_leak", "check_safe")
 # 其他核心程式從這裡取的名字（wg_verify_ledger 用）：本體在 pre_tool_use_shell
 _resolve_run_cwd = lazy_func("handlers.pre_tool_use_shell", "_resolve_run_cwd")
 _vcs_segments = lazy_func("handlers.pre_tool_use_shell", "_vcs_segments")
@@ -215,11 +215,12 @@ def handle_pre_tool_use(input_data: Dict[str, Any], config: Dict[str, Any]) -> N
         _deny(input_data, config, deny_reason)
         return
 
-    # state 這裡讀一次：svn 測試路徑閘與後面的口令閘、OverviewHub 共用同一份
+    # state 這裡讀一次：後面的口令閘、OverviewHub 共用同一份
     _co_sid = input_data.get("session_id", "") or ""
     _co_state, _co_status = read_state_status(_co_sid) if _co_sid else (None, "missing")
 
-    deny_reason = check_svn_test_block(tool_name, tool_input, _cwd, config, _co_state, _co_sid)
+    # 根層滲透閘：根層 session 寫進根層範圍的字含已登記專案名／專案路徑 → 照 root_leak_gate.mode 提醒或擋；fail-open
+    deny_reason, root_leak_warn = check_root_leak(tool_name, tool_input, _cwd, config, _co_state, _co_sid)
     if deny_reason:
         _deny(input_data, config, deny_reason)
         return
@@ -357,7 +358,8 @@ def handle_pre_tool_use(input_data: Dict[str, Any], config: Dict[str, Any]) -> N
 
     # 無 deny 才輸出警告（stdout 恆單一 JSON；不帶 permissionDecision——
     # "allow" 會自動核准繞過權限系統，advisory 不得改變放行行為）
-    _emit_warnings([m for m in (plugin_warn, merge_warn, svn_enc_warn, smell_warn, hub_warn) if m], plugin_warn, plugin_ctx)
+    _emit_warnings([m for m in (plugin_warn, root_leak_warn, merge_warn, svn_enc_warn, smell_warn, hub_warn) if m],
+                   plugin_warn, plugin_ctx)
 
 
 def _emit_warnings(warn_msgs: List[str], plugin_warn: str, plugin_ctx: Dict[str, Any]) -> None:

@@ -69,7 +69,7 @@ PRE_V6_EVENTS = {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"
 PRE_V6_TOOLS = {   # 9e476fd0 settings.json 的 matcher；寫碼守門加掛的工具（Read、PowerShell 後記、AskUserQuestion…）關閉時不進 handler
     "PreToolUse": {"Write", "Edit", "NotebookEdit", "Bash", "PowerShell", "Agent", "Task"},
     "PostToolUse": {"Edit", "Write", "MultiEdit", "NotebookEdit", "ExitPlanMode", "Bash", "Agent", "Task",
-                    "anti_evasion_report", "atom_write", "atom_retire", "knowledge_harvest_report"},
+                    "anti_evasion_report", "atom_write", "atom_retire", "knowledge_harvest_report", "root_write_declare"},
 }
 # MCP 工具名＝前綴＋尾巴：安裝版 mcp__workflow-guardian__<工具>，插件版 mcp__plugin_memoryatoms_workflow-guardian__<工具>
 # （官方 hooks.md：插件帶的 MCP 是 mcp__plugin_<插件>_<server>__<工具>）。上表 MCP 工具只寫尾巴，兩種前綴都認。

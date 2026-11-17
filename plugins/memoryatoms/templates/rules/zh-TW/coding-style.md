@@ -54,5 +54,5 @@ paths:
 - 以陌生維護者視角順資料流重讀；無法連續解釋的段落就要整理，但不因此自動拆分重寫。
 - 驗證腳本結尾印一行哨兵 `<NAME>_CHECK PASS` 或 `<NAME>_CHECK FAIL`（格式 `^[A-Z][A-Z0-9_]*_CHECK (PASS|FAIL)$`），exit 0／1 對應；只印 `<NAME>_CHECK` 缺字尾不算 PASS。
 - 量測類腳本結尾印 `<NAME> DONE k=v k=v`（格式 `^[A-Z][A-Z0-9_]* DONE( \w+=\S+)*$`），數字是尺不是判決，不印 PASS。
-- 既有工具尾行格式不同時不改工具，在專案 `.claude/overview-hub.json` 的 `prebuild_checks[]` 該項加 `sentinel_regex` 映射成上面兩種之一。
+- 既有工具尾行格式不同時不改工具。建置前檢查清單寫在專案自己的 `.claude/prebuild-checks.json`，不是 `overview-hub.json`；該項加 `sentinel_regex` 映射成上面兩種之一。
 - 驗證只跑異動範圍與確實相關的案例；整組只在使用者點名時跑。

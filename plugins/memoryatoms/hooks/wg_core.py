@@ -797,32 +797,63 @@ def is_transient_project_root(root: Path) -> bool:
     return False
 
 
+def _registry_root_gone(root: str) -> bool:
+    """登記表這筆的根資料夾已不存在（刪掉的專案、已移除的工作樹）。網路路徑不碰檔案系統（伺服器不在時 stat 會卡好幾秒），當還在。"""
+    if not root or root.startswith(("\\\\", "//")):
+        return False
+    try:
+        return not Path(root).is_dir()
+    except OSError:
+        return False
+
+
+def prune_dead_registry_roots(reg: Dict[str, Any]) -> List[str]:
+    """把根資料夾已不存在的 `projects` 項從 reg 拿掉（就地改），回被拿掉的 slug。手列 `project_names` 不動。
+    死根留著會讓名字閘把刪掉的工作樹名當專案名、每次掃描白付成本。"""
+    projects = reg.get("projects")
+    if not isinstance(projects, dict):
+        return []
+    gone = [slug for slug, entry in projects.items()
+            if isinstance(entry, dict) and _registry_root_gone(str(entry.get("root") or ""))]
+    for slug in gone:
+        del projects[slug]
+    return gone
+
+
 def register_project(cwd: str) -> None:
+    """開場登記 cwd 所屬專案，順手退掉根資料夾已不存在的項；有變動才寫檔。"""
+    reg = _load_registry()
+    pruned = prune_dead_registry_roots(reg)
+    if _register_into(reg, cwd) or pruned:
+        _save_registry(reg)
+
+
+def _register_into(reg: Dict[str, Any], cwd: str) -> bool:
+    """cwd 所屬專案寫進 reg（就地改）；不該登記（暫存區、資料根與家目錄、沒有專案標記）回 False。"""
     root = find_project_root(cwd)
     if not root:
-        return
+        return False
     # 8.3 短檔名（C:\Users\TESTUS~1）展開成長名，否則同一專案登記成兩個 slug
     try:
         root = root.resolve()
     except OSError:
         pass
     if is_transient_project_root(root):
-        return
+        return False
     # ~/.claude 本身與家目錄不是「專案」：家目錄的 .claude/memory 就是全域記憶、
     # ~/.claude 的記憶在 memory/ 而非 .claude/memory/；登記只會讓專案清單多兩筆假項目
     try:
         if root.resolve() in (CLAUDE_DIR.resolve(), CLAUDE_DIR.resolve().parent):
-            return
+            return False
     except OSError:
         pass
     if not _has_project_marker(root):
-        return
+        return False
     slug = cwd_to_project_slug(str(root))
-    reg = _load_registry()
     entry = reg.setdefault("projects", {}).setdefault(slug, {})
     entry["root"] = str(root)
     entry["last_seen"] = _today()
-    _save_registry(reg)
+    return True
 
 
 def get_slug_pointer_path(cwd: str) -> Path:
@@ -1616,6 +1647,7 @@ _MERGE_TYPES: Tuple[Tuple[str, str], ...] = (
     ("decl_deny_counts", "version:turn"),          # 換使用者回合整組歸零
     ("anti_evasion_report", "atomic"),             # 整組換掉、欄位互相綁定：兩邊都改留磁碟那份
     ("knowledge_harvest.*", "atomic"),             # validated 不能跟 items／pending 拆開
+    ("root_write_declaration", "atomic"),          # 根層寫入宣告：reason／paths／turn_seq 綁在一起，整筆換
 )
 _ISO_TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
 

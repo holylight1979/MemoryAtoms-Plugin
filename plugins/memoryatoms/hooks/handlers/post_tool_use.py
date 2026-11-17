@@ -370,6 +370,10 @@ def _record_by_tool(run: _PostRun) -> None:
         _record_atom_receipt(run)
     elif tool_name.endswith("knowledge_harvest_report"):
         _record_harvest_report(run)
+    elif tool_name.endswith("root_write_declare") and run.guard:
+        # 根層寫入宣告：MCP 端只回 chip，宣告記進 state 由這裡獨佔（根層滲透閘 PreToolUse 讀；守門家族關不收；MCP 拒收的不記）
+        from handlers.pre_tool_use_root_leak import record_declaration
+        run.dirty = record_declaration(state, run.tool_input, input_data.get("tool_response")) or run.dirty
 
 
 # ─── 改檔（Edit／Write／NotebookEdit／MultiEdit）──────────────────────

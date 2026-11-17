@@ -159,5 +159,13 @@
  "mcp.paths.org_local_failed": "[org_memory] {path} 讀取失敗，視為未接上：{error}",
  "mcp.paths.python_fallback": "[Guardian:Degraded] [workflow-guardian] 找不到 Python 絕對路徑，退回裸 \"python\"（可能被 Microsoft Store 佔位程式攔走）；請設 WG_PYTHON 指向 python.exe",
  "mcp.plugins.broken": "[Guardian:Degraded] 插件 {name} 掛不上：{why}；核心照跑，少它的功能",
+ "mcp.root_write_declare.chip": "[RootLeak] 已宣告（{scope}）：{reason}",
+ "mcp.root_write_declare.description": "根層寫入宣告（根層滲透閘）：在記憶系統資料根的 session 裡，要寫進根層（hooks、lib、tools、skills、rules、templates、TECH、_AIDocs、全域記憶卡…）之前呼叫一次，用一句話說明這批內容拿掉任何一個專案都還成立。同一回合一批一次；新的宣告蓋掉舊的。寫進去的字仍含已登記專案名時照樣記帳，查帳會列出來人工對。只回一行確認、不寫檔。",
+ "mcp.root_write_declare.param_paths": "選填：這次宣告涵蓋的路徑（相對資料根或絕對路徑，可寫資料夾或 glob）；不給＝本回合整批根層寫入都算。",
+ "mcp.root_write_declare.param_reason": "一句話：「拿掉某專案仍成立：<理由>」。空白或照抄佔位字不收。",
+ "mcp.root_write_declare.paths_array": "root_write_declare 的 paths 要是字串陣列。",
+ "mcp.root_write_declare.reason_required": "root_write_declare 要一句 reason：「拿掉某專案仍成立：<理由>」，把 <理由> 換成真的理由。",
+ "mcp.root_write_declare.scope_all": "本回合整批",
+ "mcp.root_write_declare.scope_paths": "{n} 個路徑",
  "mcp.server.edition_guard_failed": "[workflow-guardian] 判斷安裝版是否在跑時出錯，照常啟動：{error}"
 }

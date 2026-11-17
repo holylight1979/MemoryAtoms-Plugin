@@ -17,6 +17,8 @@ atom_write 對 scope=global 的 create/append/replace 一律先問這裡，`skip
 
   6. 本機已登記專案的名字（`memory/project-registry.json`：專案根資料夾名＋ASCII 別名＋
      `project_names` 手列名單）。registry 不進版控，根層版控檔因此不必寫任何專案名。
+     登記的根已不存在、或根是核心環境（資料根 repo 的 git worktree 等，同 is_core_root）的項不推導名字與路徑：
+     刪掉的工作樹與專案不再當專名，根層自己的工作樹名也不是專案名。
 
 啟動條件：
   - cwd 在專案內 → 1–6 全掃。
@@ -236,6 +238,22 @@ def _registry_name_ok(name: str) -> bool:
     return name.lower() not in _GENERIC_NAMES
 
 
+def _registry_root_live(root: str) -> bool:
+    """登記表的這個根還算專案：資料夾還在，而且不是核心環境（is_core_root：資料根／程式碼根本身或子樹、資料根 repo 的 git worktree）。
+    網路路徑不碰檔案系統（伺服器不在時 stat 會卡好幾秒），一律當還在。"""
+    if not root:
+        return False
+    if root.startswith(("\\\\", "//")):
+        return True
+    p = Path(root)
+    try:
+        if not p.is_dir():
+            return False
+    except OSError:
+        return False
+    return not is_core_root(p)
+
+
 def known_project_names() -> List[Tuple[str, str, bool]]:
     """本機已登記專案的名字 → [(名字, 來源, 是否不分大小寫)]。
 
@@ -258,6 +276,8 @@ def known_project_names() -> List[Tuple[str, str, bool]]:
         if not isinstance(entry, dict):
             continue
         root = str(entry.get("root") or "")
+        if root and not _registry_root_live(root):
+            continue   # 死根、根層自己的 worktree：名字與別名都不推導
         cands = [Path(root).name] if root else []
         cands += [str(a) for a in (entry.get("aliases") or [])]
         for c in cands:
@@ -273,7 +293,9 @@ def known_project_names() -> List[Tuple[str, str, bool]]:
 
 
 def known_project_roots() -> List[str]:
-    """已登記專案根（正規化）。tmp、Projects 這類容器資料夾也算，因為底下就是專案。"""
+    """已登記專案根（正規化），給「專案根底下的絕對路徑」比對用。死根與根層自己的 worktree 不算；
+    容器根（底下還有別的登記根，例 tmp、Projects 這類放很多專案的資料夾）也不算：它底下的專案各自有根會比到，
+    容器本身的路徑（C:/tmp/x.py 這類範例）不是哪個專案的事實。只有自己一個專案的資料夾照算。名字與別名不受影響。"""
     reg = _load_registry()
     skip = {n.lower() for n in _org_root_names()}
     roots = []
@@ -281,9 +303,9 @@ def known_project_roots() -> List[str]:
         if not isinstance(entry, dict):
             continue
         root = str(entry.get("root") or "")
-        if root and Path(root).name.lower() not in skip:
+        if root and Path(root).name.lower() not in skip and _registry_root_live(root):
             roots.append(_norm_path(root))
-    return roots
+    return [r for r in roots if not any(o.startswith(r + "/") for o in roots)]
 
 
 def anonymize_projects(text: str) -> str:

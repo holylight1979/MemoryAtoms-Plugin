@@ -161,9 +161,6 @@ RULES: Dict[str, str] = {
                           "同一件缺件在同一則裡只算一次，那一則的其他呼叫照第一次的結果（擋就照擋）、不加次數；下一則回覆的呼叫才加。"
                           "哪一則＝這次呼叫之前最後一則 assistant 的 message.id（同 CHAIN_SAME_BATCH，lib/chain_store.batch_of）。"
                           "判不出是哪一則（子代理、transcript 讀不到、沒有 message.id）照每個呼叫算，留帳 guard-deny_cap event=batch_unknown。",
-    "SVN_TEST_BLOCK_OPT_IN": "svn 提交測試路徑的閘預設關，專案設定（overview-hub.json 的 svn_test_block.enabled）開了才判；開了只看 "
-                             "svn commit 的路徑參數（訊息裡寫 test 不算）；放行要有一行「測試上 svn 原句：「…」」，引的句子逐字在使用者本回合的"
-                             "原話裡、而且那個子句沒被否定（「不要提交測試」引了也不算），留帳 user_quote。",
     "NONINTERACTIVE_RELEASE_AT_BUDGET": "沒有人能回答放行詢問（headless／SDK 主 session、背景 session、子代理）：等值證法照預算擋，"
                                         "擋滿就放行並留帳（event=noninteractive_released），不叫它問、不擋到底；擋訊息不說「不能放行」"
                                         "（判法 wg_release.non_interactive_reason）。",
@@ -1892,7 +1889,7 @@ RULES.update({
 
 # ─── 擋或提醒（RULE_MODE）：寫碼守門每條規則照擋（block）還是提醒（remind），判定與送法只讀這一處 ───
 # 照擋只兩類：病形閘、測試沒過卻說修好；其餘寫碼守門一律提醒（知識收割表上是提醒，第偶數次判欠才升成擋：wg_harvest.harvest_send_mode）。
-# 「不在範圍」是不屬於寫碼守門的安全與權限邊界（版控口令、記憶寫入、svn 測試路徑），照擋、不讀本表。
+# 「不在範圍」是不屬於寫碼守門的安全與權限邊界（版控口令、記憶寫入），照擋、不讀本表。
 # 本段放在檔尾、最後算 RULE_MODE：之後再加規則的段落要同時把它登進本表（verify_release_rules 掃表案會紅）。
 RULES.update({
     "COMMIT_SMELL_NEW_BLOCKS": "commit／svn commit 那刻，這次提交新寫進的病形（巢狀過深、匿名區塊過長…，判法在 tools/project-smells.py check_commit）"
@@ -1953,7 +1950,7 @@ RULE_CLASS: Dict[str, str] = {
                      "RED_LAST_RESULT_IN_COMMAND", "RED_WHILE_REVERTED", "RETRY_COUNTS_RERUN_CYCLES",
                      "COMPLETION_CLAIM_PER_SENTENCE"), "紅測"),
     **dict.fromkeys(("COMMIT_ORDER_DECISION_ALWAYS_LOGGED", "ORDER_UNTIL_PUSH", "TEMP_REPO_COMMIT_EXEMPT",
-                     "SVN_TEST_BLOCK_OPT_IN", "CONFLICT_DECLARED_BY_AI",
+                     "CONFLICT_DECLARED_BY_AI",
                      "OVERVIEW_READONLY_PATHS", "VERIFY_FULL_RUN_NEEDS_USER_ORDER", "VERIFY_SAME_BATCH_ALREADY_GREEN",
                      "VERIFY_BATCH_BLOCK_ONCE_PER_TURN"), "不在範圍"),
 }

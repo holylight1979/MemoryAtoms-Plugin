@@ -218,6 +218,8 @@ def main():
             upper = ahc.find_atoms(ahc.GLOBAL_MEMORY_ROOT)   # 全域的卡也是改接候選；重掃只掃這一層
     atoms = ahc.find_atoms(ahc.MEMORY_ROOT)
     aliases = ahc.parse_memory_index(ahc.MEMORY_ROOT)
+    for old, cur in ahc.parse_aka_aliases(atoms, ahc.MEMORY_ROOT).items():   # 與健檢同一套：卡片 Aka 行與索引 aka 欄
+        aliases.setdefault(old, cur)
     report = scan(a.atom, atoms, aliases)
 
     if not report.get("exists"):

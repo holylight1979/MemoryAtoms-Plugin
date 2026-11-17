@@ -159,5 +159,13 @@
  "mcp.paths.org_local_failed": "[org_memory] failed to read {path}; treating it as not joined: {error}",
  "mcp.paths.python_fallback": "[Guardian:Degraded] [workflow-guardian] Python absolute path not found; falling back to bare \"python\" (it may be intercepted by the Microsoft Store placeholder); set WG_PYTHON to point to python.exe",
  "mcp.plugins.broken": "[Guardian:Degraded] extension {name} failed to load: {why}; the core keeps running without it",
+ "mcp.root_write_declare.chip": "[RootLeak] Declared ({scope}): {reason}",
+ "mcp.root_write_declare.description": "Root-layer write declaration (root-leak gate): in a session whose cwd is the memory-system data root, call it once before writing into the root layer (hooks, lib, tools, skills, rules, templates, TECH, _AIDocs, global memory cards...) with one sentence on why this batch still holds with any one project removed. One per batch per turn; a newer declaration replaces the older one. Writes that still contain a registered project name are recorded anyway and listed by the audit for a manual look. Returns one confirmation line and writes no file.",
+ "mcp.root_write_declare.param_paths": "Optional: paths this declaration covers (relative to the data root or absolute; folders or globs). Omitted = every root-layer write this turn.",
+ "mcp.root_write_declare.param_reason": "One sentence: \"still holds with any project removed: <why>\". Blank or the placeholder copied as-is is rejected.",
+ "mcp.root_write_declare.paths_array": "root_write_declare paths must be an array of strings.",
+ "mcp.root_write_declare.reason_required": "root_write_declare needs a reason: \"still holds with any project removed: <why>\", with <why> replaced by the real reason.",
+ "mcp.root_write_declare.scope_all": "whole batch this turn",
+ "mcp.root_write_declare.scope_paths": "{n} paths",
  "mcp.server.edition_guard_failed": "[workflow-guardian] Could not tell whether the installed edition is active; starting normally: {error}"
 }

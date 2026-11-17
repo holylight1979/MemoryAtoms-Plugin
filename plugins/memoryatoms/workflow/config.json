@@ -443,7 +443,7 @@
       "_doc": "Equivalence and hot-path wrap-up gate (handlers/stop.py Equivalence Gate; rules REFACTOR_NEEDS_EQUIVALENCE / PERF_HOT_PATH_NEEDS_MEASURE in wg_release_rules): when the intent of the user's original words is refactor / perf and code files changed in this turn, a completion claim needs receipts for the three kinds of equivalence proof (PRESERVE_CHECK PASS, --mutation order / side_effect / boundary) or a line \"等值證法｜不適用｜<reason>\" (equivalence proof | not applicable), plus an answer \"熱路徑｜是／否｜...\" (hot path | yes / no); answering yes needs a measurement receipt or \"量測｜不做｜<reason>\" (measurement | not doing). Logged to Logs/guard-equivalence.jsonl. enabled=false turns the whole gate off.",
       "enabled": true
     },
-    "_doc": "OverviewHub variables. Merge order: root-layer defaults < this section < <org root>/.claude/overview-hub.json < <project root>/.claude/overview-hub.json; nested objects are deep-merged, arrays are taken whole. Unknown keys are errors (Edit is always blocked, except for OverviewHub's own settings file and the parts table, which are allowed with a warning); retired keys (hub_config.RETIRED_KEYS) only warn once and are not errors, and writing dry_run / deny_parts explicitly does not let them through either. The whole section only applies while the coding guard is on. readonly_paths (globs relative to that layer's root; **/ also matches zero levels) are always blocked on a hit (OVERVIEW_READONLY_PATHS); the read ledger records which files each part has read (part_files_read, used by the question gate ASK_OVERVIEW_BEFORE_DECISION). smells_report (relative to the project root, or absolute; json / jsonl / md table): the smell gate treats every file listed in the report as an old smell for the whole file. max_card_chars: the character limit of the Depends recall map. authority_map: {file-name pattern (fnmatch): map path}; when a doc file that matches is read and the map is not empty -> injected once per session. Depends recall: if a file that was read is a path: target of some card's depends index (or under that directory) -> a one-line pointer per card, each card once per session. verify_chains: {part: {runtime_gate, pre, run, collect, cleanup}} is only shape-checked; no code reads it at the moment. Each path_bases entry must be an existing directory and none may contain another; eol_policy is one of lf / crlf / per-file-head; encoding keys must pass codecs.lookup. New keys must be added to HUB_DEFAULTS in lib/hub_config.py at the same time.",
+    "_doc": "OverviewHub variables. Merge order: root-layer defaults < this section < <org root>/.claude/overview-hub.json < <project root>/.claude/overview-hub.json; nested objects are deep-merged, arrays are taken whole. Unknown keys are errors (Edit is always blocked, except for OverviewHub's own settings file and the parts table, which are allowed with a warning); retired keys (hub_config.RETIRED_KEYS) only warn once and are not errors, and writing dry_run / deny_parts explicitly does not let them through either. The whole section only applies while the coding guard is on. readonly_paths (globs relative to that layer's root; **/ also matches zero levels) are always blocked on a hit (OVERVIEW_READONLY_PATHS); the read ledger records which files each part has read (part_files_read, used by the question gate ASK_OVERVIEW_BEFORE_DECISION). smells_report (relative to the project root, or absolute; json / jsonl / md table): the smell gate treats every file listed in the report as an old smell for the whole file. max_card_chars: the character limit of the Depends recall map. authority_map: {file-name pattern (fnmatch): map path}; when a doc file that matches is read and the map is not empty -> injected once per session. Depends recall: if a file that was read is a path: target of some card's depends index (or under that directory) -> a one-line pointer per card, each card once per session. Each path_bases entry must be an existing directory and none may contain another; eol_policy is one of lf / crlf / per-file-head; encoding keys must pass codecs.lookup. New keys must be added to HUB_DEFAULTS in lib/hub_config.py at the same time.",
     "enabled": true,
     "max_card_chars": 6000,
     "path_bases": [],
@@ -456,8 +456,7 @@
     "PYTHONIOENCODING": "utf-8",
     "readonly_paths": [],
     "smells_report": "",
-    "authority_map": {},
-    "verify_chains": {}
+    "authority_map": {}
   },
   "overview_scaffold": {
     "_doc": "Build the parts table from scratch (tools/overview-map-scaffold.py). scaffold_ignore: top-level directories that do not get a row; layers: {layer name: [directory names or globs]}, empty = everything is a single layer; scaffold_default_lv1: the Lv1 for skeleton cards, which must be an existing core or project Lv1 (the tool never creates a new one). Dry run by default; --write writes files; cards are written first and the table last; a failure is not rolled back, and rerunning continues where it stopped.",
@@ -623,5 +622,40 @@
     "max_kb": 200,
     "max_age_days": 30
   },
-  "_doc_staging_hygiene": "Weekly health check threshold for memory/_staging pile-up: counts only top-level .md / .json files (_INDEX.md excluded; subfolders are engineering work trees and are only listed by name, not counted). File count > max_files, total KB > max_kb, or oldest file age in days > max_age_days (any one) -> a needs-attention yellow light (say 'clean staging'); none exceeded -> one line in the info section. A missing _staging folder just prints 0 files."
+  "_doc_staging_hygiene": "Weekly health check threshold for memory/_staging pile-up: counts only top-level .md / .json files (_INDEX.md excluded; subfolders are engineering work trees and are only listed by name, not counted). File count > max_files, total KB > max_kb, or oldest file age in days > max_age_days (any one) -> a needs-attention yellow light (say 'clean staging'); none exceeded -> one line in the info section. A missing _staging folder just prints 0 files.",
+  "root_leak_gate": {
+    "_doc": "Root-leak gate: what is written into the root layer must still hold with any one project removed. In a session whose cwd is the memory-system data root, Edit/Write/MultiEdit/NotebookEdit into scope_dirs (paths relative to the data root) is scanned for registered project names and project root paths, plus the org layer's sensitive_patterns. mode warn = one [Guardian:RootLeak] line, always allowed; block = a hit without a root_write_declare declaration this turn is denied. Existing files under history_warn_only_dirs only ever warn; allowlist_globs are not scanned. Every scanned write adds one JSONL line to ledger (relative to the data root, not version-controlled); tools/root-leak-audit.py --days N summarizes it. No section = gate off.",
+    "enabled": true,
+    "mode": "warn",
+    "scope_dirs": [
+      "hooks",
+      "lib",
+      "tools",
+      "skills",
+      "rules",
+      "templates",
+      "extensions",
+      "workflow/config.json",
+      "TECH.md",
+      "TECH.zh-TW.md",
+      "TECH",
+      "plugin",
+      "memory",
+      "_AIDocs"
+    ],
+    "history_warn_only_dirs": [
+      "_AIDocs/DevHistory"
+    ],
+    "allowlist_globs": [
+      "memory/personal/**",
+      "memory/_staging/**",
+      "memory/episodic/**",
+      "memory/_distant/**",
+      "memory/project-registry.json",
+      "tools/usage-snapshot/**",
+      "tools/maintainer/**",
+      "skills/upstream-change/**"
+    ],
+    "ledger": "workflow/root-leak-ledger.jsonl"
+  }
 }

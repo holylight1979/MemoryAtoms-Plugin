@@ -54,5 +54,5 @@ paths:
 - Reread along the data flow from a stranger-maintainer's view; sections that cannot be explained continuously get tidied, but that does not automatically mean splitting and rewriting.
 - A verification script ends with one sentinel line `<NAME>_CHECK PASS` or `<NAME>_CHECK FAIL` (format `^[A-Z][A-Z0-9_]*_CHECK (PASS|FAIL)$`), with exit 0／1 matching; printing only `<NAME>_CHECK` without the suffix does not count as PASS.
 - A measurement script ends with `<NAME> DONE k=v k=v` (format `^[A-Z][A-Z0-9_]* DONE( \w+=\S+)*$`); the numbers are a yardstick, not a verdict, and it does not print PASS.
-- When an existing tool's last line has a different format, do not change the tool; add a `sentinel_regex` to that item in `prebuild_checks[]` of the project's `.claude/overview-hub.json` to map it to one of the two formats above.
+- When an existing tool's last line has a different format, do not change the tool. The pre-build check list lives in the project's own `.claude/prebuild-checks.json`, not in `overview-hub.json`; add a `sentinel_regex` to that item to map it to one of the two formats above.
 - Verification runs only the changed scope and truly related cases; the full suite runs only when the user names it.

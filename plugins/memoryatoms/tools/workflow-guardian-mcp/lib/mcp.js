@@ -14,6 +14,14 @@ try {
 } catch (e) {
   if (e.code !== "MODULE_NOT_FOUND") throw e;
 }
+// root-leak 同是守門家族（根層滲透閘的宣告入口）：插件包不帶這支檔，缺檔就不提供 root_write_declare。
+let HAS_ROOT_LEAK = false;
+try {
+  require.resolve("./root-leak");
+  HAS_ROOT_LEAK = true;
+} catch (e) {
+  if (e.code !== "MODULE_NOT_FOUND") throw e;
+}
 
 // ─── MCP Protocol ───────────────────────────────────────────────────────────
 
@@ -532,8 +540,21 @@ const TOOL_DEFINITIONS = [
       required: ["atom"],
     },
   },
+  {
+    name: "root_write_declare",
+    description: t("mcp.root_write_declare.description"),
+    inputSchema: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: t("mcp.root_write_declare.param_reason") },
+        paths: { type: "array", items: { type: "string" }, description: t("mcp.root_write_declare.param_paths") },
+      },
+      required: ["reason"],
+    },
+  },
 ];
 if (!HAS_AEC) TOOL_DEFINITIONS.splice(TOOL_DEFINITIONS.findIndex((d) => d.name === "anti_evasion_report"), 1);
+if (!HAS_ROOT_LEAK) TOOL_DEFINITIONS.splice(TOOL_DEFINITIONS.findIndex((d) => d.name === "root_write_declare"), 1);
 
 // ─── Tool Handlers ──────────────────────────────────────────────────────────
 
@@ -566,6 +587,11 @@ function handleToolCall(id, toolName, args) {
       // one-writer：只回 chip、不碰 state（state/持久化/HUD 由 Python PostToolUse 獨佔）。
       return require("./anti-evasion").toolAntiEvasionReport(id, args)
         .catch(e => sendToolResult(id, `anti_evasion_report error: ${e.message}`, true));
+    case "root_write_declare":
+      if (!HAS_ROOT_LEAK) return sendError(id, -32601, `Unknown tool: ${toolName}`);
+      // one-writer：只驗 reason、回 chip；宣告記進 state 由 Python PostToolUse 獨佔。
+      return require("./root-leak").toolRootWriteDeclare(id, args)
+        .catch(e => sendToolResult(id, `root_write_declare error: ${e.message}`, true));
     default:
       return callPluginTool(id, toolName, args);
   }
