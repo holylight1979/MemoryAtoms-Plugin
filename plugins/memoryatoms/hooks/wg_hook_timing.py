@@ -127,11 +127,12 @@ def _process_started() -> float:
     return time.time()
 
 
-def settings_limit(event: str, tool_name: str = "") -> Optional[float]:
-    """settings.json（插件版讀 <程式碼根>/hooks/hooks.json）裡這個事件掛 workflow-guardian.py 的 hook timeout（秒）；有工具名就只看 matcher 對得上的那組
-    （跟 Claude Code 一樣整串比對，例 "Edit|Write"）。沒掛、沒寫 timeout 或讀不到回 None。
+def guardian_hooks(event: str, tool_name: str = "") -> Optional[List[Dict[str, Any]]]:
+    """settings.json（插件版讀 <程式碼根>/hooks/hooks.json）裡這個事件掛 workflow-guardian.py 的 hook 項，照檔裡的順序；
+    有工具名就只看 matcher 對得上的那組（跟 Claude Code 一樣整串比對，例 "Edit|Write"；沒寫 matcher 的組都算）。
+    讀得到但沒掛回 []；讀不到（沒檔、JSON 壞）回 None。
     先讀資料根那份，沒檔再讀 Claude Code 設定目錄那份（WG_CLAUDE_DIR 指到別處時，掛 hook 的 settings.json 在設定目錄；
-    它是模板產生的本機檔，不在程式碼根）。"""
+    它是模板產生的本機檔，不在程式碼根）。hook 計時（settings_limit）與根層名字閘（宣告掛點在不在）共用這一支。"""
     paths = (CLAUDE_DIR / "settings.json", claude_config_dir() / "settings.json")
     if edition() == "plugin":          # 插件版的 hook 掛在插件包的 hooks/hooks.json，不在 settings.json
         paths = (CODE_ROOT / "hooks" / "hooks.json",)
@@ -145,13 +146,25 @@ def settings_limit(event: str, tool_name: str = "") -> Optional[float]:
             return None
     else:
         return None
+    if not isinstance(data, dict):
+        return None
+    found: List[Dict[str, Any]] = []
     for group in ((data.get("hooks") or {}).get(event) or []):
         matcher = str((group or {}).get("matcher") or "")
         if tool_name and matcher and not _matches(matcher, tool_name):
             continue
         for h in (group or {}).get("hooks") or []:
-            if "workflow-guardian.py" in (str(h.get("command") or "") + " " + " ".join(map(str, h.get("args") or []))) and isinstance(h.get("timeout"), (int, float)):
-                return float(h["timeout"])
+            if "workflow-guardian.py" in (str(h.get("command") or "") + " " + " ".join(map(str, h.get("args") or []))):
+                found.append(h)
+    return found
+
+
+def settings_limit(event: str, tool_name: str = "") -> Optional[float]:
+    """這個事件（有工具名就看 matcher 對得上的那組）掛 workflow-guardian.py 的 hook timeout（秒），取第一支有寫的；
+    沒掛、沒寫 timeout 或讀不到回 None。設定在哪、matcher 怎麼比見 guardian_hooks。"""
+    for h in guardian_hooks(event, tool_name) or []:
+        if isinstance(h.get("timeout"), (int, float)):
+            return float(h["timeout"])
     return None
 
 

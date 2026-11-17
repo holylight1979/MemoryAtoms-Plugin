@@ -66,10 +66,12 @@ JUDGE_HANDLERS = {
 # 裁判子 session、hook 分段計時也是寫碼守門開著才有，關閉時照舊一律早退／不計時。
 PRE_V6_EVENTS = {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
                  "PreCompact", "PostCompact", "PostToolBatch", "Stop", "SubagentStart", "SubagentStop", "SessionEnd"}
+# PostToolUse handler 有記帳的本系統 MCP 工具（只寫尾巴；settings 範本的 matcher 逐一列的就是這幾支）。matcher 收進來的本系統
+# MCP 工具不在這裡（使用者自己把 matcher 放寬、或範本與這裡沒同步）→ 一進門就走（_unhandled_mcp），不跑記帳、不碰 state。
+POST_TOOL_USE_MCP = {"anti_evasion_report", "atom_write", "atom_retire", "knowledge_harvest_report", "root_write_declare"}
 PRE_V6_TOOLS = {   # 9e476fd0 settings.json 的 matcher；寫碼守門加掛的工具（Read、PowerShell 後記、AskUserQuestion…）關閉時不進 handler
     "PreToolUse": {"Write", "Edit", "NotebookEdit", "Bash", "PowerShell", "Agent", "Task"},
-    "PostToolUse": {"Edit", "Write", "MultiEdit", "NotebookEdit", "ExitPlanMode", "Bash", "Agent", "Task",
-                    "anti_evasion_report", "atom_write", "atom_retire", "knowledge_harvest_report", "root_write_declare"},
+    "PostToolUse": {"Edit", "Write", "MultiEdit", "NotebookEdit", "ExitPlanMode", "Bash", "Agent", "Task", *POST_TOOL_USE_MCP},
 }
 # MCP 工具名＝前綴＋尾巴：安裝版 mcp__workflow-guardian__<工具>，插件版 mcp__plugin_memoryatoms_workflow-guardian__<工具>
 # （官方 hooks.md：插件帶的 MCP 是 mcp__plugin_<插件>_<server>__<工具>）。上表 MCP 工具只寫尾巴，兩種前綴都認。
@@ -99,6 +101,13 @@ def _state_lock_deadline(event: str, input_data: dict, timer) -> float:
     return hook_timing._process_started() + limit * STATE_LOCK_WAIT_RATIO
 
 
+def _unhandled_mcp(input_data: dict) -> bool:
+    """PostToolUse 收到本系統 MCP 工具、但 handler 沒替它記帳（不在 POST_TOOL_USE_MCP）。"""
+    name = str(input_data.get("tool_name") or "")
+    tail = _tool_key(name)
+    return input_data.get("hook_event_name") == "PostToolUse" and tail != name and tail not in POST_TOOL_USE_MCP
+
+
 def _pre_v6_skips(event: str, input_data: dict) -> bool:
     if event not in PRE_V6_EVENTS:
         return True
@@ -124,6 +133,8 @@ def main():
     # 下一個非 Read 事件（handlers/post_tool_use.replay_read_log）補帳，寫碼守門關、導讀守門關在那裡照原判法丟掉
     if wg_read_fast.is_fast_read(input_data):
         wg_read_fast.log_read(input_data)
+        return
+    if _unhandled_mcp(input_data):   # handler 不記帳的本系統 MCP 工具：不載 wg_core 就走
         return
 
     _load_core()

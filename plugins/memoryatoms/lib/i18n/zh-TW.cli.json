@@ -987,6 +987,7 @@
  "cli.root_leak_audit.class_undeclared": "沒宣告的根層寫入：{n} 筆",
  "cli.root_leak_audit.config_unreadable": "設定讀不到（{error}），帳本用預設位置",
  "cli.root_leak_audit.days": "看最近幾天（預設 7）",
+ "cli.root_leak_audit.degraded": "降級寫入：{n} 筆（設定是 block，但當時這台 settings 沒有宣告掛點，照 warn 放行；重跑安裝器的 --upgrade 補上）",
  "cli.root_leak_audit.description": "根層滲透閘查帳：讀收據帳本，列最近 N 天根層寫入的三類（有命中沒宣告、有宣告有命中、沒宣告）與各數",
  "cli.root_leak_audit.header": "根層寫入查帳：最近 {days} 天 {n} 筆（帳本 {path}）",
  "cli.root_leak_audit.json": "輸出 JSON（整份紀錄）",

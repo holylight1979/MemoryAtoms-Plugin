@@ -1,7 +1,7 @@
 {
   "_doc": "版本標識檔。guardian＝Workflow Guardian（hooks + MCP server）版本，Dashboard 標題與 MCP serverInfo 顯示；atom_memory＝原子記憶系統版本；release_date＝此版本正式發布日；release_theme＝此版本主題一句話。程式讀者：tools/workflow-guardian-mcp/lib/paths.js（只取 guardian / atom_memory）與 tools/install.py --verify（確認本檔可讀）；文件讀者 TECH.md。",
-  "guardian": "6.5.1",
+  "guardian": "6.5.2",
   "atom_memory": "6.1",
   "release_date": "2026-11-17",
-  "release_theme": "Project-only concerns stay in the project: a root-write leak gate (warn-only by default; config section root_leak_gate, audit tool tools/root-leak-audit.py, MCP tool root_write_declare) flags project names and project paths written into the root layer, and project-specific pieces move to project-level templates (the svn test-path commit guard; the hub keys svn_test_block and verify_chains are retired; prebuild checks read the project's own .claude/prebuild-checks.json); the auto-heal tool resolves card references through Aka names the same way the health check does, so a renamed card's old name is no longer treated as a broken link; the Stop handler drops an unused import"
+  "release_theme": "Root-leak gate degrades to warn, with a once-per-session hint to rerun install.py --upgrade, when this machine's settings do not hook root_write_declare in PostToolUse; the ledger records the effective mode and root-leak-audit counts degraded records; the dispatcher exits early for PostToolUse events of this system's MCP tools it does not book; org-layer background sync also carries tools/ by default; the cross-realm Bash guard recognizes /home, /Users and /root home paths; atom-move uses shutil.move so cards move across drives; eight case files set up their own isolated environment and the scaffold command form has a case for both code-root layouts"
 }

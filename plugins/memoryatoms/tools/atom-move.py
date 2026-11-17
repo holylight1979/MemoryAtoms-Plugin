@@ -28,6 +28,7 @@
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -460,9 +461,9 @@ def cmd_move(args):
             upsert_atom(dst_index, slug, new_rel, triggers, scope=new_scope)
     except Exception as e:  # noqa: BLE001 — 任何索引失敗都要 rollback 實體
         try:
-            dst_md.rename(src_md)
+            shutil.move(str(dst_md), str(src_md))   # shutil.move：跨磁碟機也能搬（Path.rename 跨碟會 WinError 17）
             if sidecar_moved:
-                access_sidecar_path(dst_md).rename(access_sidecar_path(src_md))
+                shutil.move(str(access_sidecar_path(dst_md)), str(access_sidecar_path(src_md)))
         except OSError:
             pass
         _fail(t("cli.atom_move.index_update_failed", error=e))
@@ -595,10 +596,10 @@ def cmd_rename(args):
     res = edit_metadata(src_md, aka=aka, source=_SOURCE)
     if not getattr(res, "ok", False):
         _fail(f"failed to write Aka: {getattr(res, 'error', '')}")
-    src_md.rename(dst_md)
+    shutil.move(str(src_md), str(dst_md))   # 跨磁碟機（例：C: 根層 → D: 專案）也要能搬
     src_side = access_sidecar_path(src_md)
     if src_side.exists():
-        src_side.rename(access_sidecar_path(dst_md))
+        shutil.move(str(src_side), str(access_sidecar_path(dst_md)))
 
     claude_root = index_dir.parent
     new_rel = str(dst_md.relative_to(claude_root)).replace("\\", "/")

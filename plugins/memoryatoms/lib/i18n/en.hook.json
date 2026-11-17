@@ -688,6 +688,7 @@
  "hook.root_leak.gate_error": "[Guardian:RootLeak] The root-leak gate itself failed; this write goes through: {err}",
  "hook.root_leak.hit": "[Guardian:RootLeak] What is being written into root-layer file {file} contains a project name or project path: {terms}. If it still holds with that project removed -> call root_write_declare(reason=\"still holds with any project removed: <why>\") once, then write; if not -> move it back into that project and hang it on what the project already has (native hooks in the project's .claude/settings.json, .claude/rules/, .claude/skills/, CLAUDE.md, project memory).",
  "hook.root_leak.ledger_failed": "[Guardian:RootLeak] Could not write the receipt to {path}: {err}",
+ "hook.root_leak.no_declare_hook": "[Guardian:RootLeak] This machine's settings have no declaration hook (PostToolUse does not hook root_write_declare, so declarations are never recorded and a block could never be released); the name gate drops to warnings. Rerun {command} to get the new template.",
  "hook.root_leak.tail_block": " (blocked: no declaration this turn)",
  "hook.root_leak.tail_history": " (history file: warning only, never blocked; history is not rewritten)",
  "hook.root_leak.tail_warn": " (warning period: reminder only, the write goes through)",

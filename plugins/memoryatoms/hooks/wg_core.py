@@ -2407,7 +2407,11 @@ def check_cross_realm_write(
 # 「用 python/cp/rm/git 動自己專案的 .claude/memory」會被當成改根層而誤擋。
 _ROOT_CORE_SUBDIRS_RE = r"(?:hooks|lib|tools|skills|rules|prompts)"
 _ROOT_SENSITIVE_FILES_RE = r"(?:settings\.json|CLAUDE\.md|IDENTITY[^/\\\s]*\.md|USER[^/\\\s]*\.md|TECH\.md|TECH\.zh-TW\.md|README\.md|Install[^/\\\s]*\.md)"
-_ROOT_HOME_RE = r"(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%|\$env:USERPROFILE|/[a-zA-Z]/Users/[^/\s\"']+|[a-zA-Z]:[\\/]Users[\\/][^\\/\s\"']+)"
+# 家目錄的寫法：~、$HOME、Windows 與 Git Bash 的 Users/<名>，再加 Linux／macOS 的 /home/<名>、/Users/<名>、/root（root 使用者）。
+# 後三種要在路徑開頭（前面不是英數、底線或點：/srv/home/<x>、./home/<x> 是專案自己的資料夾）；/root 後面要接斜線或到底（/rootkit 不算）。
+# 兩種斜線都認：寫入目標經 normpath，在 Windows 上是反斜線。
+_ROOT_HOME_RE = (r"(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%|\$env:USERPROFILE|/[a-zA-Z]/Users/[^/\s\"']+|[a-zA-Z]:[\\/]Users[\\/][^\\/\s\"']+"
+                 r"|(?<![\w.])[\\/](?:(?:home|Users)[\\/][^\\/\s\"']+|root(?=[\\/]|$)))")
 _ROOT_CD_RE = lazy_re(
     rf"(?:\bcd\s+|\bgit\s+-C\s+|\bSet-Location\s+|\bpushd\s+)[\"']?{_ROOT_HOME_RE}[\\/]\.claude(?:[\\/]{_ROOT_CORE_SUBDIRS_RE})?[\\/]?[\"']?(?=\s|;|&&|\|\||$)",
     re.IGNORECASE,

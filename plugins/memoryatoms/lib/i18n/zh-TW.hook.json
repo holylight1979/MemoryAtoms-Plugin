@@ -688,6 +688,7 @@
  "hook.root_leak.gate_error": "[Guardian:RootLeak] 根層滲透閘自己出錯，這次放行：{err}",
  "hook.root_leak.hit": "[Guardian:RootLeak] 寫進根層檔 {file} 的內容含專案名或專案路徑：{terms}。拿掉那個專案這段仍成立 → 先呼叫一次 root_write_declare(reason=\"拿掉某專案仍成立：<理由>\") 再寫；不成立 → 拔回那個專案，用它現有的掛法接（專案 .claude/settings.json 的原生 hooks、.claude/rules/、.claude/skills/、CLAUDE.md、專案記憶）。",
  "hook.root_leak.ledger_failed": "[Guardian:RootLeak] 收據寫不進 {path}：{err}",
+ "hook.root_leak.no_declare_hook": "[Guardian:RootLeak] 這台的 settings 沒有宣告掛點（PostToolUse 沒掛 root_write_declare，宣告記不進來、擋了也放不掉），名字閘降成警告；重跑 {command} 取得新範本。",
  "hook.root_leak.tail_block": "（已擋：本回合沒有宣告）",
  "hook.root_leak.tail_history": "（歷史紀錄檔：只警告、不擋，歷史不改寫）",
  "hook.root_leak.tail_warn": "（警告期：只提醒，照樣放行）",

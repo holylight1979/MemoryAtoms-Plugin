@@ -409,7 +409,7 @@
     }
   },
   "vcs_sync": {
-    "_doc": "Silent background version control for the memory folders (hooks/vcs-sync-worker.py). Triggers: a validated harvest, SessionEnd. root_pathspecs are relative to ~/.claude, project_pathspecs to the project root; root_extra_pathspecs (files with count markers that change along with atom writes, such as TECH.md) and org_extra_pathspecs (relative to the organization-layer repo root, for example weekly usage screenshots) are non-memory paths that are pushed and pulled automatically as well. git only adds / commits these pathspecs; if the history waiting to be pushed contains non-memory commits, it does not push and leaves a marker. svn adds file by file with exclude applied, then commits. exclude contains memory/_meta/**: settings files such as taxonomy / forbidden-phrases do not go through the automatic memory commit; they ship with the code. A fresh install by tools/install.py turns this off in workflow/config.local.json (\"vcs_sync\": {\"enabled\": false}); upgrades keep whatever the machine had. To turn it on, see Install.md \"Background sync\".",
+    "_doc": "Silent background version control for the memory folders (hooks/vcs-sync-worker.py). Triggers: a validated harvest, SessionEnd. root_pathspecs are relative to ~/.claude, project_pathspecs to the project root; root_extra_pathspecs (files with count markers that change along with atom writes, such as TECH.md) and org_extra_pathspecs (relative to the organization-layer repo root: weekly usage screenshots, company tools under tools/) are non-memory paths that are pushed and pulled automatically as well. git only adds / commits these pathspecs; if the history waiting to be pushed contains non-memory commits, it does not push and leaves a marker. svn adds file by file with exclude applied, then commits. exclude contains memory/_meta/**: settings files such as taxonomy / forbidden-phrases do not go through the automatic memory commit; they ship with the code. A fresh install by tools/install.py turns this off in workflow/config.local.json (\"vcs_sync\": {\"enabled\": false}); upgrades keep whatever the machine had. To turn it on, see Install.md \"Background sync\".",
     "enabled": true,
     "push": true,
     "root_pathspecs": [
@@ -425,7 +425,8 @@
       "_AIDocs/_INDEX.md"
     ],
     "org_extra_pathspecs": [
-      "usage-snapshots"
+      "usage-snapshots",
+      "tools"
     ],
     "exclude": [
       "**/*.access.json",
@@ -624,7 +625,7 @@
   },
   "_doc_staging_hygiene": "Weekly health check threshold for memory/_staging pile-up: counts only top-level .md / .json files (_INDEX.md excluded; subfolders are engineering work trees and are only listed by name, not counted). File count > max_files, total KB > max_kb, or oldest file age in days > max_age_days (any one) -> a needs-attention yellow light (say 'clean staging'); none exceeded -> one line in the info section. A missing _staging folder just prints 0 files.",
   "root_leak_gate": {
-    "_doc": "Root-leak gate: what is written into the root layer must still hold with any one project removed. In a session whose cwd is the memory-system data root, Edit/Write/MultiEdit/NotebookEdit into scope_dirs (paths relative to the data root) is scanned for registered project names and project root paths, plus the org layer's sensitive_patterns. mode warn = one [Guardian:RootLeak] line, always allowed; block = a hit without a root_write_declare declaration this turn is denied. Existing files under history_warn_only_dirs only ever warn; allowlist_globs are not scanned. Every scanned write adds one JSONL line to ledger (relative to the data root, not version-controlled); tools/root-leak-audit.py --days N summarizes it. No section = gate off.",
+    "_doc": "Root-leak gate: what is written into the root layer must still hold with any one project removed. In a session whose cwd is the memory-system data root, Edit/Write/MultiEdit/NotebookEdit into scope_dirs (paths relative to the data root) is scanned for registered project names and project root paths, plus the org layer's sensitive_patterns. mode warn = one [Guardian:RootLeak] line, always allowed; block = a hit without a root_write_declare declaration this turn is denied. If this machine's settings.json does not hook mcp__workflow-guardian__root_write_declare in PostToolUse (or cannot be read), block runs as warn, since a declaration could never be recorded and a block never released: the receipt's mode reads block->warn(no-declare-hook) and one line per session says to rerun tools/install.py --upgrade. Existing files under history_warn_only_dirs only ever warn; allowlist_globs are not scanned. Every scanned write adds one JSONL line to ledger (relative to the data root, not version-controlled); tools/root-leak-audit.py --days N summarizes it. No section = gate off.",
     "enabled": true,
     "mode": "warn",
     "scope_dirs": [

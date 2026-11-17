@@ -987,6 +987,7 @@
  "cli.root_leak_audit.class_undeclared": "Undeclared root-layer writes: {n}",
  "cli.root_leak_audit.config_unreadable": "Config unreadable ({error}); using the default ledger location",
  "cli.root_leak_audit.days": "How many recent days to look at (default 7)",
+ "cli.root_leak_audit.degraded": "Degraded writes: {n} (mode was block, but this machine's settings had no declaration hook, so they went through as warnings; rerun the installer with --upgrade to add it)",
  "cli.root_leak_audit.description": "Root-leak gate audit: reads the receipt ledger and lists the root-layer writes of the last N days in three classes (hit without declaration, declared with hit, undeclared) with counts",
  "cli.root_leak_audit.header": "Root-layer write audit: last {days} days, {n} records (ledger {path})",
  "cli.root_leak_audit.json": "Print JSON (all records)",
