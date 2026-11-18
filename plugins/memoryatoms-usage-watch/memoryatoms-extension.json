@@ -1,6 +1,6 @@
 {
   "name": "usage-watch",
-  "description": "Claude account usage monitor: scheduled quota checks and anomaly notifications; a session-start hint when the monitor is not running or its last run had problems",
+  "description": "Claude account usage monitor: scheduled quota checks and anomaly notifications; a session-start hint when the monitor or the weekly usage screenshot is not running or its last scheduled run had problems",
   "python": {
     "path": ["hooks"],
     "on": {

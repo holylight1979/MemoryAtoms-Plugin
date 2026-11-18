@@ -168,7 +168,7 @@ Claude Code 內建的自動記憶插件關不掉；見上面的 `/memory` 建議
 | `memoryatoms-dashboard` | MCP 行程內的本機網頁儀表板：dashboard、brain-world、收尾報告 HUD。 | `/plugin install memoryatoms-dashboard@memoryatoms` |
 | `memoryatoms-handoff` | 要交接時才寫交接單：context 快滿時提醒、說要交接時指向 `/memoryatoms-handoff:handoff`，並提供這個技能。 | `/plugin install memoryatoms-handoff@memoryatoms` |
 | `memoryatoms-statusline` | 狀態列腳本：改過的檔、知識佇列、向量服務、收尾報告（不花 token）。沒有 hook、沒有 MCP，要你自己打開（見下方）。 | `/plugin install memoryatoms-statusline@memoryatoms` |
-| `memoryatoms-usage-watch` | Claude 帳號用量監控：額度檢查、異常通知，監控沒在跑時開場提示一行。 | `/plugin install memoryatoms-usage-watch@memoryatoms` |
+| `memoryatoms-usage-watch` | Claude 帳號用量監控：額度檢查、異常通知；監控或週用量截圖沒在跑、沒截到時開場提示一行。 | `/plugin install memoryatoms-usage-watch@memoryatoms` |
 | `memoryatoms-wisdom` | 反思統計：記錄每場 session 的狀況，開場最多兩行自我提醒。 | `/plugin install memoryatoms-wisdom@memoryatoms` |
 | `memoryatoms-workflow-nudge` | 工作方式提示：研究型請求建議分頭查，互不相干的工作建議並行子代理。 | `/plugin install memoryatoms-workflow-nudge@memoryatoms` |
 

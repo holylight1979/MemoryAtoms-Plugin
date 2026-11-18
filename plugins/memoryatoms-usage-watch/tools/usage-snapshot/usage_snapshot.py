@@ -19,20 +19,30 @@
   面板／頁面文字追記到本機 workflow/usage-snapshots/usage-log.jsonl（source 標 vscode 或 web），
   usage-last-run.json 記最近一次結果（成功／失敗原因）。
   失敗也會在本機留診斷圖：VS Code 那條 usage-YYYYMMDD-vscode-FAILED.png、網頁那條 usage-YYYYMMDD-<帳號>-FAILED.png，不靜默。
-  排程跟著帳號的週重置走（每個帳號重置時刻不同，例：週一 21:00、週二 03:40）：截網頁時順手讀用量頁自己打的 /usage API，
-  週額度有多條（全部模型一條、單一模型各一條）取用量最高那條，把排程的每週觸發對齊到它重置前 LEAD_MIN 分鐘；
-  結果寫在 last-run 的 weekly_used／weekly_reset／schedule。VS Code 面板那條沒有重置時間來源，排程不動（schedule 註明）。
+  last-run 的欄位：at（本機時間、無時區）、ok、error、notes、scheduled（這次是不是排程跑的）、
+  login_needed（網頁那條 profile 不存在或被導到登入頁才寫 true：要先 --login）、weekly_used／weekly_reset／schedule。
+
+排程窗：
+  排程每週在週重置前 SCHEDULE_OFFSETS_MIN 分鐘（60、45、30、15）各跑一次，都帶 --scheduled；
+  帶 --scheduled 時，最近 SKIP_IF_OK_WITHIN_MIN 分鐘內已截成功就直接結束（不截、不寫 last-run 與 log），
+  所以先成功的那次之後都略過，前面失敗後面還有機會。手動跑不帶這個旗標，一律照截。
+  排程跟著帳號的週重置走（每個帳號重置時刻不同，例：週一 21:00、週二 03:40）：每次截完（成功失敗都一樣）
+  問用量 API（上一層 usage-watch.py 的 fetch_account；token 過期會讓 Claude Code 自己刷新）拿 seven_day 的重置時間；
+  API 失敗（notes 記原因）才退用網頁那條攔到的用量頁 /usage（週額度多條取用量最高那條，只有截網頁時才有）。
+  拿到重置時間就把排程的觸發換成重置前那幾個時刻（跨午夜各算各的星期），動作參數沒有 --scheduled 就補上；
+  兩邊都沒有就不動排程（schedule 註明）。
 
 怎麼跑：
   python tools/usage-snapshot/usage_snapshot.py --login     網頁退路首次：開有頭視窗，手動登入 claude.ai，登入成功自動關閉
   python tools/usage-snapshot/usage_snapshot.py             截一張（會彈 VS Code 視窗約 20 秒；失敗再彈 Chrome 約 30 秒）
   python tools/usage-snapshot/usage_snapshot.py --headless  網頁退路不彈視窗（實測會被 Cloudflare 擋，留作再試）
-  python tools/usage-snapshot/usage_snapshot.py --register  註冊排程：每週二 03:30 起跳，之後截網頁時自動對齊重置時間（喚醒電腦、錯過補跑）
+  python tools/usage-snapshot/usage_snapshot.py --register  註冊排程：每週二 03:30 起每 15 分鐘一次共 4 次，讀到重置時間後自動對齊（喚醒電腦、錯過補跑）
   完整參數：--help
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -71,7 +81,8 @@ USAGE_URL = "https://claude.ai/settings/usage"
 TASK_NAME = "Claude-Usage-WeeklySnapshot"
 USAGE_TEXT = re.compile(r"\d+%\s*(used|已使用)|(used|已使用)\s*\d+%", re.I)  # 英文「68% used」、中文「已使用 68%」兩種字序
 WEEKLY_TOGGLE = re.compile(r"本週|this week|weekly", re.I)  # 用量彈窗「本週」收合鈕的文字
-LEAD_MIN = 10  # 週重置前幾分鐘截
+SCHEDULE_OFFSETS_MIN = (60, 45, 30, 15)  # 排程在週重置前這幾分鐘各跑一次（前面失敗，後面補）
+SKIP_IF_OK_WITHIN_MIN = max(SCHEDULE_OFFSETS_MIN)  # 排程跑時，這麼多分鐘內已截成功就不再截（同一個排程窗只截一次）
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 # VS Code 用量面板：另開一個專屬 VS Code（跟日常那個分開，才能帶偵錯埠讓 Playwright 接上）
@@ -186,11 +197,30 @@ def do_login(timeout_min: int) -> int:
     return 0 if ok else 1
 
 
-def do_snapshot(headed: bool) -> int:
-    """先截 VS Code 裡 Claude Code 的 Account & Usage 面板（資訊多）；那條失敗才改截 claude.ai 用量頁，原因記進 notes。"""
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def recent_success(now: datetime) -> datetime | None:
+    """last-run 顯示上次成功、而且在 SKIP_IF_OK_WITHIN_MIN 分鐘內 → 回那次的時間；否則（含讀不到）回 None。"""
+    try:
+        last = json.loads(LAST_RUN.read_text(encoding="utf-8"))
+        at = datetime.fromisoformat(last["at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if last.get("ok") is True and now - at < timedelta(minutes=SKIP_IF_OK_WITHIN_MIN):
+        return at
+    return None
+
+
+def do_snapshot(headed: bool, scheduled: bool = False) -> int:
+    """先截 VS Code 裡 Claude Code 的 Account & Usage 面板（資訊多）；那條失敗才改截 claude.ai 用量頁，原因記進 notes。
+    scheduled：排程跑的；這個排程窗已截成功就直接結束。"""
     now = datetime.now()
-    result = {"at": now.isoformat(timespec="seconds"), "ok": False, "file": None, "error": None}
+    if scheduled:
+        done = recent_success(now)
+        if done is not None:
+            log(t("ext.usage-watch.snapshot.skip_done", at=f"{done:%H:%M}"))
+            return 0
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    result = {"at": now.isoformat(timespec="seconds"), "ok": False, "file": None, "error": None,
+              "scheduled": scheduled}
     errors = []
     for _ in range(VSCODE_ATTEMPTS):
         error = capture_vscode(result, now)
@@ -202,10 +232,10 @@ def do_snapshot(headed: bool) -> int:
     if not result["ok"]:
         result["notes"].append(t("ext.usage-watch.snapshot.fallback_web"))
         capture_web(result, now, headed)
-    if result["ok"]:
-        reset = result.get("weekly_reset")
-        result["schedule"] = (align_schedule(datetime.fromisoformat(reset)) if reset
-                              else t("ext.usage-watch.snapshot.no_reset_time"))
+    _apply_api_reset(result, now)
+    reset = result.get("weekly_reset")
+    result["schedule"] = (align_schedule(datetime.fromisoformat(reset)) if reset
+                          else t("ext.usage-watch.snapshot.no_reset_time"))
     if result["ok"] and push_to_org_enabled() and not result.get("repo_error"):
         _push_to_repo(result)
     _finish(result)
@@ -313,6 +343,7 @@ def capture_web(result: dict, now: datetime, headed: bool) -> None:  # headed=Fa
     """claude.ai 用量頁（專屬 Chrome profile）；結果寫進 result。"""
     if not PROFILE_DIR.exists():
         result["error"] = t("ext.usage-watch.snapshot.profile_missing")
+        result["login_needed"] = True
         return
 
     p, ctx = launch(headed)
@@ -327,6 +358,7 @@ def capture_web(result: dict, now: datetime, headed: bool) -> None:  # headed=Fa
             url = page.url
             if "/login" in url or "/magic-link" in url:
                 result["error"] = t("ext.usage-watch.snapshot.not_logged_in", url=url)
+                result["login_needed"] = True
             else:
                 result["error"] = t("ext.usage-watch.snapshot.usage_text_timeout", url=url, title=f"{page.title()!r}")
         expand_note = expand_weekly(page) if result["error"] is None else None
@@ -387,22 +419,87 @@ def _reset_time(limit: dict) -> datetime:
     return dt.replace(second=0, microsecond=0)
 
 
+_USAGE_WATCH = None
+
+
+def _usage_watch():
+    """上一層的 usage-watch.py（檔名有連字號，用 importlib 載）；用它的 fetch_account 問用量 API。"""
+    global _USAGE_WATCH
+    if _USAGE_WATCH is None:
+        spec = importlib.util.spec_from_file_location("usage_watch_for_snapshot", TOOL_DIR.parent / "usage-watch.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _USAGE_WATCH = mod
+    return _USAGE_WATCH
+
+
+def _apply_api_reset(result: dict, now: datetime) -> None:
+    """週重置時間以用量 API（seven_day.resets_at）為主，寫進 result["weekly_reset"]；沒截網頁時用 API 的
+    seven_day* 最高那條補本週用量。API 失敗記進 notes，留著網頁那條攔到的值（有的話）。"""
+    try:
+        acc = _usage_watch().fetch_account(now)
+        reset = _reset_time({"resets_at": acc["weekly_reset"]})
+    except Exception as e:  # 憑證讀不到、token 刷新失敗、斷網、回應缺欄位都算
+        result.setdefault("notes", []).append(
+            t("ext.usage-watch.snapshot.reset_api_failed", error=f"{type(e).__name__}: {e}"))
+        return
+    result["weekly_reset"] = reset.isoformat(timespec="minutes")
+    weekly = {k: v for k, v in (acc.get("limits") or {}).items() if k.startswith("seven_day")}
+    if "weekly_percent" not in result and weekly:
+        key = max(weekly, key=weekly.get)
+        name = t("ext.usage-watch.snapshot.all_models") if key == "seven_day" else key.removeprefix("seven_day_")
+        result["weekly_percent"] = weekly[key]
+        result["weekly_used"] = t("ext.usage-watch.snapshot.weekly_used", percent=weekly[key], name=name)
+
+
+def _slot_times(reset: datetime) -> list[datetime]:
+    """排程該跑的時刻：週重置前 SCHEDULE_OFFSETS_MIN 分鐘各一個，由早到晚。"""
+    return sorted(reset - timedelta(minutes=m) for m in SCHEDULE_OFFSETS_MIN)
+
+
+def _slots_text(times: list[datetime]) -> str:
+    """給人看的時段：「Tuesday 03:59, 04:14, 04:29, 04:44」；跨到別天才再寫星期名。"""
+    parts, day = [], None
+    for dt in sorted(times):
+        name = DAYS[dt.weekday()]
+        parts.append(f"{dt:%H:%M}" if name == day else f"{name} {dt:%H:%M}")
+        day = name
+    return ", ".join(parts)
+
+
+def _triggers_ps(times: list[datetime]) -> str:
+    """PowerShell 陣列：每個時刻一條「每週、那天、那個時刻」的觸發。"""
+    items = ",\n  ".join(f"(New-ScheduledTaskTrigger -Weekly -DaysOfWeek {DAYS[dt.weekday()]} -At {dt:%H:%M})"
+                         for dt in times)
+    return f"@(\n  {items}\n)"
+
+
 def _powershell(script: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True,
+    """輸出固定 UTF-8：PowerShell 預設照系統語系編碼（中文 Windows 是 cp950），Python 在 UTF-8 模式下會解不開、
+    stdout／stderr 變 None。"""
+    return subprocess.run(["powershell", "-NoProfile", "-Command",
+                           "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n" + script],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace",
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
 def align_schedule(reset: datetime) -> str:
-    """把排程的每週觸發對齊到「週重置前 LEAD_MIN 分鐘」，回一句結果；排程沒註冊就不動。"""
-    target = reset - timedelta(minutes=LEAD_MIN)
-    day, at = DAYS[target.weekday()], target.strftime("%H:%M")
+    """把排程的觸發換成「週重置前 SCHEDULE_OFFSETS_MIN 分鐘各一條」、動作參數補上 --scheduled，回一句結果；
+    觸發與參數都已對上就不動，排程沒註冊也不動。動作保留原本的程式與參數（腳本路徑可能是舊的轉接路徑）。"""
+    times = _slot_times(reset)
     r = _powershell(f"""
 $task = Get-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue
 if (-not $task) {{ 'none'; exit }}
-$cur = $task.Triggers[0]
-$want = New-ScheduledTaskTrigger -Weekly -DaysOfWeek {day} -At {at}
-if ($cur.DaysOfWeek -eq $want.DaysOfWeek -and ([datetime]$cur.StartBoundary).ToString('HH:mm') -eq '{at}') {{ 'same'; exit }}
-Set-ScheduledTask -TaskName '{TASK_NAME}' -Trigger $want -ErrorAction Stop | Out-Null
+$want = {_triggers_ps(times)}
+$key = {{ param($tr) '{{0}} {{1}}' -f $tr.DaysOfWeek, ([datetime]$tr.StartBoundary).ToString('HH:mm') }}
+$curKeys = (@($task.Triggers | ForEach-Object {{ & $key $_ }}) | Sort-Object) -join ','
+$wantKeys = (@($want | ForEach-Object {{ & $key $_ }}) | Sort-Object) -join ','
+$act = $task.Actions[0]
+$arg = [string]$act.Arguments
+$hasFlag = $arg -match '(^|\\s)--scheduled(\\s|$)'
+if ($curKeys -eq $wantKeys -and $hasFlag) {{ 'same'; exit }}
+if (-not $hasFlag) {{ $act.Arguments = ($arg.TrimEnd() + ' --scheduled').Trim() }}
+Set-ScheduledTask -TaskName '{TASK_NAME}' -Trigger $want -Action $task.Actions -ErrorAction Stop | Out-Null
 'moved'
 """)
     state = r.stdout.strip()
@@ -410,7 +507,7 @@ Set-ScheduledTask -TaskName '{TASK_NAME}' -Trigger $want -ErrorAction Stop | Out
         return t("ext.usage-watch.snapshot.align_failed", error=r.stderr.strip() or state)
     if state == "none":
         return t("ext.usage-watch.snapshot.schedule_not_registered")
-    values = {"day": day, "at": at, "reset": f"{reset:%m-%d %H:%M}", "lead": LEAD_MIN}
+    values = {"reset": f"{reset:%m-%d %H:%M}", "slots": _slots_text(times)}
     if state == "same":
         return t("ext.usage-watch.snapshot.schedule_kept", **values)
     return t("ext.usage-watch.snapshot.schedule_moved", **values)
@@ -472,16 +569,27 @@ def _finish(result: dict) -> None:
         log(result["schedule"])
     else:
         log(f"FAILED: {result['error']}" + (f" → {result['file']}" if result["file"] else ""))
+        if result.get("schedule"):
+            log(result["schedule"])
     for note in result.get("notes", []):
         log(f"WARN: {note}")
+
+
+def register_times(at: str, day: str) -> list[datetime]:
+    """--register 的時刻：第一條在 day 的 at，其餘照 SCHEDULE_OFFSETS_MIN 的間隔往後排（60→45→30→15 是 +0/+15/+30/+45 分）。
+    日期只拿來算星期與跨午夜，用 2024-01-01（星期一）那週當參考。"""
+    hm = datetime.strptime(at, "%H:%M")
+    first = datetime(2024, 1, 1, hm.hour, hm.minute) + timedelta(days=DAYS.index(day))
+    return [first + timedelta(minutes=SCHEDULE_OFFSETS_MIN[0] - m) for m in SCHEDULE_OFFSETS_MIN]
 
 
 def do_register(at: str, day: str) -> int:
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     script = str(Path(__file__).resolve())
+    times = register_times(at, day)
     ps = f"""
-$a = New-ScheduledTaskAction -Execute '{pythonw}' -Argument '"{script}"'
-$t = New-ScheduledTaskTrigger -Weekly -DaysOfWeek {day} -At {at}
+$a = New-ScheduledTaskAction -Execute '{pythonw}' -Argument '"{script}" --scheduled'
+$t = {_triggers_ps(times)}
 $s = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
 Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $a -Trigger $t -Settings $s -Force | Out-Null
 (Get-ScheduledTaskInfo -TaskName '{TASK_NAME}').NextRunTime
@@ -490,7 +598,7 @@ Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $a -Trigger $t -Settings 
     if r.returncode != 0:
         log(t("ext.usage-watch.snapshot.register_failed", error=r.stderr.strip()))
         return 1
-    log(t("ext.usage-watch.snapshot.registered", task=TASK_NAME, day=day, at=at, next_run=r.stdout.strip()))
+    log(t("ext.usage-watch.snapshot.registered", task=TASK_NAME, slots=_slots_text(times), next_run=r.stdout.strip()))
     return 0
 
 
@@ -500,14 +608,18 @@ def main() -> int:
     ap.add_argument("--login-timeout", type=int, default=60, metavar="MIN", help=t("ext.usage-watch.snapshot.login_timeout_help"))
     ap.add_argument("--headless", action="store_true", help=t("ext.usage-watch.snapshot.headless_help"))
     ap.add_argument("--register", action="store_true", help=t("ext.usage-watch.snapshot.register_help"))
-    ap.add_argument("--at", default="03:30", help=t("ext.usage-watch.snapshot.at_help"))
-    ap.add_argument("--day", default="Tuesday", help=t("ext.usage-watch.snapshot.day_help"))
+    ap.add_argument("--at", default="03:30", help=t("ext.usage-watch.snapshot.at_help",
+                                                    every=SCHEDULE_OFFSETS_MIN[0] - SCHEDULE_OFFSETS_MIN[1],
+                                                    count=len(SCHEDULE_OFFSETS_MIN)))
+    ap.add_argument("--day", default="Tuesday", type=str.capitalize, choices=DAYS, help=t("ext.usage-watch.snapshot.day_help"))
+    ap.add_argument("--scheduled", action="store_true",
+                    help=t("ext.usage-watch.snapshot.scheduled_help", minutes=SKIP_IF_OK_WITHIN_MIN))
     a = ap.parse_args()
     if a.register:
         return do_register(a.at, a.day)
     if a.login:
         return do_login(a.login_timeout)
-    return do_snapshot(headed=not a.headless)
+    return do_snapshot(headed=not a.headless, scheduled=a.scheduled)
 
 
 if __name__ == "__main__":

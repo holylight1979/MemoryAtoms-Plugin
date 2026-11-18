@@ -168,7 +168,7 @@ Nine optional plugins from the same marketplace. Each one needs `memoryatoms`; i
 | `memoryatoms-dashboard` | Local web dashboard served from the MCP process: dashboard, brain-world and the wrap-up report HUD. | `/plugin install memoryatoms-dashboard@memoryatoms` |
 | `memoryatoms-handoff` | Handoff on request: warns when context is nearly full, points to `/memoryatoms-handoff:handoff` when you ask for a handoff, and provides that skill. | `/plugin install memoryatoms-handoff@memoryatoms` |
 | `memoryatoms-statusline` | Status line script: edited files, knowledge queue, vector service, wrap-up report (zero tokens). No hooks, no MCP; you turn it on yourself (below). | `/plugin install memoryatoms-statusline@memoryatoms` |
-| `memoryatoms-usage-watch` | Claude account usage monitor: quota checks, anomaly notifications, and a session-start hint when the monitor is not running. | `/plugin install memoryatoms-usage-watch@memoryatoms` |
+| `memoryatoms-usage-watch` | Claude account usage monitor: quota checks, anomaly notifications, and a session-start hint when the monitor or the weekly usage screenshot is not running or missed its run. | `/plugin install memoryatoms-usage-watch@memoryatoms` |
 | `memoryatoms-wisdom` | Reflection stats: records how each session went and shows at most two self-awareness lines at session start. | `/plugin install memoryatoms-wisdom@memoryatoms` |
 | `memoryatoms-workflow-nudge` | Working-style nudges: suggests fan-out for research-type requests and parallel sub-agents for independent work. | `/plugin install memoryatoms-workflow-nudge@memoryatoms` |
 
