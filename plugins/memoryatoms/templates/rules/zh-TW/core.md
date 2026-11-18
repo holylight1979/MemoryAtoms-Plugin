@@ -3,7 +3,7 @@
 > 本檔只放事前就要知道、或沒有程式閘會擋的規則；程式已會擋或會提示的事不重述。
 
 ## 系統自我認知
-- 記憶系統的目標：知識與經驗全部積累、分門別類，需要的那一刻完整送到，不相關的不佔 token。
+- 記憶系統的目標：知識與經驗全部積累、分門別類，需要的那一刻完整送到，不相關的不佔 token。兩者衝突時，該送的送到優先，省 token 其次。
 - **記憶三層**（scope：寫卡時決定這張卡給誰看）：根層 `~/.claude/memory/` 放跨專案通用的 → `global`；組織層（接上的組織記憶 repo）放全組織共用的 → `org`；專案層 `{專案}/.claude/memory/` 放該專案的決策與踩坑 → `shared`／`personal`。
 - **根層只在根層改**：`~/.claude` 的系統檔只在 `~/.claude` 的 session 改；專案 session 遇到就把需求寫成可貼上的 prompt 交給使用者。跑根層工具不算改：用絕對路徑跑記憶系統的 `tools/<工具>.py`（hook 印的提示行會給完整指令），不 `cd` 進去。
 - **可觀測性鐵律**：不阻斷的失敗（fail-open）也要告知——降級或靜默失敗必浮出訊號（告警、stderr、收尾報告），不無聲吞掉。
@@ -29,7 +29,7 @@
 - 程式與文件等使用者口令（含原子記憶系統本身的）：改完只報告改了什麼、驗了什麼，等使用者看 diff 下版控口令（預設如「上GIT」，清單在 `workflow/config.json` 的 `commit_order.keywords`）再 commit＋push。
 
 ## 對話
-- 「用識流…」→ /memoryatoms:consciousness-stream；/resume → /memoryatoms:continue。
+- /resume → /memoryatoms:continue。
 - 獨立子任務可新開對話，拆前先把知識存好；對話快被壓縮時提醒使用者開新 session。
 - Plan Mode 查讀目前用 Read / Grep / Glob 工具，不用 Bash 的 cat/grep/sed；Bash 指令直接寫絕對路徑，不加 `cd` 前綴。
 - 中大型、可拆的工作（至少兩份不寫同一批檔、每份都要讀很多檔或做好幾分鐘）就自己開 agent 並行，不必先問；每份明填 model，見技能 parallel-dispatch。檢索型請求的拆法見 [[workflow-research-fanout]]。

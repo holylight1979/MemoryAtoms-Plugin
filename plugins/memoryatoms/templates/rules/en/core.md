@@ -3,7 +3,7 @@
 > This file holds only the rules you need to know beforehand, or that no program gate enforces; what the programs already block or prompt for is not repeated here.
 
 ## How the system sees itself
-- Goal of the memory system: keep every piece of knowledge and experience, filed by category, delivered in full the moment it is needed, and costing no tokens when it is not relevant.
+- Goal of the memory system: keep every piece of knowledge and experience, filed by category, delivered in full the moment it is needed, and costing no tokens when it is not relevant. When the two conflict, getting the needed knowledge delivered comes first and saving tokens second.
 - **Three memory layers** (scope: who a card is for, decided when it is written): the root layer `~/.claude/memory/` holds what applies across projects → `global`; the organization layer (an organization memory repo, once connected) holds what the whole organization shares → `org`; the project layer `{project}/.claude/memory/` holds that project's decisions and pitfalls → `shared`／`personal`.
 - **Change the root only from the root**: system files under `~/.claude` are changed only in a session opened in `~/.claude`; a project session that runs into one writes the need as a ready-to-paste prompt for the user. Running a root tool is not changing it: run the memory system's `tools/<tool>.py` by absolute path (the hook's prompt line gives the full command); do not `cd` into it.
 - **Observability is non-negotiable**: a failure that does not block (fail-open) must still be reported — degradation or a silent failure always surfaces a signal (warning, stderr, end-of-task report); never swallow it.
@@ -29,7 +29,7 @@
 - Code and document changes wait for the user's command (including the memory system's own): when done, report only what changed and what was verified, and let the user review the diff and give the version-control command (by default "上GIT"; the list is `commit_order.keywords` in `workflow/config.json`) before commit＋push.
 
 ## Conversation
-- "用識流…" (use the consciousness stream) → /memoryatoms:consciousness-stream; /resume → /memoryatoms:continue.
+- /resume → /memoryatoms:continue.
 - An independent subtask may go to a new conversation; save the knowledge before splitting. When the conversation is about to be compacted, remind the user to start a new session.
 - In Plan Mode, reading currently uses the Read / Grep / Glob tools, not Bash cat/grep/sed; Bash commands use absolute paths with no `cd` prefix.
 - Medium or large work that splits cleanly (at least two parts that do not write the same files, each reading many files or taking several minutes) goes to parallel agents on your own initiative, without asking first; each part names its model, see the parallel-dispatch skill. How to split a research request: [[workflow-research-fanout]].

@@ -1106,9 +1106,8 @@ def edit_metadata(
 # ----------------------------
 # 計數類欄位（ReadHits / Confirmations / Last-used）已移到 <atom>.access.json
 # 旁路檔，由 lib/atom_access.py 統一管理。任何過去呼叫 update_atom_field 的位置：
-#   - cross-session confirm → atom_access.increment_confirmation
-#   - 其餘無實際 caller（grep 確認）
-# 詳見 _AIDocs/Architecture.md「Atomic Memory Single Funnel」章節。
+#   - 其餘無實際 caller（grep 確認；cross-session confirm 的資料源已停產）
+# 詳見 TECH.md §6.1（寫入 funnel）與 lib/atom_access.py 檔頭。
 
 
 # ─── Main entry ───────────────────────────────────────────────────────────────

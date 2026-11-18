@@ -1,7 +1,7 @@
 {
   "_doc": "版本標識檔。guardian＝Workflow Guardian（hooks + MCP server）版本，Dashboard 標題與 MCP serverInfo 顯示；atom_memory＝原子記憶系統版本；release_date＝此版本正式發布日；release_theme＝此版本主題一句話。程式讀者：tools/workflow-guardian-mcp/lib/paths.js（只取 guardian / atom_memory）與 tools/install.py --verify（確認本檔可讀）；文件讀者 TECH.md。",
-  "guardian": "6.6.2",
+  "guardian": "6.6.3",
   "atom_memory": "6.1",
   "release_date": "2026-11-17",
-  "release_theme": "Always-loaded templates: removed two duplicated rules (parallel work stays in the core rules; verify-before-asserting stays in IDENTITY)."
+  "release_theme": "Templates: needed knowledge is delivered ahead of token savings; relevant injected material is acted on; a duplicated alias line is removed."
 }

@@ -25,6 +25,9 @@ mcp ⇄ root-leak       (同上；root_write_declare，守門家族，缺檔就�
 |------|------|----------------|
 | `paths.js` | 路徑錨（CLAUDE/WORKFLOW/MEMORY/TOOLS/CONFIG/REGISTRY/VERSION）＋ config/registry/version 載入。零內部相依葉。 | — |
 | `log.js` | crash 記錄與致命錯誤守門（crashLog / onFatal）。全域 `process.on` handler 留 server.js 呼叫本檔。 | — |
+| `boot-record.js` | 服務程序啟動紀錄 `workflow/mcp-boot/<pid>.json`（hook 讀它判服務是否活著；案例 `verify/verify_boot_record.js`）。 | — |
+| `extension-dirs.js` | 擴充（memoryatoms-<名>）裝在哪、開著沒；Node 側鏡像。 | `lib/extension_dirs.py` |
+| `i18n.js` | 給人看的提示走語言表 `lib/i18n/zh-TW.json`、`en.json`，程式只留鍵。 | `lib/i18n` |
 | `realm.js` | 範疇/路由分類（classifyRealm / cleanRealmSegment / resolveMemDir / applyFeedback·LocalRouting / slugify …）。詞庫/保護清單/權重讀 `memory/_meta/realm-lexicon.json`（單一來源，py 同檔；缺失 fallback＋stderr）。`orgMemoryRoot()` 組織層根（MIRROR `hooks/wg_core.py:org_memory_root`：共用 config `org_memory` 被本機 `workflow/org-memory.local.json`（`paths.loadOrgLocal`）蓋過後，enabled 且 roots 恰 1 → root；缺鍵／空／>1 → null＋stderr）；`dedupLayersFor("org")`＝global + `shared:<org slug>`。 | `lib/atom_locations.py`（parity test_14/14b/17 require 實跑＋schema 守法；test_22 讀本檔原始碼 eval） |
 | `atom-render.js` | atom 內容構造/渲染/驗證（buildAtomContent / renderKnowledgeLines / isBlockKnowledge / validateAtomContent）。buildAtomContent 收 `supersedes`：Related 之後輸出 `- Supersedes: a, b`，未給／空陣列不輸出任何行；收 `provenance` → `- Source:`（Author 後）、`quote` → `- Quote:`（Source 後、Confidence 前；Source 缺時仍佔此位）、`depends` → `- Depends:`（Created-at 後、Related 前），未給／空不輸出。 | `lib/atom_spec.py`（byte-identical；test_13 require server.js re-export） |
 | `atom-access.js` | `<atom>.access.json` 遙測讀取＋效用 Wilson 下界（usefulnessStats / wilsonLowerBound / enrichAtomWithAccess）。 | `lib/atom_access.py`（SYNC；verify_promotion_gate 讀本檔） |
