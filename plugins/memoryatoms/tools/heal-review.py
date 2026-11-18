@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """heal-review.py — 記憶自癒失敗佇列的人工裁決後端（/heal-review skill）
 
-atom-heal.py 修不好（驗證不過 / needs_human）時會在 memory/_heal_review/<atom>.json
-留診斷卡。本工具列卡 + 人工裁決：
-  list                列出待人工的卡（atom / 壞在哪 / LLM 提案 / 失敗原因）
-  show  <atom>        看單張卡完整內容
-  resolve <atom>      標記已修好 → 清卡（會先重掃確認真的健康；仍有問題、或重掃失敗沒能確認，都要 --force 才清）
-  dismiss <atom>      決定不修 → 清卡（won't-fix）
+atom-heal.py 修不好（驗證不過 / needs_human）時會在 memory/_heal_review/ 留診斷卡：全域的卡 <atom>.json，
+專案層的卡 <atom>@project-<雜湊>.json（舊版不分層，專案層的卡也叫 <atom>.json，照樣讀得到）。本工具列卡 + 人工裁決：
+  list                列出待人工的卡（card 代號 / atom / 壞在哪 / LLM 提案 / 失敗原因）
+  show  <atom|card>   看單張卡完整內容
+  resolve <atom|card> 標記已修好 → 清卡（會先重掃確認真的健康；仍有問題、或重掃失敗沒能確認，都要 --force 才清）
+  dismiss <atom|card> 決定不修 → 清卡（won't-fix）
+給卡名時，代號就是這個卡名的那張優先（全域的卡）；沒有就找同名的專案層卡，只有一張才用，多張要給 list 的 card 代號。
 專案層的卡（診斷卡有 memory_root）回同一個記憶目錄重掃，紀錄列的層別寫 project。
 resolve/dismiss 的裁決資格看 workflow/config.json review.deciders（空＝人人可裁決；與 conflict-review 同源）。
 JSON over stdout；非零 exit code 代表操作失敗。
@@ -49,15 +50,30 @@ def _log(action, atom, by, detail, layer="global"):
         pass
 
 
+def _atom_of(card_id):
+    """代號 → 卡名（代號是 <卡名> 或 <卡名>@<層別>；卡名不含 @）。"""
+    return card_id.partition("@")[0]
+
+
 def list_cards():
     cards = []
     if REVIEW.is_dir():
         for f in sorted(REVIEW.glob("*.json")):
             try:
-                cards.append(json.loads(f.read_text(encoding="utf-8")))
+                cards.append({**json.loads(f.read_text(encoding="utf-8")), "card": f.stem})
             except Exception:
-                cards.append({"atom": f.stem, "_parse_error": True})
+                cards.append({"atom": _atom_of(f.stem), "card": f.stem, "_parse_error": True})
     return cards
+
+
+def find_card(key):
+    """命令列給的卡名或代號 → (診斷卡檔或 None, 同名的代號清單)。
+    代號完全相同的優先；沒有就找同名的卡，只有一張才用，多張回 (None, 代號清單) 要人指定。"""
+    exact = REVIEW / f"{key}.json"
+    if exact.is_file():
+        return exact, []
+    same = sorted(f for f in REVIEW.glob("*.json") if _atom_of(f.stem) == key) if REVIEW.is_dir() else []
+    return (same[0], []) if len(same) == 1 else (None, [f.stem for f in same])
 
 
 def rescan(atom, memory_root=None):
@@ -101,7 +117,7 @@ def main():
     if a.action == "list":
         cards = list_cards()
         summary = [{
-            "atom": c.get("atom"), "level": c.get("level"), "action": c.get("action"),
+            "card": c.get("card"), "atom": c.get("atom"), "level": c.get("level"), "action": c.get("action"),
             "needs_human": c.get("needs_human"), "created_at": c.get("created_at"),
             "broken_after": (c.get("verification") or {}).get("broken_after"),
             "proposals": c.get("proposals"), "memory_root": c.get("memory_root"),
@@ -110,17 +126,19 @@ def main():
 
     if not a.atom:
         emit({"ok": False, "error": t("cli.heal_review.atom_required")}, a.json, 1)
-    p = REVIEW / f"{a.atom}.json"
+    p, same = find_card(a.atom)
+    if p is None and same:             # 同名的卡不只一張（不同專案層）：要給 list 的 card 代號
+        emit({"ok": False, "error": t("cli.heal_review.card_ambiguous", cards=", ".join(same)), "cards": same}, a.json, 1)
 
     if a.action == "show":
-        if not p.exists():
+        if p is None:
             emit({"ok": False, "error": t("cli.heal_review.card_not_found")}, a.json, 1)
         emit({"ok": True, "card": json.loads(p.read_text(encoding="utf-8"))}, a.json)
 
     # resolve / dismiss → 需 management
     if not is_management():
         emit({"ok": False, "error": t("cli.heal_review.need_management")}, a.json, 1)
-    if not p.exists():
+    if p is None:
         emit({"ok": False, "error": t("cli.heal_review.card_not_found")}, a.json, 1)
     by = get_current_user()
     try:
@@ -129,24 +147,26 @@ def main():
         card = None                    # 卡壞了讀不懂：照全域重掃；掃不到這張卡就不放行（rescan 回 -1）
     memory_root = card.get("memory_root") if isinstance(card, dict) else None
     layer = "project" if memory_root else "global"
+    # 給的可能是代號：重掃、紀錄、回報都用卡名
+    atom = card.get("atom") if isinstance(card, dict) and isinstance(card.get("atom"), str) else _atom_of(p.stem)
 
     if a.action == "resolve":
-        n, h = rescan(a.atom, memory_root)
+        n, h = rescan(atom, memory_root)
         if n < 0 and not a.force:      # 沒掃成＝沒確認過，不當零問題清卡
             emit({"ok": False, "error": t("cli.heal_review.rescan_failed", reason=h.get("_err", "")), "health": h}, a.json, 1)
         if n > 0 and not a.force:
             emit({"ok": False, "error": t("cli.heal_review.still_broken", count=n), "health": h}, a.json, 1)
         p.unlink()
-        _log("heal_resolved", a.atom, by, f"remaining={n}", layer)
-        out = {"ok": True, "resolved": a.atom, "remaining_issues": n}
+        _log("heal_resolved", atom, by, f"remaining={n}", layer)
+        out = {"ok": True, "resolved": atom, "remaining_issues": n}
         if n < 0:
             out["rescan_error"] = h.get("_err")     # --force 清掉的：留下沒掃成的原因
         emit(out, a.json)
 
     if a.action == "dismiss":
         p.unlink()
-        _log("heal_dismissed", a.atom, by, "won't-fix", layer)
-        emit({"ok": True, "dismissed": a.atom}, a.json)
+        _log("heal_dismissed", atom, by, "won't-fix", layer)
+        emit({"ok": True, "dismissed": atom}, a.json)
 
 
 if __name__ == "__main__":

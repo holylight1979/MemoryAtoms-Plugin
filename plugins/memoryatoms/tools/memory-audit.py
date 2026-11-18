@@ -1576,6 +1576,37 @@ def move_to_distant(atom_path: Path) -> Tuple[bool, str]:
         return False, t("cli.memory_audit.move_failed", error=e)
 
 
+def move_to_distant_with_index(atom_path: Path) -> Tuple[bool, str]:
+    """--move-distant：搬進 _distant/ 並和退役（delete_atom）一樣清索引條目與 MEMORY.md 列、重產目錄與計數
+    （_remove_index_entries、_sync_catalog），並刪向量片段（_vector_delete_chunks；失敗不擋搬檔、訊息帶一行訊號），再請向量服務增量重索引。順序同退役：索引先清、搬檔（不可逆）在後，
+    索引清不掉或落點已有同名檔就不搬；搬完才重產目錄，失敗不回滾卡片但寫進回傳訊息。--restore 是它的反操作。"""
+    atom_path = Path(atom_path).resolve()
+    if not atom_path.exists():
+        return False, t("cli.memory_audit.file_missing", path=atom_path)
+    if _distant_dest(atom_path).exists():
+        return False, t("cli.memory_audit.distant_exists", path=_distant_dest(atom_path))
+    idx_dir, _idx_root = _restore_index_home(atom_path, atom_path.parent)
+    name = atom_path.stem
+    name_unique = sum(1 for c in iter_atom_files(idx_dir) if c.stem == name) <= 1
+    ok, msg = _remove_index_entries(idx_dir, name, atom_path, name_unique=name_unique)
+    if not ok:
+        return False, msg
+    # 向量片段：搬進封存的卡不該再被檢索到。與退役不同，這步失敗不擋搬檔，只留一行訊號（可重跑修復）
+    layer = "global" if _is_under(atom_path, CLAUDE_DIR) else "project"
+    v_ok, v_msg = _vector_delete_chunks(name, _vector_layer_label(atom_path, layer, idx_dir))
+    ok, moved = move_to_distant(atom_path)
+    if not ok:
+        return False, moved
+    notes = [moved]
+    if not v_ok:
+        notes.append("; " + v_msg + " (chunks not deleted; the card was moved anyway)")
+    err = _sync_catalog(idx_dir)
+    if err:
+        notes.append(t("cli.memory_audit.restore_catalog_failed", error=err, memory_dir=idx_dir))
+    _trigger_vector_reindex()
+    return True, "".join(n for n in notes if n)
+
+
 # ─── Layer Discovery ─────────────────────────────────────────────────────────
 
 from lib.project_root import claude_data_dir  # noqa: E402
@@ -2072,7 +2103,7 @@ def main():
 
     if args.move_distant:
         path = Path(args.move_distant)
-        ok, msg = move_to_distant(path)
+        ok, msg = move_to_distant_with_index(path)
         print(msg)
         sys.exit(0 if ok else 1)
 

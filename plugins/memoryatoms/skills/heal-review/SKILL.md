@@ -7,7 +7,7 @@ disable-model-invocation: true
 # /memoryatoms:heal-review — Memory self-heal failure queue adjudication
 
 > `atom-heal.py` repairs broken memory automatically (L1 mechanically adds missing backlinks / L2 uses the LLM to fix dead links).
-> When it cannot fix one (validation fails / needs_human), it leaves a diagnostic card at `memory/_heal_review/<atom>.json` and hands it to a human.
+> When it cannot fix one (validation fails / needs_human), it leaves a diagnostic card under `memory/_heal_review/` and hands it to a human: `<atom>.json` for a global atom, `<atom>@project-<hash>.json` for a project-layer atom, so same-named atoms in different layers each keep their own card.
 > This skill guides the adjudication: fixed → `resolve` clears the card; decided not to fix → `dismiss`. Who may resolve/dismiss is set by `review.deciders` in `workflow/config.json` (empty = anyone may adjudicate).
 
 ---
@@ -24,6 +24,8 @@ disable-model-invocation: true
 
 Backend: `python "${CLAUDE_PLUGIN_ROOT}/tools/heal-review.py" <action> [atom] [--force] --json`
 
+`<atom>` is an atom name or a card id (the `card` field from `list`). A name picks the card whose id is that name (the global atom's card); without one, the only card with that atom name. When cards in several layers share the name, the tool lists their ids and asks for one.
+
 ---
 
 ## Step 1: List the queue
@@ -34,7 +36,7 @@ Run with Bash and list the cards awaiting human review to the user:
 python "${CLAUDE_PLUGIN_ROOT}/tools/heal-review.py" list --json
 ```
 
-Each card has `atom` / `level` (L1|L2) / `broken_after` (dead links still unresolved) / `proposals` (the LLM's judgment at the time).
+Each card has `card` (its id) / `atom` / `level` (L1|L2) / `broken_after` (dead links still unresolved) / `proposals` (the LLM's judgment at the time) / `memory_root` (set for a project-layer atom).
 If `count=0` → tell the user there are currently no self-heal failures awaiting human review.
 
 ## Step 2: Look at details (as needed)

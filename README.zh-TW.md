@@ -84,7 +84,7 @@ English: [README.md](README.md)
 - 收尾 worker：SessionEnd 時 hook 把 Claude Code 交來的事件（session id、逐字稿路徑、工作資料夾）寫到資料夾的 `workflow/se-worker/`，再脫離 Claude Code 起 `hooks/session_end_worker.py`，所以 session 關掉後它還會跑一下。worker 讀完就刪那個檔，做完收尾工作；它的輸出接在資料夾的 `Logs/session-end-worker.log` 後面。
 - 唯讀的 git／svn 查詢（status、log、ls-files、rev-parse、rev-list、check-ignore），只在專案與記憶資料夾是版控庫時：提醒卡片索引的合併衝突、還沒推出去的卡、補卡片日期。
 - 專案裡有 `.claude/hooks/project_hooks.py` 時，開場會跑它（`python <檔> session_start`，5 秒上限）並顯示它回的行。這會執行專案資料夾裡的程式。
-- 加入網域的 Windows 機器，開場會跑 `whoami /groups` 讀群組名，除非 `role.md` 已寫了你的職能。只有在設定裡填了群組對照表（`roles.ad_group_map`）才會把群組名對到職能（給組織層卡片用）；出廠是空表，所以預設指令會跑、但不會對到任何職能。群組名不出本機。
+- 加入網域的 Windows 機器，開場會跑 `whoami /groups` 讀群組名，除非 `role.md` 已寫了你的職能。只有在有群組對照表時（設定裡的 `roles.ad_group_map`，或接上的組織層 repo 裡的 `config/roles.json`）才會把群組名對到職能（給組織層卡片用）；出廠兩樣都沒有，所以預設指令會跑、但不會對到任何職能。群組名不出本機。
 - Stop 時，只有這場改過 MCP 伺服器本身的程式才會列行程表（PowerShell `Get-CimInstance Win32_Process` 或 `ps`），判斷跑著的伺服器是不是舊版。
 - 本機 LLM 萃取：有些 worker 會請 Ollama 幫忙：SessionEnd 的決策萃取、你說「又壞了」這類話之後的失敗模式萃取、寫卡時的矛盾檢查。預設位址是本機 `http://127.0.0.1:11434`。另外要有語言模型 `qwen3:1.7b`（`/memoryatoms:setup-vector` 第 4 步，或 `ollama pull qwen3:1.7b`）。那裡沒有 Ollama 回應、或沒有這個模型，就不萃取，什麼都不送；畫面上不說，每次失敗只在資料夾的 `Logs/atom-debug.log` 記一行 `ERROR`。SessionEnd 的全逐字稿萃取預設關。
 - 向量服務：只在你跑過 `/memoryatoms:setup-vector` 之後。之前從不啟動。之後每場開場確認有一個本機 HTTP 服務在跑（只綁 `127.0.0.1`，埠由資料夾路徑推出，28000～28999），本機 Ollama 沒在跑就叫起來。設定 `vector_search.auto_start_service: false` 可關。

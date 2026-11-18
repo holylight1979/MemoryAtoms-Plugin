@@ -63,6 +63,7 @@ _LINES = {
     "config": lambda v: t("hook.degraded.config", **v),
     "org_memory": lambda v: t("hook.degraded.org_memory", **v),
     "org_memory_roots": lambda v: t("hook.degraded.org_memory_roots", **v),
+    "org_roles": lambda v: t("hook.degraded.org_roles", **v),
     "realm_lexicon": lambda v: t("hook.degraded.realm_lexicon", **v),
     "taxonomy": lambda v: t("hook.degraded.taxonomy", **v),
     "forbidden_phrases": lambda v: t("hook.degraded.forbidden_phrases", **v),

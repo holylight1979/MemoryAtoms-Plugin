@@ -103,7 +103,7 @@ Run `tools/memory-audit.py` and `tools/atom-health-check.py` together:
    If the dead link is in the project-layer report (the step 3 run with `--memory-root`), pass the same `--memory-root` here; without it only global cards are searched, and a project card comes back "Atom not found".
    Calling the CLI directly is the **default path**: headless, no server dependency, no dashboard plugin needed. Read each JSON result:
    - `fixed:true` -> fixed (repointed a typo / removed an invalid link); report what changed.
-   - `needs_human:true` -> could not be fixed automatically; `atom-heal.py` has written a diagnostic card to `memory/_heal_review/<atom>.json` -> tell the user to use `/memoryatoms:heal-review` for a manual ruling.
+   - `needs_human:true` -> could not be fixed automatically; `atom-heal.py` has written a diagnostic card under `memory/_heal_review/` (its path is in `heal_review_card`) -> tell the user to use `/memoryatoms:heal-review` for a manual ruling.
 
    **Optional fast path** (only when the dashboard plugin is on and confirmed to be running new code): `POST http://127.0.0.1:<dashboard port>/api/heal-all` (the dashboard plugin's port: see its settings) batch-repairs all broken_refs in the background (runs through the server's `healRunner` concurrently, returns 202 `{started,count,pending}`). ⚠️ The live dashboard process may be an **orphaned old process** (`/api/heal-all` is not a new route, so old code will not 404 but silently run the old behavior) -> before using it, confirm the new code is up (restart the dashboard if you are not sure it is the current build); if unsure, use the CLI above.
 

@@ -20,7 +20,7 @@
     無 --apply＝dry-run（只診斷分級 + L2 出提案，不寫檔）
     --memory-root 修專案層的卡（給 <專案>/.claude/memory）；不給就修全域的卡
 """
-import sys, io, json, re, argparse, difflib, importlib.util
+import sys, io, os, json, re, argparse, difflib, hashlib, importlib.util
 from datetime import datetime
 from pathlib import Path
 
@@ -42,6 +42,7 @@ MEMORY = claude_data_dir() / "memory"                  # 使用者資料根（WG
 from lib.atom_io import edit_metadata                  # noqa: E402
 from lib.atom_spec import validate_atom_content        # noqa: E402
 from lib.sensitive_gate import is_secret_path          # noqa: E402
+from lib.atom_locations import is_personal_path        # noqa: E402
 
 # atom-health-check.py 檔名含連字號、無法直接 import → importlib 載入，重用其偵測/解析函式
 _spec = importlib.util.spec_from_file_location("atom_health_check", TOOLS / "atom-health-check.py")
@@ -56,6 +57,18 @@ def related_of(path):
         return [r for r in ahc.parse_related(ahc.parse_frontmatter(path)) if r and r != "(none)"]
     except Exception:
         return []
+
+
+def _personal(path):
+    """卡在 personal/<人>/ 底下（全域層、專案層都算）＝只注入給本人。"""
+    if not path:                       # 卡檔不在：不當個人卡（修它時照共用卡從嚴排除候選）
+        return False
+    for root in (ahc.MEMORY_ROOT, ahc.GLOBAL_MEMORY_ROOT):
+        try:
+            return is_personal_path(Path(path).relative_to(root).as_posix())
+        except ValueError:
+            continue
+    return False
 
 
 def scan(name, atoms, aliases):
@@ -130,7 +143,10 @@ def heal_L2(name, report, atoms, aliases, apply, backend, upper=None):
     content = path.read_text(encoding="utf-8") if path else ""
     fmt_err = validate_atom_content(content) if content else t("cli.atom_heal.atom_file_missing")
     # 別的卡不接到 secret 卡：寫進 Related 的卡名會隨 repo 外流；secret 卡自己要接什麼都行
-    candidates = sorted(n for n, p in targets.items() if is_secret_path(path) or not is_secret_path(p))
+    # 專案層不是個人卡的卡（共用、角色）隊友也看得到，不接到個人卡：個人卡只注入給本人，隊友那邊是死連結
+    shared = upper is not None and not _personal(path)
+    candidates = sorted(n for n, p in targets.items()
+                        if (is_secret_path(path) or not is_secret_path(p)) and not (shared and _personal(p)))
     related = related_of(path) if path else []
     new_related = list(related)
     proposals, needs_human = [], False
@@ -139,7 +155,7 @@ def heal_L2(name, report, atoms, aliases, apply, backend, upper=None):
         bad = b["missing_ref"]
         prop = _propose(name, content, bad, candidates, backend)
         proposals.append({"missing_ref": bad, **prop})
-        if prop["action"] == "repoint" and prop.get("target") in targets:
+        if prop["action"] == "repoint" and prop.get("target") in candidates:   # 不在候選裡（含被排除的）一律交人工
             new_related = [prop["target"] if x == bad else x for x in new_related]
         elif prop["action"] == "remove":
             new_related = [x for x in new_related if x != bad]
@@ -176,24 +192,51 @@ def heal_L3(name, report):
             "stale": report.get("stale_atoms") or [], "note": t("cli.atom_heal.stale_note")}
 
 
+def review_card_id(name, memory_root=None):
+    """診斷卡的代號（檔名去掉 .json）：全域的卡就是卡名；專案層的卡是 <卡名>@project-<記憶目錄的雜湊>，
+    全域與專案層、或兩個專案有同名的卡都修不好時各留一張，不互蓋。"""
+    if not memory_root:
+        return name
+    key = os.path.normcase(os.path.normpath(str(memory_root)))
+    return f"{name}@project-{hashlib.sha1(key.encode('utf-8')).hexdigest()[:8]}"
+
+
+def _card_memory_root(path):
+    """診斷卡記的 memory_root；檔不在、讀不懂、沒記都回 None。"""
+    try:
+        root = json.loads(path.read_text(encoding="utf-8")).get("memory_root")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return root if isinstance(root, str) and root else None
+
+
 def write_heal_review(name, result, memory_root=None):
     """修不好 → 寫 _heal_review 診斷卡（JSON、非 atom 格式）+ 審計 append _merge_history.log。
 
-    診斷卡一律放資料根的 memory/_heal_review/（/heal-review 只看這裡）；專案層的卡多記 memory_root，
-    heal-review 重掃時才對得回同一個記憶目錄。"""
+    診斷卡一律放資料根的 memory/_heal_review/（/heal-review 只看這裡），檔名照 review_card_id 分層；
+    專案層的卡多記 memory_root，heal-review 重掃時才對得回同一個記憶目錄。"""
     review_dir = MEMORY / "_heal_review"
     review_dir.mkdir(parents=True, exist_ok=True)
+    legacy = review_dir / f"{name}.json"
+    old_root = _card_memory_root(legacy)
+    if old_root:     # 舊版不分層：專案層的卡也寫在 <卡名>.json，先搬到它自己的代號，免得被這次的卡蓋掉
+        moved = review_dir / f"{review_card_id(name, old_root)}.json"
+        if moved.exists():
+            legacy.unlink()                      # 那張卡已有新檔名的版本，舊檔是重複的
+        else:
+            legacy.replace(moved)
     card = {"atom": name, "created_at": datetime.now().isoformat(), **result}
     if memory_root:
         card["memory_root"] = memory_root
     layer = "project" if memory_root else "global"
-    (review_dir / f"{name}.json").write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+    path = review_dir / f"{review_card_id(name, memory_root)}.json"
+    path.write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
     try:
         with open(MEMORY / "_merge_history.log", "a", encoding="utf-8", newline="\n") as f:
             f.write(f"{datetime.now().isoformat()}\theal_failed\t{name}\t{layer}\t{HEAL_SOURCE}\t{result.get('action', '')}\n")
     except Exception:
         pass
-    return str(review_dir / f"{name}.json")
+    return str(path)
 
 
 def main():

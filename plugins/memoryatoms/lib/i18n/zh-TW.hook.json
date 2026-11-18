@@ -179,6 +179,7 @@
  "hook.degraded.mcp": "[Guardian:Degraded] 記憶的 MCP 工具（atom_write 等）不能用 → 這個 session 沒辦法用它們寫卡、查卡。{reason}",
  "hook.degraded.org_memory": "[Guardian:Degraded] workflow/config.json 沒有 org_memory 鍵 → 組織層記憶停用：scope=org 的寫入會被拒、組織層的卡不注入。補法：照 {seed} 補上 org_memory 段。",
  "hook.degraded.org_memory_roots": "[Guardian:Degraded] org_memory 設定不成立（{reason}）→ 組織層記憶停用：scope=org 的寫入會被拒、組織層的卡不注入。補法：用 /memoryatoms:org 重新接上，或修 {path}。",
+ "hook.degraded.org_roles": "[Guardian:Degraded] 組織層的 AD 群組對照表 {path} 讀不了（{reason}）→ 這次不從 AD 群組給職能，職能只看 role.md。補法：修好這個檔（JSON，ad_group_map 寫「群組名裡的字 → 職能」），或用 init-roles.py --me <職能> 自己指定（/memoryatoms:org 有寫法）。",
  "hook.degraded.realm_lexicon": "[Guardian:Degraded] memory/_meta/realm-lexicon.json 缺或內容不成立（{reason}）→ core／local 判定與核心保護清單停用：realm.auto_migrate 開著時，atom_write 新建全域卡要明確帶 realm=core 或 realm=local、自動萃取的卡留在候選檔；SessionEnd 的歸類掃描與選擇性遺忘不跑，退役與 supersedes 一律拒。補法：把 {seed} 複製到 {path}。",
  "hook.degraded.realm_lexicon_plugin": "[Guardian:Degraded] memory/_meta/realm-lexicon.json 缺或內容不成立（{reason}）→ core／local 判定與核心保護清單停用：realm.auto_migrate 開著時，atom_write 新建全域卡要明確帶 realm=core 或 realm=local、自動萃取的卡留在候選檔；SessionEnd 的歸類掃描與選擇性遺忘不跑，退役與 supersedes 一律拒。補法：插件資料夾的出廠詞表會自動墊底；資料根有同名檔才蓋過——修好或刪掉 {path}；兩邊都讀不到就重裝插件（出廠那份應在 {seed}）。",
  "hook.degraded.taxonomy": "[Guardian:Degraded] memory/_meta/taxonomy.json 缺或內容不成立（{reason}）→ 範疇閘關閉：atom_write 新建需要範疇的卡會被拒，自動萃取的卡留在候選檔。補法：把 {seed} 複製到 {path}。",

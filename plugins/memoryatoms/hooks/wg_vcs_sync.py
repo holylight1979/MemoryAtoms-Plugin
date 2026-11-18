@@ -85,8 +85,9 @@ DEFAULTS: Dict[str, Any] = {
     "project_pathspecs": [".claude/memory"],
     # 根層非記憶但隨 atom 寫入連動的檔（sync_doc_counts 的計數標記）：只進 pathspec、不進 mem_dirs
     "root_extra_pathspecs": ["TECH.md", "TECH.zh-TW.md", "_AIDocs/_INDEX.md", "_AIDocs/DocIndex-System.md"],
-    # 組織層 repo 根的非記憶路徑：週用量截圖、公司工具（tools/）。沒列的路徑出現在上游提交裡，自動拉取會當非記憶提交停住
-    "org_extra_pathspecs": ["usage-snapshots", "tools"],
+    # 組織層 repo 根的非記憶路徑：週用量截圖、組織工具（tools/）、組織設定（config/，例 AD 群組對照表 config/roles.json）。
+    # 沒列的路徑出現在上游提交裡，自動拉取會當非記憶提交停住；改這份要連 workflow/config.json 的同名清單一起改（那份整份蓋過這裡）
+    "org_extra_pathspecs": ["usage-snapshots", "tools", "config"],
     "exclude": ["**/*.access.json", "memory/_meta/**"],
     "timeout_s": 60,
     "pull": {"enabled": True, "fetch_timeout_s": 20, "cooldown_s": 600},
@@ -173,7 +174,7 @@ def collect_sync_targets(cwd: str, config: Dict[str, Any],
             if rel not in t.pathspecs:
                 t.pathspecs.append(rel)
                 t.mem_dirs.append(mem_dir.resolve())
-    # 組織層 repo 另收非記憶路徑（週用量截圖、公司工具）
+    # 組織層 repo 另收非記憶路徑（週用量截圖、組織工具、組織設定）
     org_t = targets.get(org.resolve().as_posix().lower()) if org and org.is_dir() else None
     _add_extra_pathspecs(org_t, vs["org_extra_pathspecs"])
     root_t = _root_target(targets, base_root)

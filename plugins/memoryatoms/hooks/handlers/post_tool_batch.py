@@ -36,6 +36,21 @@ def _ask_module() -> Any:
         return None
 
 
+_SCHEDULED_CAP = 20   # 記下的排程提示最多幾則（新的在後，超過丟最舊的）
+
+
+def note_scheduled_prompts(state: Dict[str, Any], tool_calls: Any) -> bool:
+    """規則 SCHEDULED_PROMPT_NOT_USER：這批有排程工具（CronCreate、ScheduleWakeup）→ 把提示原文記進 state scheduled_prompts，
+    之後 UserPromptSubmit 收到一模一樣的字就不當使用者的話（harness_text.mark_scheduled）。回 state 有沒有改。"""
+    from harness_text import scheduled_prompts_in
+    new = scheduled_prompts_in(tool_calls)
+    if not new:
+        return False
+    kept = [p for p in state.get("scheduled_prompts") or [] if p not in new]
+    state["scheduled_prompts"] = (kept + new)[-_SCHEDULED_CAP:]
+    return True
+
+
 CLOSING_TOOL_SUFFIX = "__anti_evasion_report"
 HARVEST_SUFFIX = "__knowledge_harvest_report"
 
@@ -186,6 +201,8 @@ def handle_post_tool_batch(input_data: Dict[str, Any], config: Dict[str, Any]) -
     coding = bool(state) and v6 and not sub and coding_turn(state, config)    # 規則 CODING_TURN_ONLY
     ask = _ask_module() if coding else None
     ask_due = bool(ask) and ask.has_ask_calls(input_data.get("tool_calls"))
+    # 排程提示記下來（記憶本體的判斷，守門家族關也照做；子代理建的排程一樣送進這個 session）
+    sched_changed = bool(state) and note_scheduled_prompts(state, input_data.get("tool_calls"))
     remind_lines, remind_changed = ([], False)
     if state and v6 and not sub:
         try:
@@ -202,7 +219,7 @@ def handle_post_tool_batch(input_data: Dict[str, Any], config: Dict[str, Any]) -
     # idle 極輕路徑：pending 皆無、這批也沒有提問立即退出（每批觸發，杜絕常態開銷）
     if not state or not (
         state.get("pending_reinjection") or plugin_lines
-        or ask_due or remind_lines or remind_changed or ups_warn
+        or ask_due or remind_lines or remind_changed or ups_warn or sched_changed
     ):
         output_nothing()
         return

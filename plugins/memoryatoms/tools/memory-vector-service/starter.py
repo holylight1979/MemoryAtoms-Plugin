@@ -11,7 +11,7 @@ starter 自身動作也以時間戳行寫入同檔；結果一行 JSON 寫 vecto
 （欄位相容舊 session_start 內嵌版，新增 phase / action / wait_s）。
 
 用法：python starter.py [--phase sessionstart|ups_rekick|manual] [--session-id X]
-（呼叫端 fire-and-forget spawn；本身無 daemon、跑完即退。）
+（呼叫端 fire-and-forget spawn；本身無 daemon、跑完即退。環境有 WG_NO_VECTOR_AUTOSTART 時 sessionstart／ups_rekick 直接結束。）
       python starter.py --print-port（印這個資料根的向量服務埠就結束：手動下 curl 用，不必記數字）
 """
 
@@ -368,6 +368,10 @@ def main(argv: Optional[list] = None) -> int:
     port = args.port or vector_service_port()
     if args.print_port:
         print(port)
+        return 0
+    # 測試行程（repo 根的 conftest.py 設 WG_NO_VECTOR_AUTOSTART）：開場與每句自癒叫起來的這一趟直接結束，
+    # 不起服務、不寫資料根（暫存資料根刪掉後不留服務行程與 log）；手動起（manual：安裝器、/vector start）照常
+    if args.phase != "manual" and os.environ.get("WG_NO_VECTOR_AUTOSTART"):
         return 0
 
     try:

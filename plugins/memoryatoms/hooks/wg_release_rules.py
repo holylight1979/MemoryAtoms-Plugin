@@ -2030,6 +2030,11 @@ RULES.update({
                                   "通知夾著使用者打的字照常注入，查詢只用使用者本人打的字（harness_text.user_typed_text），"
                                   "注入預算照原文與查詢取大（handlers/ups_search.retrieval_query）。",
     "PEER_MESSAGE_INJECT_FROM_BODY": "UserPromptSubmit 整則是其他 session 的訊息 → 用訊息正文檢索注入（harness_text.peer_message_text），Logs/guard-ups_inject.jsonl 記 event=peer_query；同 session 已送過的卡不重送，注入預算只照正文算；正文只當查詢，使用者原話、意圖、口令都不吃它（handlers/user_prompt_submit）。",
+    "SCHEDULED_PROMPT_NOT_USER": "排程工具（CronCreate、ScheduleWakeup）建立時，PostToolBatch 把提示原文記進 state scheduled_prompts"
+                                 "（handlers/post_tool_batch.note_scheduled_prompts，最多 20 則）；UserPromptSubmit 收到空白折疊後一模一樣的字 → "
+                                 "包成 harness 區塊（harness_text.mark_scheduled），口令、決策萃取、糾正、意圖都不吃它、不開使用者回合；"
+                                 "正文只當檢索查詢，Logs/guard-ups_inject.jsonl 記 event=scheduled_query（handlers/user_prompt_submit）。"
+                                 "hook 輸入沒有來源欄位、transcript 的排程紀錄在 hook 跑完才寫入，所以靠建立時記下的原文比對。",
     "UPS_CANCEL_WARN_NEXT_HOOK": "UserPromptSubmit 被 Claude Code 逾時丟掉輸出（transcript 的 hook_cancelled 帶 timedOut，只看 workflow-guardian 那支）→ 下一次 PostToolBatch 或 UserPromptSubmit 示警：給 AI 一行、給使用者一行 systemMessage，Logs/guard-hook_timing.jsonl 記 kind=cancelled，同一筆不重報、哨兵不再報同一件（wg_ups_timeout.check_ups_cancelled）。只示警、不補送。",
     "CONTINUE_QUERY_FROM_HANDOFF": "/continue 回合 UserPromptSubmit 在 skill 展開前跑、只看得到指令那一行：檢索查詢＝使用者打的字＋交接單前 30 行"
                                    "（參數點名的 .md 優先，否則 staging 最新的 next-phase*.md；handlers/ups_search.continue_handoff_path），"
@@ -2038,6 +2043,7 @@ RULES.update({
 })
 RULE_MODE.setdefault("NON_HUMAN_PROMPT_NO_INJECT", REMIND)    # 登在 RULE_MODE 建表之後：說明型規則，不是擋點
 RULE_MODE.setdefault("PEER_MESSAGE_INJECT_FROM_BODY", REMIND)
+RULE_MODE.setdefault("SCHEDULED_PROMPT_NOT_USER", REMIND)
 RULE_MODE.setdefault("UPS_CANCEL_WARN_NEXT_HOOK", REMIND)
 RULE_MODE.setdefault("CONTINUE_QUERY_FROM_HANDOFF", REMIND)
 

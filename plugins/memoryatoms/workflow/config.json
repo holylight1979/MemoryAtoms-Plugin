@@ -12,7 +12,7 @@
     "deciders": []
   },
   "roles": {
-    "_doc": "Directory-service (AD) group name -> role. Shipped empty: with an empty map no role comes from groups, and roles come only from personal/<user>/role.md. To use it, fill ad_group_map in workflow/config.local.json according to your own directory's group naming: each key is a piece of text to look for in the group name (the part after <domain>\\), each value is the role it maps to; longer keys are tried first. Example: {\"Engineering\": \"programmer\", \"Design\": \"art\"}.",
+    "_doc": "Directory-service (AD) group name -> role. Shipped empty. The table comes from the first non-empty of: this key (workflow/config.local.json overrides this file: a table for this machine only), then config/roles.json in the organization-layer repo (same shape as this section, {\"ad_group_map\": {...}}: one table for the whole organization, delivered to every connected machine by the org layer's background sync). With no table no role comes from groups, and roles come only from personal/<user>/role.md. Each key is a piece of text to look for in the group name (the part after <domain>\\), each value is the role it maps to; longer keys are tried first. Example: {\"Engineering\": \"programmer\", \"Design\": \"art\"}. An org file that cannot be read shows a [Guardian:Degraded] line at session start and counts as no table.",
     "ad_group_map": {}
   },
   "org_memory": {
@@ -413,7 +413,7 @@
     }
   },
   "vcs_sync": {
-    "_doc": "Silent background version control for the memory folders (hooks/vcs-sync-worker.py). Triggers: a validated harvest, SessionEnd. root_pathspecs are relative to ~/.claude, project_pathspecs to the project root; root_extra_pathspecs (files with count markers that change along with atom writes, such as TECH.md) and org_extra_pathspecs (relative to the organization-layer repo root: weekly usage screenshots, company tools under tools/) are non-memory paths that are pushed and pulled automatically as well. git only adds / commits these pathspecs; if the history waiting to be pushed contains non-memory commits, it does not push and leaves a marker. svn adds file by file with exclude applied, then commits. exclude contains memory/_meta/**: settings files such as taxonomy / forbidden-phrases do not go through the automatic memory commit; they ship with the code. A fresh install by tools/install.py turns this off in workflow/config.local.json (\"vcs_sync\": {\"enabled\": false}); upgrades keep whatever the machine had. To turn it on, see Install.md \"Background sync\".",
+    "_doc": "Silent background version control for the memory folders (hooks/vcs-sync-worker.py). Triggers: a validated harvest, SessionEnd. root_pathspecs are relative to ~/.claude, project_pathspecs to the project root; root_extra_pathspecs (files with count markers that change along with atom writes, such as TECH.md) and org_extra_pathspecs (relative to the organization-layer repo root: weekly usage screenshots, organization tools under tools/, organization settings under config/ such as the AD group table config/roles.json) are non-memory paths that are pushed and pulled automatically as well. git only adds / commits these pathspecs; if the history waiting to be pushed contains non-memory commits, it does not push and leaves a marker. svn adds file by file with exclude applied, then commits. exclude contains memory/_meta/**: settings files such as taxonomy / forbidden-phrases do not go through the automatic memory commit; they ship with the code. A fresh install by tools/install.py turns this off in workflow/config.local.json (\"vcs_sync\": {\"enabled\": false}); upgrades keep whatever the machine had. To turn it on, see Install.md \"Background sync\".",
     "enabled": true,
     "push": true,
     "root_pathspecs": [
@@ -430,7 +430,8 @@
     ],
     "org_extra_pathspecs": [
       "usage-snapshots",
-      "tools"
+      "tools",
+      "config"
     ],
     "exclude": [
       "**/*.access.json",

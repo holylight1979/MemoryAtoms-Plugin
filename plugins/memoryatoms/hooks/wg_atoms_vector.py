@@ -173,7 +173,7 @@ def _semantic_search(
         _log_vector_obs(session_id, "_semantic_search", "disabled", 0, True,
                         extra={"intent": intent})
         return []
-    _ready, _kicked = _ensure_vector_ready(session_id)
+    _ready, _kicked = _ensure_vector_ready(session_id, spawn=vs_config.get("auto_start_service", True))   # 關了自動起：只看旗標、不叫起動器（開場同一個鍵）
     if not _ready:
         _log_vector_obs(session_id, "_semantic_search", "no_flag", 0, True,
                         extra={"intent": intent, "rekicked": _kicked})

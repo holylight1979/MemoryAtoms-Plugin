@@ -2,7 +2,8 @@
 """
 init-roles.py — /init-roles backend
 
-職能走 hooks/wg_roles.py 三層解析鏈：role.md 人工覆寫 → AD 群組（config roles.ad_group_map 填了對照表才給職能，出廠是空表）→ 空；
+職能走 hooks/wg_roles.py 三層解析鏈：role.md 人工覆寫 → AD 群組（有對照表才給職能：設定 roles.ad_group_map，
+空的再看組織層 repo 的 config/roles.json；出廠兩樣都沒有）→ 空；
 本工具寫 role.md 與對帳。裁決名單在 workflow/config.json review.deciders（空＝人人可裁決）。
 
 動作（依參數執行，單次 call 可組合）：
@@ -11,7 +12,8 @@ init-roles.py — /init-roles backend
   --scaffold-roles          在 memory/_roles.md 建成員表樣板（純登記，程式不讀）
   --add-member USER:ROLES   增/改一筆成員（ROLES 逗號分隔）
   --install-hook            將 <記憶系統>/hooks/post-git-pull.sh 複製到 .git/hooks/post-merge 並 chmod +x
-  --status                  對帳（JSON）：role.md／AD 群組對映／最終 roles 三層各自解析到什麼＋deciders，不做變動
+  --status                  對帳（JSON）：role.md／AD 群組對映（含對照表出處 map_source＝config／org／none、組織層那份的位置 map_path）／
+                            最終 roles 三層各自解析到什麼＋deciders，不做變動
 
 所有動作均冪等。對每項動作回 JSON：
   {"action": "...", "ok": bool, "changed": bool, "path": "...", ...}
@@ -109,6 +111,8 @@ def action_status(root: Path, user: str) -> Dict[str, Any]:
             "project_code": ad["project_code"],
             "groups": [g for g in ad["groups"] if "\\" in g],
             "roles": ad["roles"],
+            "map_source": ad["map_source"],
+            "map_path": ad["map_path"],
         },
         "roles": detail["roles"],
         "roles_source": detail["source"],

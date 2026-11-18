@@ -49,6 +49,7 @@ There is no subcommand for writing org knowledge: call `atom_write` directly wit
 - After reading the JSON, answer in plain words in three sentences: whether the org layer is connected and how many cards; sync state (`uncommitted`/`ahead`/`behind` all 0 means synced); identity and role source (`roles_source`: `ad` = AD group, `role.md` = manual override, `none` = not found).
 - If `ready` is false → go straight on to join, without asking back.
 - Wrong role: override manually with `python "${CLAUDE_PLUGIN_ROOT}/tools/init-roles.py" --project-cwd <project root> --me <role>`; delete that `role.md` to fall back to AD resolution.
+- AD roles need a group table: this machine's `roles.ad_group_map` setting if it is non-empty, otherwise the org repo's `config/roles.json` (`{"ad_group_map": {"<text in the group name>": "<role>"}}`; one table for the whole organization, delivered to every connected machine by the background sync). `init-roles.py --project-cwd <project root> --status` shows which one was used (`layer2_ad.map_source`) and where the org file is looked for (`map_path`).
 
 ### Writing org knowledge
 - Test: "If I switch to another project and another person, does this still hold?" Write to org only if it does; if it holds only for this project, write `shared`; if it concerns only this person, write `personal`.

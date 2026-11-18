@@ -52,7 +52,7 @@ if str(CODE_DIR) not in sys.path:
 from lib.atom_index_json import load_personal_rows  # noqa: E402
 from lib.atom_locations import LEGACY_LOCAL_ATOMS_REL, LOCAL_ATOMS_REL  # noqa: E402
 from lib.edition import layered_config  # noqa: E402  插件版出廠設定墊底
-from lib.wg_platform import no_window_flags, find_claude  # noqa: E402
+from lib.wg_platform import no_window_flags, no_window_kwargs, find_claude  # noqa: E402
 from lib.sensitive_gate import is_secret_path, secret_value_found  # noqa: E402
 from lib.project_root import claude_data_dir, vector_service_port  # noqa: E402
 from lib.i18n import t  # noqa: E402
@@ -593,6 +593,33 @@ def _staging_block(staging: Path, cfg: dict, now: datetime) -> tuple[list[str], 
     return [], [line]
 
 
+def _root_leak_block(cfg: dict, days: int = 7) -> tuple[list[str], list[str]]:
+    """根層名字閘近 N 天的帳 → (黃燈, 資訊)。有「有命中沒宣告」→ 黃燈列前 5 筆；其餘一行統計。
+    閘沒開（config 沒 root_leak_gate 段或 enabled 假）或查帳工具不在（插件版不帶守門家族）→ 資訊一行略過原因，不報錯。"""
+    sec = cfg.get("root_leak_gate")
+    if not (isinstance(sec, dict) and sec.get("enabled")):
+        return [], [t("cli.health_weekly.root_leak_skip_gate")]
+    if not (TOOLS / "root-leak-audit.py").is_file():
+        return [], [t("cli.health_weekly.root_leak_skip_tool")]
+    try:   # 查帳工具 --json 後面還接一行 ROOT_LEAK_AUDIT DONE 尾行，所以只取開頭那個 JSON 物件
+        r = subprocess.run([PY, str(TOOLS / "root-leak-audit.py"), "--json", "--days", str(days)],
+                           capture_output=True, text=True, encoding="utf-8", timeout=60,
+                           cwd=str(CODE_DIR), **no_window_kwargs())
+        rep = json.JSONDecoder().raw_decode(r.stdout.lstrip())[0] if r.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        rep = None
+    if not isinstance(rep, dict):
+        return [t("cli.health_weekly.tool_failed", tool="root-leak-audit.py")], []
+    hit_u = rep.get("hit_undeclared") or []
+    info = [t("cli.health_weekly.root_leak_line", days=days, records=rep.get("records", 0),
+              hit_undeclared=len(hit_u), hit_declared=len(rep.get("hit_declared") or []),
+              degraded=rep.get("degraded", 0))]
+    if not hit_u:
+        return [], info
+    top = "；".join(f"{r.get('file', '')} [{', '.join(str(x) for x in (r.get('terms') or []))}]" for r in hit_u[:5])
+    return [t("cli.health_weekly.root_leak_hit", count=len(hit_u), days=days, top=top)], info
+
+
 def collect() -> dict:
     now = datetime.now()
     red: list[str] = []      # 需處理
@@ -639,6 +666,10 @@ def collect() -> dict:
     sy, si = _staging_block(MEMORY / "_staging", _load_config().get("staging_hygiene") or {}, now)
     yellow.extend(sy)
     info.extend(si)
+    # 2f. 根層名字閘的帳（查帳工具只讀帳本；閘關或工具不在就略過並寫原因）
+    ly, li = _root_leak_block(_load_config())
+    yellow.extend(ly)
+    info.extend(li)
 
     # 3/4. 索引一致性
     for name, args in (

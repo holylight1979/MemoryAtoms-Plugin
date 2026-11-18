@@ -33,7 +33,8 @@ from wg_core import (
     DEFAULTS as CORE_DEFAULTS,  # config 缺鍵時的預設只認 wg_core 那一份
 )
 import i18n  # lib/（wg_core 已放進 sys.path）：給人看的提示走語言表
-from harness_text import IDE_TAG_NAMES, non_human_kind, peer_message_text, strip_harness_blocks, user_typed_text  # lib/（wg_core 已把它放進 sys.path）
+from harness_text import (IDE_TAG_NAMES, mark_scheduled, non_human_kind, normalize_prompt, peer_message_text,  # lib/
+                          strip_harness_blocks, user_typed_text)  # lib/（wg_core 已把它放進 sys.path）
 from wg_atoms import (
     classify_intent,
     compute_token_budget,
@@ -134,6 +135,12 @@ def handle_user_prompt_submit(
         write_state(session_id, state)
 
     prompt = input_data.get("prompt", "")
+    # 規則 SCHEDULED_PROMPT_NOT_USER：排程建立時記下的提示原文（post_tool_batch.note_scheduled_prompts）一字不差送進來 →
+    # 包成 harness 區塊，口令、決策萃取、糾正、意圖都不吃它；正文留著只當檢索查詢（同同伴訊息）
+    scheduled_body = ""
+    if prompt and normalize_prompt(prompt) in (state.get("scheduled_prompts") or []):
+        scheduled_body = normalize_prompt(prompt)
+        prompt = mark_scheduled(prompt)
     # 只剔最外層是 IDE 的區塊（其餘內容留給檢索與注入）；巢狀與交錯照樣看所有 harness 標籤判斷，
     # 所以權威判斷再對它取 user_typed_text，和直接對原文取的結果相同
     clean_prompt = strip_harness_blocks(prompt, only=IDE_TAG_NAMES).strip()
@@ -186,11 +193,12 @@ def handle_user_prompt_submit(
     # 正文只當查詢：使用者原話（typed）、意圖、口令都不吃它。
     typed = user_typed_text(prompt)
     non_human = non_human_kind(prompt)
-    peer_text = peer_message_text(prompt) if non_human == "peer" else ""
+    query_body = {"peer": peer_message_text(prompt) if non_human == "peer" else "", "scheduled": scheduled_body}
+    peer_text = query_body.get(non_human or "", "")
     skip_reason = "" if peer_text else non_human
     if peer_text:
         append_guard_log(INJECT_GUARD_LOG, {
-            "session_id": session_id, "event": "peer_query",
+            "session_id": session_id, "event": "scheduled_query" if non_human == "scheduled" else "peer_query",
             "turn_seq": int(state.get("turn_seq", 0)) + 1, "chars": len(peer_text),
         })
         query = peer_text

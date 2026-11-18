@@ -18,7 +18,7 @@ import re
 from typing import List, Optional, Tuple
 
 HARNESS_TAG_NAMES = (r"system-reminder|task-notification|cross-session-message|ide_[a-z_]+|command-name|"
-                     r"command-message|command-args|local-command-stdout|browser_instruction")
+                     r"command-message|command-args|local-command-stdout|browser_instruction|scheduled-prompt")
 IDE_TAG_NAMES = r"ide_[a-z_]+"
 _PEER_TAG = "cross-session-message"
 _TAG_RE = re.compile(r"<\s*(/?)\s*(" + HARNESS_TAG_NAMES + r")(?=[\s/>])", re.IGNORECASE)
@@ -140,13 +140,16 @@ def user_typed_text(prompt: str, keep_lines: bool = False) -> str:
 
 def non_human_kind(prompt: str) -> Optional[str]:
     """整則沒有使用者本人打的字（user_typed_text 是空字串）時，這則是誰送來的：
-    "task-notification"（背景任務、子代理完成通知）、"peer"（其他 Claude session 的訊息，含閒置／送達通知）。
+    "task-notification"（背景任務、子代理完成通知）、"peer"（其他 Claude session 的訊息，含閒置／送達通知）、
+    "scheduled"（排程送來的提示，見 mark_scheduled）。
     有使用者打的字、或看不出來源（例：殘留標籤字樣整則不認、只有 IDE 區塊）→ None。"""
     if not prompt or user_typed_text(prompt):
         return None
     names = {m.group(2).lower() for m in _TAG_RE.finditer(prompt) if not m.group(1)}
     if "task-notification" in names:
         return "task-notification"
+    if _SCHEDULED_TAG in names:
+        return "scheduled"
     if _PEER_TAG in names or _PEER_NOTICE_RE.search(prompt):
         return "peer"
     return None
@@ -169,6 +172,38 @@ def peer_message_text(prompt: str) -> str:
         pos = close.end() if close else len(prompt)
     text = HOOK_RESIDUE_LINE_RE.sub(" ", strip_harness_blocks(" ".join(bodies)))
     return re.sub(r"\s+", " ", text).strip()
+
+
+# ─── 排程送來的提示 ─────────────────────────────────────────────────────────────
+# 排程工具（CronCreate、ScheduleWakeup）到點送出的提示，UserPromptSubmit 收到的只是提示原文，和使用者打字分不出來
+# （實測 hook 輸入沒有來源欄位；transcript 那筆帶 turnOrigin=scheduled 的紀錄在 hook 跑完才寫進去）。
+# 所以排程建立時記下提示原文（PostToolBatch 看 tool_calls），UserPromptSubmit 收到一模一樣的字就用 mark_scheduled
+# 包成 harness 區塊：之後所有「使用者說了算」的判斷（口令、決策萃取、糾正、意圖）都不吃它，正文只當檢索查詢。
+_SCHEDULED_TAG = "scheduled-prompt"
+SCHEDULE_TOOLS = ("CronCreate", "ScheduleWakeup")
+
+
+def normalize_prompt(text: str) -> str:
+    """比對排程提示用：空白折一格、去頭尾。"""
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def scheduled_prompts_in(tool_calls: object) -> List[str]:
+    """一批工具呼叫裡排程工具（SCHEDULE_TOOLS）帶的提示原文（normalize_prompt 後，空的不算）。"""
+    out: List[str] = []
+    for c in tool_calls if isinstance(tool_calls, list) else []:
+        if not isinstance(c, dict) or str(c.get("tool_name") or c.get("name") or "") not in SCHEDULE_TOOLS:
+            continue
+        inp = c.get("tool_input", c.get("input"))
+        p = normalize_prompt(str(inp.get("prompt") or "")) if isinstance(inp, dict) else ""
+        if p:
+            out.append(p)
+    return out
+
+
+def mark_scheduled(prompt: str) -> str:
+    """把排程送來的提示包成 harness 區塊（user_typed_text 會剔掉、non_human_kind 判成 "scheduled"）。"""
+    return f"<{_SCHEDULED_TAG}>\n{prompt}\n</{_SCHEDULED_TAG}>"
 
 
 # ─── 貼上的內容 ─────────────────────────────────────────────────────────────────

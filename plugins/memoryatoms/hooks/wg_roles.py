@@ -8,7 +8,9 @@ wg_roles.py — 身份、職能、裁決資格（多機共享、零宣告）
   1. role.md 人工覆寫：<proj>/.claude/memory/personal/<u>/role.md → ~/.claude/memory/personal/<u>/role.md，
      只看 `- Role: a, b` 一行（tools/init-roles.py --me 寫入；留空檔或刪檔即回到 AD）。
   2. AD 群組：whoami /groups（Windows 且有 USERDOMAIN 才跑，每個行程只 spawn 一次），群組名（<網域>\\ 後面那段）
-     依 config roles.ad_group_map 以子字串對映（先比長鍵）；出廠是空表＝這層不給職能，各組織照自己目錄服務的群組命名填。
+     依對照表以子字串對映（先比長鍵）。對照表（load_group_map）：設定 roles.ad_group_map 有表就用（config.local.json
+     蓋過 config.json）；空的再讀組織層 repo 的 config/roles.json（全組織共用，跟著組織層背景同步到每台）；都沒有＝這層
+     不給職能（出廠就是空表）。組織層那份壞掉 → 開場紅字（lib/degraded）、這層當沒有。
      專案 MEMORY.md 有 `> Project-Code: PRJ001` 只取群組名以 `PRJ001_` 開頭的群組，沒宣告取聯集。
   3. 都沒有 → []：只看 shared／org／global，不預設 programmer（「不知道」不能被當成「是程式」擴大可見範圍）。
 
@@ -19,12 +21,13 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import wg_core
 from wg_platform import no_window_kwargs, oem_codepage, IS_WINDOWS  # noqa: E402
@@ -33,6 +36,9 @@ import i18n  # lib/：給人看的提示走語言表
 _DEFAULT_USER = "unknown"   # env 與 OS 都問不出身分時的中性值，不是任何人的帳號
 _ROLE_LINE_RE = re.compile(r"^-\s*Role\s*:\s*(.*)$", re.IGNORECASE)
 _PROJECT_CODE_RE = re.compile(r"^>\s*Project-Code:\s*(\S+)", re.MULTILINE)
+# 組織層 repo 根底下的 AD 群組對照表，形狀同 config 的 roles 段（{"ad_group_map": {...}}）；
+# 資料夾 config 列在 vcs_sync.org_extra_pathspecs，跟著組織層背景同步送到每台接上的機器
+ORG_ROLES_FILE = Path("config") / "roles.json"
 
 # whoami 群組原始清單，行程內只查一次（None＝還沒查；失敗也存 [] 不重複 spawn）
 _ad_groups_cache: Optional[List[str]] = None
@@ -166,6 +172,38 @@ def project_code(cwd: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _read_org_group_map(path: Path) -> Dict[str, str]:
+    """組織層那份的 ad_group_map；讀不了、JSON 壞、ad_group_map 不是「字 → 字」的物件 → raise（呼叫端轉開場紅字）。"""
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    table = data.get("ad_group_map") if isinstance(data, dict) else None
+    if not isinstance(table, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in table.items()):
+        raise ValueError("ad_group_map must be an object of text -> text")
+    return table
+
+
+def load_group_map() -> Tuple[Dict[str, str], str, Optional[Path]]:
+    """AD 群組對照表、出處（"config"／"org"／"none"）、組織層那份的位置（沒接組織層、或設定有表沒去讀時是 None）。
+
+    先到先贏：設定 roles.ad_group_map 非空（config.local.json 蓋過 config.json；插件版含資料根 config.json）→ 整張用它；
+    空的再讀組織層 repo 的 config/roles.json；都沒有 → 空表（這層不給職能）。
+    沒接組織層、接了但沒放檔＝這個組織沒用這張表，跟出廠空表一樣不出聲；檔壞掉 → 開場紅字、當沒有。
+    """
+    table = (wg_core.load_config().get("roles", {}) or {}).get("ad_group_map") or {}
+    if table:
+        return table, "config", None
+    root = wg_core.org_memory_root()
+    if root is None:
+        return {}, "none", None
+    path = Path(root) / ORG_ROLES_FILE
+    if not path.is_file():
+        return {}, "none", path
+    try:
+        return _read_org_group_map(path), "org", path
+    except (OSError, ValueError) as e:   # ValueError 含 JSON 壞與 UTF-8 解不開
+        wg_core.degraded_notify("org_roles", reason=f"{type(e).__name__}: {e}", path=path)
+        return {}, "none", path
+
+
 def map_groups_to_roles(groups: List[str], group_map: Dict[str, str], code: str = "") -> List[str]:
     """群組名（去網域）依職能名子字串對映；code 非空只取 `<code>_` 開頭者。去重保序。"""
     keys = sorted((k for k in group_map if k), key=len, reverse=True)
@@ -189,7 +227,8 @@ def resolve_roles_detail(cwd: str, user: str, full: bool = False) -> Dict[str, A
     """三層各自看到什麼＋最終 roles／source。full=True（init-roles --status 對帳）即使 role.md 命中也照查 AD。"""
     detail: Dict[str, Any] = {
         "role_md": {"candidates": [], "path": None, "roles": None},
-        "ad": {"available": ad_available(), "groups": [], "project_code": "", "roles": []},
+        "ad": {"available": ad_available(), "groups": [], "project_code": "", "roles": [],
+               "map_source": "none", "map_path": None},
         "roles": [],
         "source": "none",
     }
@@ -211,9 +250,10 @@ def resolve_roles_detail(cwd: str, user: str, full: bool = False) -> Dict[str, A
     try:
         groups = ad_groups()
         code = project_code(cwd)
-        group_map = (wg_core.load_config().get("roles", {}) or {}).get("ad_group_map") or {}
+        group_map, map_source, map_path = load_group_map()
         roles = map_groups_to_roles(groups, group_map, code)
-        detail["ad"].update({"groups": groups, "project_code": code, "roles": roles})
+        detail["ad"].update({"groups": groups, "project_code": code, "roles": roles,
+                             "map_source": map_source, "map_path": str(map_path) if map_path else None})
         if roles and detail["source"] != "role.md":
             detail.update({"roles": roles, "source": "ad"})
     except Exception as e:  # noqa: BLE001
