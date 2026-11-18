@@ -9,7 +9,7 @@
 - **Observability is non-negotiable**: a failure that does not block (fail-open) must still be reported — degradation or a silent failure always surfaces a signal (warning, stderr, end-of-task report); never swallow it.
 
 ## Knowledge base
-- Never change code from memory; before claiming a severity or that something "will break", prove it (run it, look it up, trace the root cause); details in [[feedback-未實證先別斷言-從根源驗證-先證再修-反退避反冗長]].
+- Never change code from memory; details in [[feedback-未實證先別斷言-從根源驗證-先證再修-反退避反冗長]].
 - `_AIDocs` (the project's document library) holds only long-term reference; plans, TODOs and work in progress go in `memory/_staging/`.
 - Code, config, tests and cards describe only the current state, with no versions, dates or change stories; history goes in `_AIDocs/DevHistory/` and `_CHANGELOG.md`.
 - Writing rules or decisions: only the goal is written as "always"; a method is written as "currently uses X"; a rollback or rejection says whether the direction was wrong or the timing or resources were not there.
