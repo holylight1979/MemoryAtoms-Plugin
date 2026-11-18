@@ -172,12 +172,9 @@
     "session_end_max_chars": 20000,
     "session_end_max_items": 5,
     "per_turn": {
-      "_doc_enabled": "false: no auto-capture drafts are produced (nothing downstream consumes them); failure extraction (failure_extraction) is unaffected. Set true to turn it on.",
-      "enabled": false,
-      "min_new_chars": 500,
+      "_doc": "Per-turn extraction is discontinued: nothing starts hooks/extract-worker.py in per_turn mode, so it has no switch. The two keys below are read only by that mode.",
       "max_items": 3,
-      "skip_cross_session": true,
-      "cooldown_seconds": 120
+      "skip_cross_session": true
     },
     "failure_extraction": {
       "enabled": true,
@@ -449,17 +446,9 @@
       "_doc": "Equivalence and hot-path wrap-up gate (handlers/stop.py Equivalence Gate; rules REFACTOR_NEEDS_EQUIVALENCE / PERF_HOT_PATH_NEEDS_MEASURE in wg_release_rules): when the intent of the user's original words is refactor / perf and code files changed in this turn, a completion claim needs receipts for the three kinds of equivalence proof (PRESERVE_CHECK PASS, --mutation order / side_effect / boundary) or a line \"等值證法｜不適用｜<reason>\" (equivalence proof | not applicable), plus an answer \"熱路徑｜是／否｜...\" (hot path | yes / no); answering yes needs a measurement receipt or \"量測｜不做｜<reason>\" (measurement | not doing). Logged to Logs/guard-equivalence.jsonl. enabled=false turns the whole gate off.",
       "enabled": true
     },
-    "_doc": "OverviewHub variables. Merge order: root-layer defaults < this section < <org root>/.claude/overview-hub.json < <project root>/.claude/overview-hub.json; nested objects are deep-merged, arrays are taken whole. Unknown keys are errors (Edit is always blocked, except for OverviewHub's own settings file and the parts table, which are allowed with a warning); retired keys (hub_config.RETIRED_KEYS) only warn once and are not errors, and writing dry_run / deny_parts explicitly does not let them through either. The whole section only applies while the coding guard is on. readonly_paths (globs relative to that layer's root; **/ also matches zero levels) are always blocked on a hit (OVERVIEW_READONLY_PATHS); the read ledger records which files each part has read (part_files_read, used by the question gate ASK_OVERVIEW_BEFORE_DECISION). smells_report (relative to the project root, or absolute; json / jsonl / md table): the smell gate treats every file listed in the report as an old smell for the whole file. max_card_chars: the character limit of the Depends recall map. authority_map: {file-name pattern (fnmatch): map path}; when a doc file that matches is read and the map is not empty -> injected once per session. Depends recall: if a file that was read is a path: target of some card's depends index (or under that directory) -> a one-line pointer per card, each card once per session. Each path_bases entry must be an existing directory and none may contain another; eol_policy is one of lf / crlf / per-file-head; encoding keys must pass codecs.lookup. New keys must be added to HUB_DEFAULTS in lib/hub_config.py at the same time.",
+    "_doc": "OverviewHub variables. Merge order: root-layer defaults < this section < <org root>/.claude/overview-hub.json < <project root>/.claude/overview-hub.json; nested objects are deep-merged, arrays are taken whole. Unknown keys are errors (Edit is always blocked, except for OverviewHub's own settings file and the parts table, which are allowed with a warning); retired keys (hub_config.RETIRED_KEYS) only warn once and are not errors, and writing dry_run / deny_parts explicitly does not let them through either. The whole section only applies while the coding guard is on. readonly_paths (globs relative to that layer's root; **/ also matches zero levels) are always blocked on a hit (OVERVIEW_READONLY_PATHS); the read ledger records which files each part has read (part_files_read, used by the question gate ASK_OVERVIEW_BEFORE_DECISION). smells_report (relative to the project root, or absolute; json / jsonl / md table): the smell gate treats every file listed in the report as an old smell for the whole file. max_card_chars: the character limit of the Depends recall map. authority_map: {file-name pattern (fnmatch): map path}; when a doc file that matches is read and the map is not empty -> injected once per session. Depends recall: if a file that was read is a path: target of some card's depends index (or under that directory) -> a one-line pointer per card, each card once per session. New keys must be added to HUB_DEFAULTS in lib/hub_config.py at the same time.",
     "enabled": true,
     "max_card_chars": 6000,
-    "path_bases": [],
-    "vcs_roots": [],
-    "commit_encoding": "utf-8",
-    "source_encodings": [
-      "utf-8"
-    ],
-    "eol_policy": "per-file-head",
-    "PYTHONIOENCODING": "utf-8",
     "readonly_paths": [],
     "smells_report": "",
     "authority_map": {}

@@ -7,7 +7,7 @@
   1. `hooks/`、`lib/`、`tools/`、`skills/` 開頭的相對路徑（前面可接 `~/.claude/`、`.claude/`）→ 程式碼根下存在 → `path:~/.claude/<rel>`
   2. 專案卡（卡在 `<專案>/.claude/memory/` 下）另抓一般相對路徑 → 專案根下存在 → `path:<相對專案根>`
   3. 裸檔名（`ups_inject.py`）→ 只在根層卡；整個程式碼根（版控追蹤檔）同名只有一個、且在那四個資料夾才掛，多命中不掛
-  快照目錄（usage-watch 擴充的 vscode-data／browser-data／vscode-workspace）與 memory/episodic 自動生成卡一律不掛
+  快照目錄（usage-watch 擴充的 vscode-data／browser-data／vscode-workspace）與舊安裝留下的 memory/episodic 摘要一律不掛
 寫法跟著讀 Depends 的程式走（lib/atom_spec.resolve_depends_path；健檢、過期判定、讀檔召回都用它）：
   `~/.claude/<四資料夾>/…` 安裝版解析到 ~/.claude（＝程式碼根），插件版改對插件程式碼根（資料根在別處也一樣）。
   本機解析不回程式碼根時（Claude Code 設定目錄另指、測試與乾淨環境的樹）程式檔一條都不掛：寫出去健檢會當缺檔。
@@ -127,7 +127,7 @@ def infer_depends(texts: Iterable[Optional[str]], atom_path: Path, *,
     """texts（知識行、行動行、Source…，可混 list）裡點名的存在檔 → `path:` 條目清單（照出現順序、去重）。
     atom_path 決定是根層卡還是專案卡（專案卡的相對路徑以專案根解析；檔不必已存在）。"""
     if EPISODIC_DIR_NAME in Path(atom_path).parts:
-        return []   # memory/episodic 是程式自動生成的回合摘要，不是人寫的知識卡
+        return []   # memory/episodic 是舊安裝留下的 session 摘要（已不產生），不是知識卡
     code_root = Path(code_root) if code_root else CODE_ROOT
     text = _flatten(texts)
     base = depends_base_for_file(Path(atom_path))

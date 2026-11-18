@@ -7,7 +7,7 @@
            用 `claude mcp remove workflow-guardian -s user` 拿掉使用者層 MCP 註冊，再印出裝插件的下一步。
   --undo   從最近一次（或 --from 指定的）備份還原 settings.json 與 MCP 註冊。
 資料（卡片、索引、Logs）、CLAUDE.md、workflow/config*.json 都不動：插件版把資料根設成原本的 ~/.claude 就接著用。
-Claude 設定目錄＝CLAUDE_CONFIG_DIR，沒有就 ~/.claude；使用者層 MCP 註冊在 lib/project_root.claude_global_config()。
+Claude 設定目錄＝CLAUDE_CONFIG_DIR，沒有就 ~/.claude（lib/project_root.claude_config_dir()）；使用者層 MCP 註冊在 lib/project_root.claude_global_config()。
 MIRROR: hooks/edition-guard.js（「安裝版正在跑」的判斷：workflow-guardian.py 的 hook、名叫 workflow-guardian 的 MCP）。
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ CODE_DIR = Path(__file__).resolve().parent.parent
 if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 from lib.i18n import t  # noqa: E402
-from lib.project_root import claude_global_config  # noqa: E402
+from lib.project_root import claude_config_dir, claude_global_config  # noqa: E402
 from lib.wg_platform import no_window_kwargs  # noqa: E402
 
 MCP_NAME = "workflow-guardian"
@@ -45,10 +45,6 @@ INSTALL_SCRIPTS = (
     "handlers/stop_failure.py",
 )
 _SCRIPT_RE = re.compile(r"/hooks/(" + "|".join(re.escape(s) for s in INSTALL_SCRIPTS) + r")(?![\w.-])", re.IGNORECASE)
-
-
-def claude_config_dir() -> Path:
-    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
 
 
 def _sha(data: bytes) -> str:

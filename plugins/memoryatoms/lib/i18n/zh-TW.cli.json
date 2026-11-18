@@ -1077,7 +1077,6 @@
  "cli.sync_atom_index.rebuild": "整份索引從磁碟重生（衍生檔，可隨時重建；不動任何 .md）",
  "cli.sync_doc_counts.check": "drift 偵測，任一 drift → exit 1",
  "cli.sync_doc_counts.index_missing": "[sync_doc_counts] 找不到 {path}（資料根沒有卡片索引，無從計數；先建索引或用 --root 指到有 memory/_atom_index.json 的資料根）：{error}",
- "cli.sync_doc_counts.lib_missing": "[sync_doc_counts] lib 載不到，--root 預設退 ~/.claude（不看 WG_CLAUDE_DIR）：{error}",
  "cli.sync_doc_counts.write": "就地修正標記內容",
  "cli.sync_memory_index.hierarchical": "強制範疇表渲染（預設讀 config taxonomy.gate_enabled）",
  "cli.sync_memory_index.language_drift": "[sync-memory-index] 語言視圖 drift: {path}",

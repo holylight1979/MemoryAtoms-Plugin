@@ -422,7 +422,7 @@ def user_typed_prompts(prompts: Optional[List[str]]) -> List[str]:
 def sanitize_harness_noise(text: str) -> str:
     """剔除 harness 標籤區塊與 hook 注入殘渣行，回收使用者/模型的實際文字。
 
-    用途：topic tracker 的 first_prompt_summary / keyword 訊號等「給人看或給 LLM 吃」的文字源頭。純文字處理、fail-open（異常回原文）。
+    用途：topic tracker 的 keyword 訊號等「給人看或給 LLM 吃」的文字源頭。純文字處理、fail-open（異常回原文）。
     """
     if not text:
         return ""
@@ -1784,7 +1784,6 @@ def new_state(session_id: str, cwd: str, source: str) -> Dict[str, Any]:
         "topic_tracker": {
             "intent_distribution": {},
             "prompt_count": 0,
-            "first_prompt_summary": "",
             "keyword_signals": [],
         },
         "last_updated": _now_iso(),

@@ -888,8 +888,7 @@ def evaluate(
 
     # Quality score：只分寫／不寫（寫的人就是要寫的 AI，沒有「再問一次」的中間級）
     quality, reasons = compute_quality_score(content, explicit_user, trigger_context)
-    # 沒設 quality_floor 的舊 config：實際生效的寫入線一直是 ask_threshold（ask 級照寫），沿用它
-    quality_floor = config.get("quality_floor", config.get("ask_threshold", 0.3))
+    quality_floor = config.get("quality_floor", 0.3)
     action = "add" if quality >= quality_floor else "skip"
 
     write_audit_log(action, content, quality, classification=classification, reasons=reasons)

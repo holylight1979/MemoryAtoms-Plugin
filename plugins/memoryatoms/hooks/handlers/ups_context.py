@@ -37,20 +37,11 @@ def build_context(
 ) -> int:
     """執行 context build 段。mutate state / append lines，回傳調整後 budget。"""
     # ─── 插件的提示與統計：prompt 只給使用者打的字（通知、同伴訊息不觸發）；query 是這句拿去檢索的文字 ───
-    # 插件回 {"lines": [...], "reserve_tokens": n}＝送這些行，並從這句的預算保留 n（下限 500）
     # 插件拿到的 state 已帶這則的 turn_intent 與 tech_cards_full（UPS 在脈絡段之前算好，wg_core.tech_cards_full）：
     # 只在開發時才送的參考資料，tech_cards_full 為假就不送、也不記已送
-    reserve = 0
     cwd = str((state.get("session") or {}).get("cwd") or "")
-    for item in wg_plugins.emit("UserPromptSubmit", state=state, config=config, session_id=session_id,
-                                prompt=user_typed_text(clean_prompt), query=prompt, cwd=cwd):
-        if isinstance(item, dict):
-            lines.extend(item.get("lines") or [])
-            reserve += int(item.get("reserve_tokens") or 0)
-        else:
-            lines.append(item)
-    if reserve:
-        budget = max(budget - reserve, 500)
+    lines.extend(wg_plugins.emit("UserPromptSubmit", state=state, config=config, session_id=session_id,
+                                 prompt=user_typed_text(clean_prompt), query=prompt, cwd=cwd))
 
     # ─── _AIDocs keyword matching ──────────────────
     # 只在命中明顯（關鍵字命中數 ≥ aidocs.min_prompt_hits，預設 2）才指、最多 aidocs.max_prompt_matches（預設 1）條、

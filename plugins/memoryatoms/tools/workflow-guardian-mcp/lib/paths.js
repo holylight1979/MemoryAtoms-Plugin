@@ -30,7 +30,7 @@ function edition() {
   try { if (fs.statSync(path.join(CODE_DIR, ".claude-plugin", "plugin.json")).isFile()) return PLUGIN; } catch {}
   return INSTALL;
 }
-function claudeConfigDir() { return process.env.CLAUDE_CONFIG_DIR || path.join(HOME, ".claude"); }
+function claudeConfigDir() { return process.env.CLAUDE_CONFIG_DIR || path.join(HOME, ".claude"); }   // MIRROR: lib/project_root.py claude_config_dir
 // settings.json 的 pluginConfigs 裡本插件的 options.<鍵>；只讀使用者層（--settings、受管設定不讀，TODO）。沒有回 ""。
 function settingsOption(key) {
   let data;
@@ -265,7 +265,7 @@ const PYTHON_EXE = resolvePythonExe();
 const PYTHON_EXE_FALLBACK = PYTHON_EXE === "python" && IS_WINDOWS;
 
 module.exports = {
-  PLUGIN, INSTALL, EDITION, edition, pluginOption, configLayers, layeredConfig, layeredMeta, expandHome,
+  PLUGIN, INSTALL, EDITION, edition, claudeConfigDir, pluginOption, configLayers, layeredConfig, layeredMeta, expandHome,
   CLAUDE_DIR, CODE_DIR, WORKFLOW_DIR, MEMORY_DIR, TOOLS_DIR, CONFIG_PATH, REGISTRY_PATH, VERSION_PATH,
   loadVersions, VERSIONS, loadRegistry, getRegistryMemDirs, loadConfig, loadOrgLocal, v6Enabled, vectorServicePort,
   ORG_LOCAL_PATH, resolvePythonExe, PYTHON_EXE, PYTHON_EXE_FALLBACK, IS_WINDOWS,

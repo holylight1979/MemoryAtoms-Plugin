@@ -424,7 +424,7 @@ def _record_edit(run: _PostRun) -> None:
 
 
 def _staging_name_gate(state: Dict[str, Any], normalized: str) -> None:
-    """staging 命名閘：_staging/ 頂層的 .md 不叫 next-phase*.md 就提示改名（提示先存 state，收提示那步送出）。"""
+    """staging 命名閘：_staging/ 頂層的 .md 不叫 next-phase*.md 就提示分流：交接單才用 next-phase-<主題>.md，長期清單用固定檔名（提示先存 state，收提示那步送出）。"""
     if "/_staging/" in normalized and normalized.endswith(".md"):
         # 只檢 _staging/ 頂層檔：子資料夾是多檔工作區（彙整/評估文件），
         # 非 /continue 交接入口，不套 next-phase 命名慣例
@@ -432,7 +432,8 @@ def _staging_name_gate(state: Dict[str, Any], normalized: str) -> None:
         staging_fname = staging_tail.rsplit("/", 1)[-1]
         # 命名慣例＝ `next-phase*.md`（/continue 與 ups_search.continue_handoff_path
         # 掃的同一組檔）：多份計畫並存為常態，
-        # 不得要求收斂成單一 next-phase.md。
+        # 不得要求收斂成單一 next-phase.md。最新的 next-phase*.md 會被開場當交接單、/continue 選中即刪，
+        # 所以提示不能叫長期清單改名成 next-phase（見 i18n staging_name）。
         if "/" not in staging_tail and not staging_fname.startswith("next-phase"):
             state["_staging_advisory"] = i18n.t("hook.post_tool_use.staging_name", fname=staging_fname)
             print(

@@ -1077,7 +1077,6 @@
  "cli.sync_atom_index.rebuild": "Regenerate the whole index from disk (derived file, can be rebuilt any time; touches no .md)",
  "cli.sync_doc_counts.check": "Drift detection; exit 1 on any drift",
  "cli.sync_doc_counts.index_missing": "[sync_doc_counts] cannot find {path} (the data root has no atom index, so there is nothing to count; build the index first or point --root at a data root with memory/_atom_index.json): {error}",
- "cli.sync_doc_counts.lib_missing": "[sync_doc_counts] cannot load lib; --root defaults back to ~/.claude (ignoring WG_CLAUDE_DIR): {error}",
  "cli.sync_doc_counts.write": "Fix marker contents in place",
  "cli.sync_memory_index.hierarchical": "Force category-table rendering (default reads config taxonomy.gate_enabled)",
  "cli.sync_memory_index.language_drift": "[sync-memory-index] language view drift: {path}",

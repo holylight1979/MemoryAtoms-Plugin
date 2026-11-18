@@ -81,13 +81,9 @@ VALID_SOURCES = frozenset({
     "tool:undo",
     "test",  # 測試用，等價測試 fixture 使用
 })
-EXTENSION_SOURCE_PREFIX = "ext:"   # 擴充自己的寫入：ext:<擴充名>（稽核帳照記，反查得到是哪個擴充寫的）
-
-
 def is_valid_source(source: str) -> bool:
-    """列舉過的來源，或 ext:<擴充名>。"""
-    return source in VALID_SOURCES or (
-        isinstance(source, str) and source.startswith(EXTENSION_SOURCE_PREFIX) and len(source) > len(EXTENSION_SOURCE_PREFIX))
+    """列舉過的來源才收。"""
+    return source in VALID_SOURCES
 
 # SPEC §7.4 sensitive audience triggers auto-pending
 SENSITIVE_AUDIENCE = frozenset({"architecture", "decision"})

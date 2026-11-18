@@ -6,9 +6,8 @@
 //           那個「插件@市集」在 enabledPlugins 為 true 才掛；開了卻找不到 → warn 一行 [Guardian:Degraded]。
 //   登記表 memoryatoms-extension.json；舊名 plugin.json 照讀，stderr 一行遷移提示（不算降級）。
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
-const { CODE_DIR, EDITION, PLUGIN } = require("./paths");
+const { CODE_DIR, EDITION, PLUGIN, claudeConfigDir: configDir } = require("./paths");
 
 const PREFIX = "memoryatoms-";
 const REGISTRY = "memoryatoms-extension.json";
@@ -16,7 +15,6 @@ const OLD_REGISTRY = "plugin.json";
 const LOCAL_MARKETPLACE = "memory-atoms";   // MIRROR: tools/install.py
 const EXTENSIONS_DIR = path.join(CODE_DIR, "extensions");
 
-function configDir() { return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"); }   // MIRROR: lib/project_root.py claude_config_dir
 function readJson(file) { return JSON.parse(fs.readFileSync(file, "utf-8").replace(/^﻿/, "")); }
 function isFile(p) { try { return fs.statSync(p).isFile(); } catch { return false; } }
 function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch { return false; } }

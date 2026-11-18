@@ -280,22 +280,6 @@ def _hooks_on_path() -> None:
         sys.path.insert(0, hooks_dir)
 
 
-def _extension_freshness(fresh_cut: datetime, sessions_active: bool) -> list[dict]:
-    """開著的擴充回報自己產物新不新（hooks/wg_plugins 插件點 HealthWeekly.freshness）；沒有擴充＝空清單。
-    擴充機制本身載不起來 → 黃燈一行，不無聲。"""
-    try:
-        _hooks_on_path()
-        lib_dir = str(CODE_DIR / "lib")
-        if lib_dir not in sys.path:
-            sys.path.append(lib_dir)
-        import wg_plugins  # noqa: WPS433
-        out = wg_plugins.emit("HealthWeekly.freshness", fresh_cut=fresh_cut, fresh_days=FRESH_DAYS,
-                              sessions_active=sessions_active)
-    except Exception as e:  # noqa: BLE001
-        return [{"yellow": [f"extension freshness checks unavailable: {type(e).__name__}: {e}"]}]
-    return [x for x in out if isinstance(x, dict)]
-
-
 def _run_selftest(st: dict, cwd: Path) -> dict:
     """跑一筆 tool_selftests {name, cmd, expected(PASS|FAIL|DONE), sentinel?, runtime_gate, timeout_s}。
     runtime_gate 非 0 → skipped（環境未就緒屬預期，不算紅）。判定：取 stdout 的**最後一個非空行**當哨兵行
@@ -750,12 +734,6 @@ def collect() -> dict:
                 red.append(t("cli.health_weekly.stalled", label=label, age=age, days=FRESH_DAYS))
             else:
                 info.append(t("cli.health_weekly.idle_expected", label=label, age=age, days=FRESH_DAYS))
-
-    # 6b. 擴充自己的管線鮮度（插件點 HealthWeekly.freshness：回 {"red": [...], "yellow": [...], "info": [...]}）
-    for found in _extension_freshness(fresh_cut, sessions_active):
-        red += found.get("red") or []
-        yellow += found.get("yellow") or []
-        info += found.get("info") or []
 
     # 7. 來源防腐：Source 指到 session、transcript 還在、距今 ≥ anti_rot_days、尚無 Quote → 搶在 transcript 清掉前補原句
     try:

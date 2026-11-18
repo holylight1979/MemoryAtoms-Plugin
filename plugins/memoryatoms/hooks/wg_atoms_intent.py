@@ -146,7 +146,6 @@ def _update_topic_tracker(
     tracker = state.setdefault("topic_tracker", {
         "intent_distribution": {},
         "prompt_count": 0,
-        "first_prompt_summary": "",
         "keyword_signals": [],
     })
 
@@ -154,11 +153,8 @@ def _update_topic_tracker(
     dist[intent] = dist.get(intent, 0) + 1
     tracker["prompt_count"] = tracker.get("prompt_count", 0) + 1
 
-    # harness 標籤/hook 殘渣先剔——first_prompt_summary 會進 episodic 摘要（episodic_gen），殘留 <ide_opened_file> 等雜訊會污染它。
-    # 首 prompt 若剔完全空（純 IDE 事件），留空讓下一個真 prompt 補位。
+    # harness 標籤/hook 殘渣先剔：關鍵字訊號只取使用者打的字，<ide_opened_file> 等雜訊不算
     clean_prompt = sanitize_harness_noise(prompt)
-    if not tracker.get("first_prompt_summary") and clean_prompt:
-        tracker["first_prompt_summary"] = clean_prompt[:200]
 
     existing_kw = set(tracker.get("keyword_signals", []))
     words = re.findall(r"[a-zA-Z一-鿿]{4,}", clean_prompt)

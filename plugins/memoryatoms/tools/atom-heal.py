@@ -192,13 +192,24 @@ def heal_L3(name, report):
             "stale": report.get("stale_atoms") or [], "note": t("cli.atom_heal.stale_note")}
 
 
+def _project_key(memory_root):
+    """專案的穩定名字，不含這台機器的路徑：記憶目錄通常是 <專案根>/.claude/memory，取專案根資料夾名；
+    路徑裡找不到 .claude 就用記憶目錄自己的資料夾名。"""
+    parts = Path(str(memory_root)).parts
+    if ".claude" in parts:
+        i = len(parts) - 1 - parts[::-1].index(".claude")
+        if i > 0:
+            return parts[i - 1].casefold()
+    return (parts[-1] if parts else "").casefold()
+
+
 def review_card_id(name, memory_root=None):
-    """診斷卡的代號（檔名去掉 .json）：全域的卡就是卡名；專案層的卡是 <卡名>@project-<記憶目錄的雜湊>，
-    全域與專案層、或兩個專案有同名的卡都修不好時各留一張，不互蓋。"""
+    """診斷卡的代號（檔名去掉 .json）：全域的卡就是卡名；專案層的卡是 <卡名>@project-<專案資料夾名的雜湊>，
+    全域與專案層、或兩個專案有同名的卡都修不好時各留一張，不互蓋。
+    雜湊的依據不含機器路徑：同一個專案在兩台機器上得到同一個代號，不會各留一張。"""
     if not memory_root:
         return name
-    key = os.path.normcase(os.path.normpath(str(memory_root)))
-    return f"{name}@project-{hashlib.sha1(key.encode('utf-8')).hexdigest()[:8]}"
+    return f"{name}@project-{hashlib.sha1(_project_key(memory_root).encode('utf-8')).hexdigest()[:8]}"
 
 
 def _card_memory_root(path):
@@ -217,14 +228,22 @@ def write_heal_review(name, result, memory_root=None):
     專案層的卡多記 memory_root，heal-review 重掃時才對得回同一個記憶目錄。"""
     review_dir = MEMORY / "_heal_review"
     review_dir.mkdir(parents=True, exist_ok=True)
-    legacy = review_dir / f"{name}.json"
-    old_root = _card_memory_root(legacy)
-    if old_root:     # 舊版不分層：專案層的卡也寫在 <卡名>.json，先搬到它自己的代號，免得被這次的卡蓋掉
+    # 舊版的專案層卡：不分層（<卡名>.json）或代號雜湊了整條機器路徑（<卡名>@project-<舊雜湊>.json）。
+    # 照卡裡記的 memory_root 搬到現在的代號；那個代號已有卡就丟掉舊檔（重複的）。舊卡留著也只是多一張，不會壞，所以搬不動不擋寫卡。
+    for old in [review_dir / f"{name}.json", *sorted(review_dir.glob(f"{name}@project-*.json"))]:
+        old_root = _card_memory_root(old)
+        if not old_root:
+            continue
         moved = review_dir / f"{review_card_id(name, old_root)}.json"
-        if moved.exists():
-            legacy.unlink()                      # 那張卡已有新檔名的版本，舊檔是重複的
-        else:
-            legacy.replace(moved)
+        if moved == old:
+            continue
+        try:
+            if moved.exists():
+                old.unlink()
+            else:
+                old.replace(moved)
+        except OSError:
+            pass
     card = {"atom": name, "created_at": datetime.now().isoformat(), **result}
     if memory_root:
         card["memory_root"] = memory_root

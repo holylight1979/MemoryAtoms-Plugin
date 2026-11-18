@@ -609,7 +609,7 @@ function apiAtoms(req, res) {
     }
   }
 
-  // Helper: scan a flat memory dir, skip excluded dirs, optionally exclude personal/episodic/_*
+  // Helper: scan a flat memory dir (top-level .md only), skip MEMORY.md and _* files
   function scanFlatDir(dir, layerLabel, defaultScope) {
     if (!fs.existsSync(dir)) return;
     for (const f of fs.readdirSync(dir)) {
@@ -692,7 +692,6 @@ function apiAtoms(req, res) {
 const SKILL_CATEGORY_MAP = {
   // V4 / V4.1 共用核心
   "memory-peek": "V4.1", "memory-undo": "V4.1", "memory-session-score": "V4.1",
-  "generate-episodic": "V4.1",
   // 記憶維運
   "extract": "記憶維運", "memory-health": "記憶維運", "memory-review": "記憶維運",
   "conflict": "記憶維運", "conflict-review": "記憶維運", "atom-debug": "記憶維運",
