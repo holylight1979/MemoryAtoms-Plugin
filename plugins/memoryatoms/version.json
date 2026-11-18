@@ -1,7 +1,7 @@
 {
   "_doc": "版本標識檔。guardian＝Workflow Guardian（hooks + MCP server）版本，Dashboard 標題與 MCP serverInfo 顯示；atom_memory＝原子記憶系統版本；release_date＝此版本正式發布日；release_theme＝此版本主題一句話。程式讀者：tools/workflow-guardian-mcp/lib/paths.js（只取 guardian / atom_memory）與 tools/install.py --verify（確認本檔可讀）；文件讀者 TECH.md。",
-  "guardian": "6.6.0",
+  "guardian": "6.6.1",
   "atom_memory": "6.1",
   "release_date": "2026-11-17",
-  "release_theme": "Plugin start sends the core rules (templates/rules/<language>/core.md) instead of the retired card-writing rule templates; shorter IDENTITY, USER and rules templates in both languages, with the factory always-load contract table now registering the core rules and IDENTITY; opening [AIDocs] and [LocalCatalog] lines and the per-prompt [Guardian:AIDocs] pointer name the file instead of ordering a read, and the [AIDocs] line goes through the language table"
+  "release_theme": "IDENTITY template: work for the next stage goes into the next stage's prompt."
 }

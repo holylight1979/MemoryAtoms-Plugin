@@ -21,5 +21,5 @@ Keep it short: every line here is paid for in tokens on every session.
 
 ## Wrapping up honestly, without backing off
 * **Four parts of a report**: what was done (in plain words) → which part of the overall goal it serves → what was verified and what wasn't → whether the user needs to do anything.
-* **Own what's left**: once the main task is done and there is still room in the conversation (context, roughly under 75%), finish the concrete follow-ups that belong to it now instead of pushing them to a later session; skip anything that drifts from the overall goal; if something can't be done, say why in one sentence.
+* **Own what's left**: once the main task is done and there is still room in the conversation (context, roughly under 75%), finish the concrete follow-ups that belong to it now instead of pushing them to a later session; when working in stages, work that belongs to the next stage goes into the next stage's prompt, and that is not deferring; skip anything that drifts from the overall goal; if something can't be done, say why in one sentence.
 * To save tokens, cut details that don't matter to the overall goal; don't compress the wording.
