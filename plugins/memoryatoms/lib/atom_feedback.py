@@ -26,10 +26,11 @@ from typing import Any, Dict, List, Optional
 
 from . import atom_access
 from .atom_access import (
-    record_usefulness, read_access, usefulness_stats, usefulness_promote_eligible,
+    record_usefulness, read_access, usefulness_stats, promote_check, promote_usefulness_config,
 )
 from .atom_io import GLOBAL_MEMORY_DIR, _atomic_write
 from .atom_locations import LOCAL_ATOMS_DIR, LEGACY_LOCAL_ATOMS_DIR
+from .atom_spec import parse_frontmatter
 
 VERDICTS = ("helpful", "misleading")
 FEEDBACK_SOURCE = "user:feedback"
@@ -129,12 +130,20 @@ def record_vote(
 
     access = read_access(atom_path)
     st = usefulness_stats(access)
+    chk = promote_check_card(atom_path, access)
     return {
         "ok": True, "id": vote_id,
         "useful_hits": st["alpha"], "used_fail": st["beta"],
-        "lower_bound": st["lower_bound"], "n": st["n"],
-        "promote_eligible": usefulness_promote_eligible(access),
+        "lower_bound": chk["lower_bound"] if chk else st["lower_bound"], "n": st["n"],
+        "promote_eligible": bool(chk and chk["eligible"]),
     }
+
+
+def promote_check_card(atom_path: Path, access: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """這張卡現在 atom_promote 會不會放行：卡頭目前的 Confidence（[觀]→[固] 看 fix_min_n）＋同一份門檻（含本機覆寫）。
+    回 lib.atom_access.promote_check 的結果；[固]、卡頭沒有層級 → None（atom_promote 也升不了）。"""
+    confidence = parse_frontmatter(Path(atom_path).read_text(encoding="utf-8")).get("Confidence", "")
+    return promote_check(read_access(atom_path) if access is None else access, confidence, promote_usefulness_config())
 
 
 def _fold_root(root: Path, out: Dict[str, Any]) -> None:

@@ -1476,6 +1476,7 @@ def _svn_exe() -> str:
 
 
 def _svn_entries(stdout: bytes):
+    """status --xml → [(path, item, props)]；props 是屬性那一欄（none／normal／modified／conflicted）。衝突另由 _svn_conflicts 判。"""
     import xml.etree.ElementTree as ET
     if not stdout.strip():
         return []
@@ -1484,8 +1485,14 @@ def _svn_entries(stdout: bytes):
         ws = ent.find("wc-status")
         if ws is None:
             continue
-        out.append((ent.get("path", ""), ws.get("item", ""), ws.get("tree-conflicted") == "true"))
+        out.append((ent.get("path", ""), ws.get("item", ""), ws.get("props", "")))
     return out
+
+
+def _svn_changed(item: str, props: str) -> bool:
+    """該提交的變更：內容或排程有變（item），或只改屬性（item=normal、props=modified；例 normalize-eol 對已版控
+    記憶檔補的 svn:eol-style、vcs_ignore 對記憶目錄設的 svn:ignore）。只看 item，只改屬性的項就永遠留在本機。"""
+    return item in _SVN_CHANGED_ITEMS or props == "modified"
 
 
 def _svn_conflicts(stdout: bytes) -> List[Tuple[str, str]]:
@@ -1678,8 +1685,8 @@ def _svn_pull(svn: "_Svn", t: SyncTarget, retired_rel: set, env: Dict[str, str],
 
 
 def _svn_local_changes(svn: "_Svn", t: SyncTarget) -> bool:
-    return any(item in _SVN_CHANGED_ITEMS or item in ("unversioned", "missing")
-               for _p, item, _tc in svn.status(t.pathspecs))
+    return any(_svn_changed(item, props) or item in ("unversioned", "missing")
+               for _p, item, props in svn.status(t.pathspecs))
 
 
 def _svn_sync(t: SyncTarget, vs: Dict[str, Any], env: Dict[str, str], log: Logger,
@@ -1725,17 +1732,18 @@ def _svn_sync(t: SyncTarget, vs: Dict[str, Any], env: Dict[str, str], log: Logge
                 raise _Stop(i18n.t("hook.wg_vcs_sync.svn_delete_failed", rel=rel, err=svn.err(r)))
             deleted += 1
 
-    # ── commit targets＝status 實際變更項（在 pathspec 內、不被 exclude）＋ --parents 新加的祖先；
-    #    一律 --depth empty：pathspec 目錄下別人 svn add 但不屬記憶的檔不得被整目錄提交帶走 ──
+    # ── commit targets＝status 實際變更項（_svn_changed，含只改屬性；在 pathspec 內、不被 exclude）＋ --parents 新加的
+    #    祖先（祖先只收 added：祖先目錄只改屬性不屬記憶）；一律 --depth empty：pathspec 目錄下別人 svn add 但不屬記憶的檔
+    #    不得被整目錄提交帶走 ──
     def collect_targets() -> List[str]:
         out: List[str] = []
-        for p, item, _ in svn.status(_svn_ancestors(t.pathspecs), depth="empty"):
+        for p, item, _props in svn.status(_svn_ancestors(t.pathspecs), depth="empty"):
             rel = _rel_to(root, p)
             if rel and item == "added" and rel not in out:
                 out.append(rel)
-        for p, item, _ in sorted(svn.status(t.pathspecs), key=lambda e: e[0]):
+        for p, item, props in sorted(svn.status(t.pathspecs), key=lambda e: e[0]):
             rel = _rel_to(root, p)
-            if not rel or item not in _SVN_CHANGED_ITEMS:
+            if not rel or not _svn_changed(item, props):
                 continue
             if not _under_pathspecs(rel, t.pathspecs) or _excluded(rel, exclude):
                 continue

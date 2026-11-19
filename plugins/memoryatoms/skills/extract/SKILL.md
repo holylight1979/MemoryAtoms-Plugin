@@ -62,7 +62,7 @@ Check for an existing matching atom using atoms already injected in the conversa
 Ask everything in one go: which to write, which atom each goes into (suggestion + user decision), and whether realm / scope follow the suggestion.
 
 After confirmation, call MCP `atom_write` per item (`mode=create` for new, `mode=append` for additions).
-- New atoms are **always `[臨]`**: MCP rejects `[觀]` / `[固]` on create (cross-session stability cannot be asserted at first write); promotion comes from later sessions using it or appending, not adjusted here.
+- New atoms are **always `[臨]`**: MCP rejects `[觀]` / `[固]` on create (a first write cannot assert that the atom has proven useful); promotion comes only from later use proving it useful (`atom_promote` checks the usefulness lower bound), appending does not promote, and it is not adjusted here.
 - Rejected by the write-gate (duplicate / too long / regenerable content) → follow the rejection message (append to an existing atom, shrink to a conclusion, or drop it); never bypass with `skip_gate`.
 - Do not hand-edit `MEMORY.md` / `_INDEX.md`: `atom_write` and hooks maintain the indexes.
 

@@ -520,6 +520,11 @@ def _record_shell(run: _PostRun) -> None:
     elif v6:
         if _note_commit(state, command, config, session_id):
             run.dirty = True
+        # 規則 ORDER_UNTIL_PUSH：推送跑成功＝這批做完、口令用掉（判法 handlers/ups_gates.note_push_ran）；子代理的推送只有這裡收得到。
+        # 沒有 push／svn 字樣的指令不可能是推送：不載 ups_gates（約 5 ms，HOOK_IMPORT_ON_USE）
+        if re.search(r"push|svn", command, re.IGNORECASE):
+            from handlers.ups_gates import note_push_ran
+            run.dirty = note_push_ran(state, command) or run.dirty
 
     if _track_test_result(state, input_data, command, tool_name, config):
         run.dirty = True

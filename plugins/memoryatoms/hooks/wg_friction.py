@@ -212,9 +212,9 @@ def detect_correction(prompt: str, config: Dict[str, Any]) -> List[str]:
     cfg = (config or {}).get("friction", {}) or {}
     if not cfg.get("enabled", True) or not prompt:
         return []
-    from wg_core import user_typed_text
-    # 只看使用者打的字：sub-agent 完成通知、其他 session 的訊息引用「不對／重來」不算使用者糾正
-    typed = user_typed_text(prompt)
+    from wg_core import user_own_text
+    # 只看使用者自己打的字：sub-agent 完成通知、其他 session 的訊息、貼上的內容裡的「不對／重來」不算使用者糾正
+    typed = user_own_text(prompt)
     if not typed:
         return []
     from wg_atoms import _kw_match

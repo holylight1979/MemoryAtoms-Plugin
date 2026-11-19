@@ -169,6 +169,7 @@ RULES: Dict[str, str] = {
                         "續跑回合裡使用者打的第一則字算新回合、口令失效；使用者自己的回合還沒結束時排隊補打的話照舊追加。"
                         "push 完成＝Bash／PowerShell 指令有一段子命令真的是 git push（不帶 --dry-run／-n）"
                         "或 svn commit，對應結果沒標錯；收尾與口令閘判口令前都補掃 transcript。"
+                        "子代理的推送不在主 transcript：跑成功時由 PostToolUse 記（note_push_ran），一樣算這批 push 完。"
                         "判法在 handlers/ups_gates（order_spent）。",
     "RELOAD_ADVICE_MCP_EDITS_ONLY": "本 session（主 session＋子代理）"
                                     "沒改過路徑含 tools/workflow-guardian-mcp/ 的檔（哪一份工作樹都算），"

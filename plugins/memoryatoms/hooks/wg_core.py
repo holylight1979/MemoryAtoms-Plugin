@@ -30,7 +30,7 @@ sys.path.insert(0, str(CODE_DIR / "lib"))
 from project_root import claude_config_dir, claude_data_dir, vector_service_port  # noqa: E402,F401  資料根與向量服務埠的唯一算法（tools 也呼叫它）
 from degraded import notify as degraded_notify  # noqa: E402  缺詞表、缺設定的開場紅字唯一出處
 from wg_platform import console_python  # noqa: E402
-from harness_text import HOOK_RESIDUE_LINE_RE, strip_harness_blocks, user_typed_text  # noqa: E402,F401  使用者原話規則唯一一份
+from harness_text import HOOK_RESIDUE_LINE_RE, strip_harness_blocks, user_own_text, user_typed_text  # noqa: E402,F401  使用者原話規則唯一一份
 from config_local import apply_renamed_keys, merge_local, with_defaults  # noqa: E402  config.local.json 蓋上去、插件預設墊底下、改名鍵對新名的規則唯一一份
 from edition import PLUGIN, edition, layered_config  # noqa: E402  插件版出廠設定墊底、資料根 config.json 蓋上（分層讀設定唯一一份）；版別判定同出處
 import i18n  # noqa: E402  給人看的提示走語言表
@@ -406,14 +406,15 @@ def truncate_to_tokens(text: str, max_tokens: int) -> str:
 
 
 # 「使用者本人打的字」的規則（harness 區塊、同伴訊息邊界、系統通知標記行、hook 殘渣行、殘留標籤字樣整則不認）
-# 只有一份：lib/harness_text.user_typed_text（頂部 import），這裡的 user_typed_text 就是它。
+# 只有一份：lib/harness_text.user_typed_text（頂部 import），這裡的 user_typed_text 就是它；再剔掉貼上的內容＝user_own_text。
 
 
 def user_typed_prompts(prompts: Optional[List[str]]) -> List[str]:
-    """近期 prompt 清單逐則取 user_typed_text（清理後的文字），不是使用者的話的那幾則丟掉；豁免詞與口令只認這些。"""
+    """近期 prompt 清單逐則取使用者自己打的字（user_own_text：清理後、貼上的內容不算），沒有自己打的字的那幾則丟掉；
+    口令、授權原句、豁免詞、不做行引用的原話、整組測試口令都只認這些。"""
     out: List[str] = []
     for p in prompts or []:
-        typed = user_typed_text(p or "")
+        typed = user_own_text(p or "")
         if typed:
             out.append(typed)
     return out

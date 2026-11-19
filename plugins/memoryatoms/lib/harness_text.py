@@ -15,7 +15,7 @@ harness 區塊＝下列標籤成對包住的內容：
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 HARNESS_TAG_NAMES = (r"system-reminder|task-notification|cross-session-message|ide_[a-z_]+|command-name|"
                      r"command-message|command-args|local-command-stdout|browser_instruction|scheduled-prompt")
@@ -209,7 +209,9 @@ def mark_scheduled(prompt: str) -> str:
 # ─── 貼上的內容 ─────────────────────────────────────────────────────────────────
 # Claude Code 把使用者貼上的文字包成 `<pasted_content id="…">…</pasted_content id="…">`（實查 transcript：閉合標籤也帶同一個 id）。
 # 貼上的是使用者從別處拿來的材料（別的 session 寫的開工句與任務說明、日誌、文件），不是他本人打的字。
-# 只有卡片的「使用者原話」引句（Quote，lib/provenance.sanitize_quote）剔掉它；口令、糾正等判斷照舊吃 user_typed_text。
+# 使用者表態的判斷（口令、指正、「先這樣」、決策、不要記、停用…）都不算它：統一走 user_own_text；卡片的「使用者原話」引句
+# （Quote，lib/provenance.sanitize_quote）也剔掉它。state 的兩份原話清單（turn_prompts、recent_user_prompts，handlers/ups_gates）
+# 存的時候只留標籤（drop_pasted_bodies）：不截長，材料又不佔位。
 _PASTED_OPEN_RE = re.compile(r"<\s*pasted_content\b([^>]*)>", re.IGNORECASE)
 _PASTED_CLOSE_RE = re.compile(r"<\s*/\s*pasted_content\b([^>]*)>", re.IGNORECASE)
 _PASTED_ANY_RE = re.compile(r"<\s*/?\s*pasted_content\b", re.IGNORECASE)
@@ -221,26 +223,55 @@ def _pasted_id(attrs: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def strip_pasted(text: str, repl: str = " ") -> str:
-    """剔掉貼上的內容區塊，每個換成 repl：開標籤帶 id 時閉合標籤的 id 要逐字相同（大小寫不同、data-id 都不算；貼上的材料裡
-    夾別的貼上區塊不會提早結束），沒 id 就認第一個閉合；沒閉合吃到字串尾。剔完還殘留 pasted_content 標籤字樣 → 回空字串
-    （分不出哪段是本人打的，寧可不認）。"""
-    text = text or ""
-    out: List[str] = []
+def _pasted_blocks(text: str) -> Iterator[Tuple[re.Match[str], Optional[re.Match[str]]]]:
+    """貼上區塊逐個回 (開標籤, 閉合標籤；None＝沒閉合、吃到字串尾)：開標籤帶 id 時閉合標籤的 id 要逐字相同（大小寫不同、
+    data-id 都不算；貼上的材料裡夾別的貼上區塊不會提早結束），沒 id 就認第一個閉合。strip_pasted 與 drop_pasted_bodies 共用。"""
     pos = 0
     while True:
         m = _PASTED_OPEN_RE.search(text, pos)
         if not m:
-            break
-        out.append(text[pos:m.start()])
-        out.append(repl)
+            return
         want = _pasted_id(m.group(1))
         close = next((c for c in _PASTED_CLOSE_RE.finditer(text, m.end())
                       if want is None or _pasted_id(c.group(1)) == want), None)
+        yield m, close
+        pos = close.end() if close else len(text)
+
+
+def strip_pasted(text: str, repl: str = " ") -> str:
+    """剔掉貼上的內容區塊（認法見 _pasted_blocks），每個換成 repl。剔完還殘留 pasted_content 標籤字樣 → 回空字串
+    （分不出哪段是本人打的，寧可不認）。"""
+    text = text or ""
+    out: List[str] = []
+    pos = 0
+    for m, close in _pasted_blocks(text):
+        out += [text[pos:m.start()], repl]
         pos = close.end() if close else len(text)
     out.append(text[pos:])
     s = "".join(out)
     return "" if _PASTED_ANY_RE.search(s) else s
+
+
+def drop_pasted_bodies(text: str) -> str:
+    """貼上區塊只留開閉標籤、拿掉中間的材料（認法見 _pasted_blocks；沒閉合的只留開標籤），區塊外的字原樣不動。
+    state 存每則原話用：材料可能很長又不是本人打的字，標籤留著讓讀的人還認得這裡貼過東西；
+    事後 strip_pasted 的結果跟對原文剔一模一樣（殘留標籤字樣照樣整則不認）。"""
+    text = text or ""
+    out: List[str] = []
+    pos = 0
+    for m, close in _pasted_blocks(text):
+        out += [text[pos:m.start()], m.group(0), close.group(0) if close else ""]
+        pos = close.end() if close else len(text)
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def user_own_text(prompt: str, keep_lines: bool = False) -> str:
+    """使用者自己打的字：user_typed_text 清完再剔貼上的內容（strip_pasted），空白照 keep_lines 再整理一次。
+    使用者「表態」的判斷只看這支：口令與授權原句、指正、「先這樣／跳過」、使用者決策、不要記、停用、記住、失敗回報、
+    不做行引用的使用者原話。「這則是不是使用者送的」照舊看 user_typed_text（整則貼上也是他送的、照開回合）；
+    「這回合在做什麼」（檢索、意圖、預算、插件的並行建議、收尾報告的「你說」核對）照舊看含貼上材料的整則。"""
+    return user_typed_text(strip_pasted(user_typed_text(prompt, keep_lines)), keep_lines)
 
 
 # ─── 開工句（一次性 session 指示）樣板 ─────────────────────────────────────────

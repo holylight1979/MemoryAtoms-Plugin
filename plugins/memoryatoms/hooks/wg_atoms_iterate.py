@@ -82,7 +82,7 @@ def _self_iterate_atoms(
     u_config = config.get("usefulness", {}) or {}
     decay_half_life = si_config.get("decay_half_life_days", 30)
     archive_threshold = si_config.get("archive_score_threshold", 0.3)
-    # 效用旋鈕（py↔js 鏡像：server.js）
+    # 效用旋鈕（py↔js 鏡像：tools/workflow-guardian-mcp/lib/atom-tools.js toolAtomPromote）
     decay_lambda = float(u_config.get("decay_lambda", 0.97))
     promote_lb = float(u_config.get("promote_lb", 0.6))
     demote_lb = float(u_config.get("demote_lb", 0.35))
@@ -163,7 +163,7 @@ def _self_iterate_atoms(
             })
 
         # 晉升只看效用 Wilson 下界（升≥promote_lb 且 n≥min_n）；Confirmations、ReadHits 都不參與。
-        # py↔js 鏡像：server.js toolAtomPromote usefulness gate。
+        # py↔js 鏡像：tools/workflow-guardian-mcp/lib/atom-tools.js toolAtomPromote 的效用門檻。
         util_eligible = bool(
             usefulness_promote_eligible
             and usefulness_promote_eligible(
@@ -171,7 +171,7 @@ def _self_iterate_atoms(
         )
         promote_method = "usefulness"
         # INV-PROMOTION-GATE-ON-SCAN-FACE：未確認 auto-capture 碎片不得自動晉升（與 realm sweep
-        # 路徑 _sweep_realm_auto_migrate:1768 同源規則：碎片是未經人確認的 [臨] 萃取，confirmations
+        # 路徑 _sweep_realm_auto_migrate:1768 同源規則：碎片是未經人確認的 [臨] 萃取，效用
         # 達標也不算數，待人工確認/晉升後才算）。斷『佔位符碎片被當穩定 atom 自動晉升』漏洞——
         # 該過濾原僅在 realm sweep，晉升掃描面缺，故碎片曾被算晉升。手動 atom_promote（js）為
         # 人工確認路徑、不受此限。

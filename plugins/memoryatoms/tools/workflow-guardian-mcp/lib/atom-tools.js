@@ -4,7 +4,7 @@
 // Python PostToolUse 解析進 state.atom_ops，knowledge_harvest_report 的逐項核對以它為準（one-writer：本檔不寫 state）。
 const fs = require("fs");
 const path = require("path");
-const { CLAUDE_DIR, CODE_DIR, MEMORY_DIR, TOOLS_DIR, loadConfig, PYTHON_EXE, v6Enabled, EDITION, PLUGIN } = require("./paths");
+const { CLAUDE_DIR, CODE_DIR, MEMORY_DIR, TOOLS_DIR, layeredConfig, PYTHON_EXE, v6Enabled, EDITION, PLUGIN } = require("./paths");
 const { crashLog } = require("./log");
 // 落點／定位／路由全部由 py lib/atom_io.locate_atom 裁決（spawnAtomCli("locate")），
 // js 只採用回傳的路徑；realm.js 只剩 js 自己真的需要的（使用者名、去重層清單）。
@@ -288,9 +288,9 @@ async function toolAtomWrite(id, args) {
     if (confidence !== "[臨]") {
       return reply(
         `New atom must start at [臨] (confidence=${confidence} rejected).\n` +
-        `Reason: [觀]/[固] reflect cross-session stability; first-write cannot assert that.\n` +
+        `Reason: [觀]/[固] mean the atom has proven useful in use; first-write cannot assert that.\n` +
         `Knowledge items inside should also use [臨] prefix.\n` +
-        `Promotion: Confirmations (cross-session) ≥4→[觀] ≥10→[固], OR usefulness Wilson lower-bound ≥ promote_lb (n≥min_n). ReadHits is exposure-only, not a promotion gate.`,
+        `Promotion: atom_promote, by usefulness only: Wilson lower-bound ≥ promote_lb with n ≥ min_n for [臨]→[觀], n ≥ fix_min_n for [觀]→[固]. Confirmations and ReadHits are not promotion gates.`,
         true);
     }
 
@@ -808,7 +808,7 @@ async function toolAtomPromote(id, args) {
   }
 
   // 晉升只看效用 Wilson 下界（Confirmations、ReadHits 都不參與）；[觀]→[固] 同一條下界、證據數要 fix_min_n。
-  // SYNC: lib/atom_access.py usefulness_promote_eligible + wg_atoms.py:_self_iterate_atoms。
+  // SYNC: lib/atom_access.py promote_check（py 鏡像）＋ hooks/wg_atoms_iterate.py _self_iterate_atoms。
   const NEXT_LEVEL = { "[臨]": "[觀]", "[觀]": "[固]", "[固]": null };
   const next = NEXT_LEVEL[meta.confidence];
   if (!next) {
@@ -820,7 +820,9 @@ async function toolAtomPromote(id, args) {
   // 計數從 <atom>.access.json 讀，不走 parseAtomMeta（meta.confidence 仍從 .md 抽）
   const access = readAtomAccess(filePath);
   const readhits = access.readhits || 0;
-  const uconf = (loadConfig().usefulness) || {};
+  // 門檻含本機覆寫 config.local.json：和 SessionEnd（wg_core.load_config）、memory-audit、atom_feedback
+  //（lib/atom_access.py promote_usefulness_config）同一套分層
+  const uconf = (layeredConfig().usefulness) || {};
   const promoteLb = Number(uconf.promote_lb != null ? uconf.promote_lb : 0.6);
   const minN = next === "[固]"
     ? Number(uconf.fix_min_n != null ? uconf.fix_min_n : 10)

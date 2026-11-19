@@ -60,9 +60,8 @@ from lib.atom_locations import (
     GLOBAL_MEMORY_DIR, FAILURES_DIR, LEGACY_FAILURES_DIR, LEGACY_LOCAL_ATOMS_DIR, LOCAL_ATOMS_DIR,
     atom_search_roots, failures_atom_stems, iter_atom_files_multi,
 )
-# 晉升判定權威來源（server.js 的 py 鏡像）：confirmations 主軌 + usefulness Wilson 下界軌。
-# ReadHits 已退役（純曝光、不參與晉升）。
-from lib.atom_access import read_access, usefulness_promote_eligible, move_atom_pair, write_access_field
+# 晉升建議照 atom_promote 的判法與門檻（promote_check、promote_usefulness_config：只看效用 Wilson 下界）。
+from lib.atom_access import read_access, promote_check, promote_usefulness_config, move_atom_pair, write_access_field
 # _atom_index.json 為索引唯一機器源：delete/restore 必同步（含 _ATOM_INDEX.md mirror regen）
 from lib.atom_index_json import (
     delete_atom as index_delete_atom,
@@ -92,13 +91,7 @@ def _failures_file_exists(file_name: str) -> bool:
 
 # 遺忘政策只有一套：hooks/wg_atoms 的 selective forget（score = 0.5·recency + 0.5·usage，
 # score < self_iteration.archive_score_threshold 且非核心保護 → 候選）。本工具的降級候選與
-# --enforce 都委派它，不另設天數門檻。
-# SYNC: server.js atom_promote — confirmations 主軌（suggest only, not gate）。
-# ReadHits 已退役（純曝光、不參與晉升）；usefulness 軌走 lib.atom_access（自帶 lb/min_n 預設）。
-PROMOTION_THRESHOLDS = {
-    "[臨]": {"confirmations": 4},
-    "[觀]": {"confirmations": 10},
-}
+# --enforce 都委派它，不另設天數門檻。晉升建議也不另設門檻：照 atom_promote 讀的設定與判法（suggest_promotions）。
 DISTANT_DIR = "_distant"
 VALID_TYPES = {"semantic", "episodic", "procedural"}
 VALID_PRIVACY = {"public", "internal", "sensitive"}
@@ -592,32 +585,25 @@ def check_staleness(atom: AtomMetadata, today: date,
     return Suggestion(rel, atom.confidence, t("cli.memory_audit.suggest_distant"), reason)
 
 
-def suggest_promotions(atom: AtomMetadata) -> Optional[Suggestion]:
-    """Suggest promotion aligned with server.js atom_promote (authoritative).
+def _num(x: float) -> str:
+    """報告裡的數字：最多兩位小數、去掉多餘的 0（衰減過的 α/β 不是整數）。"""
+    return f"{round(float(x), 2):g}"
 
-    真閘只有兩軌（ReadHits 純曝光、已退役、不參與）：
-      - confirmations 主軌：≥ 閾值（[臨]→[觀]=4、[觀]→[固]=10）
-      - usefulness 軌：Wilson 下界 lb≥0.6 且 n≥3（委派 lib.atom_access，不抄公式）
-    """
-    thresholds = PROMOTION_THRESHOLDS.get(atom.confidence)
-    if thresholds is None:
+
+def suggest_promotions(atom: AtomMetadata, usefulness: Optional[Dict[str, Any]] = None) -> Optional[Suggestion]:
+    """建議晉升＝atom_promote 會放行（lib.atom_access.promote_check：效用 Wilson 下界 ≥ promote_lb 且 n ≥ min_n，
+    [觀]→[固] 的 n 看 fix_min_n；Confirmations、ReadHits 不參與）。usefulness＝門檻設定段，沒給就照資料根讀
+    （promote_usefulness_config：含本機覆寫，和 atom_promote、SessionEnd 同一套分層）。"""
+    if usefulness is None:
+        usefulness = promote_usefulness_config(CLAUDE_DIR / "workflow" / "config.json")
+    chk = promote_check(read_access(atom.file_path), atom.confidence, usefulness)
+    if chk is None or not chk["eligible"]:
         return None
-
-    conf_ok = atom.confirmations >= thresholds["confirmations"]
-    util_ok = usefulness_promote_eligible(read_access(atom.file_path))
-    if not conf_ok and not util_ok:
-        return None
-
-    if conf_ok:
-        reason = t("cli.memory_audit.promote_conf", conf=atom.confirmations, threshold=thresholds['confirmations'])
-    else:
-        reason = t("cli.memory_audit.promote_usefulness")
-    rel = _rel_path(atom.file_path)
-    if atom.confidence == "[臨]":
-        return Suggestion(rel, "[臨]", "[觀]", reason)
-    elif atom.confidence == "[觀]":
-        return Suggestion(rel, "[觀]", "[固]", reason)
-    return None
+    reason = t("cli.memory_audit.promote_usefulness",
+               lb=f"{chk['lower_bound']:.3f}", promote_lb=_num(chk["promote_lb"]),
+               n=_num(chk["n"]), min_n=_num(chk["min_n"]),
+               useful=_num(chk["successes"]), failed=_num(chk["failures"]))
+    return Suggestion(_rel_path(atom.file_path), atom.confidence, chk["next"], reason)
 
 
 def _index_json_entries(mem_dir: Path) -> Optional[List[IndexEntry]]:
@@ -1942,6 +1928,7 @@ def run_audit(args: argparse.Namespace) -> HealthReport:
     )
 
     all_atoms: List[AtomMetadata] = []
+    promote_u = promote_usefulness_config(CLAUDE_DIR / "workflow" / "config.json")   # 晉升門檻整輪讀一次
 
     for layer_name, mem_dir in layers:
         report.layers_scanned.append(layer_name)
@@ -2008,7 +1995,7 @@ def run_audit(args: argparse.Namespace) -> HealthReport:
                 report.demotions.append(stale)
 
             # Check promotions
-            promo = suggest_promotions(atom)
+            promo = suggest_promotions(atom, promote_u)
             if promo:
                 report.promotions.append(promo)
 

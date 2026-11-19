@@ -138,7 +138,7 @@ Manually trigger the memory system's self-iteration: decay scan, promotion candi
 Automatic self-iteration (promotion / demotion / decay) is run by `_self_iterate_atoms` in the SessionEnd hook; there is no `--self-iterate` CLI option. A manual review runs the same judgments in look-only mode:
 
 1. Detect the project memory directory (same as health step 1).
-2. **Promotion / demotion candidates:** `python "${CLAUDE_PLUGIN_ROOT}/tools/memory-audit.py" [--project-dir $PROJECT_MEM_DIR]`; relay the report's "promotion/demotion" and "expiry" blocks (confirmations main track + usefulness Wilson lower-bound track, same source as the hook).
+2. **Promotion / demotion candidates:** `python "${CLAUDE_PLUGIN_ROOT}/tools/memory-audit.py" [--project-dir $PROJECT_MEM_DIR]`; relay the report's "promotion/demotion" and "expiry" blocks (a promotion candidate is exactly what `atom_promote` would accept: usefulness Wilson lower bound only, with the thresholds from config; Confirmations do not count).
 3. **Decay / archive candidates:** `python "${CLAUDE_PLUGIN_ROOT}/tools/memory-audit.py" --enforce --dry-run [--project-dir $PROJECT_MEM_DIR]` (selective forget only lists candidates and moves nothing; to actually move, drop `--dry-run`, after asking the user).
 4. **Utility view:** `python "${CLAUDE_PLUGIN_ROOT}/tools/memory-effect-report.py"` (the useful / high-exposure-zero-use / zero-exposure lists).
 5. Combine into one table: atom | suggested action (promote / demote / archive / tighten trigger) | basis. **Suggest only, do not execute**; once the user agrees, use MCP `atom_promote` / `atom_edit_meta`, or the tools above without `--dry-run`.

@@ -17,8 +17,9 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from wg_core import _now_iso, _atom_debug_error, _atom_debug_log, user_typed_text, v6_enabled, WORKFLOW_DIR
+from wg_core import _now_iso, _atom_debug_error, _atom_debug_log, user_own_text, user_typed_text, v6_enabled, WORKFLOW_DIR
 from transcript import parse_record  # lib/ 由 wg_core 放進 sys.path
+from harness_text import drop_pasted_bodies  # lib/
 import i18n  # lib/（wg_core 已放進 sys.path）：給人看的提示走語言表
 from wg_extraction import detect_signal, extract_veto_hints, extract_veto_question, settle_pending_veto
 from wg_evasion import is_dismiss_prompt
@@ -89,7 +90,8 @@ def note_order_push(state: Dict[str, Any], transcript_path: Any) -> bool:
     """transcript 上次掃到的地方之後的完整行裡有跑成功的推送（Bash／PowerShell 指令 is_push_command、對應的 tool_result
     沒標 is_error）→ state order_push_seq＝目前 turn_seq。Stop 每次收尾掃、口令閘判口令前也掃（push 完、收尾之前再 commit
     也認得）。掃到哪裡記 order_scan_offset（只算到最後一個換行，半行留給下次）；指令看到了、結果還沒寫進來的記
-    order_push_waiting 留給下次配對。讀不到 transcript 只印 stderr。回這次有沒有記到推送。"""
+    order_push_waiting 留給下次配對。讀不到 transcript 只印 stderr。回這次有沒有記到推送。
+    子代理的工具紀錄在它自己那份 transcript（<sid>/subagents/），這裡掃不到：子代理的推送由 note_push_ran 在 PostToolUse 記。"""
     if not transcript_path:
         return False
     try:
@@ -124,6 +126,16 @@ def note_order_push(state: Dict[str, Any], transcript_path: Any) -> bool:
     return pushed
 
 
+def note_push_ran(state: Dict[str, Any], command: str) -> bool:
+    """PostToolUse（Claude Code 只對跑成功的工具呼叫送；非零結束改送 PostToolUseFailure）的 Bash／PowerShell 指令是推送
+    （is_push_command）→ state order_push_seq＝目前 turn_seq，回 True。主 session 與子代理的工具呼叫都會送到這裡：
+    子代理的推送不在主 transcript，note_order_push 掃不到，只靠這裡記；主 session 的推送兩邊都記到，結果相同。"""
+    if not is_push_command(command):
+        return False
+    state["order_push_seq"] = int(state.get("turn_seq", 0) or 0)
+    return True
+
+
 def order_spent(state: Dict[str, Any]) -> bool:
     """版控口令這批做完了沒：使用者開這個回合之後跑成功了推送（order_push_seq；「上GIT」＝commit→push 一氣，push 完成這批
     就結束）。先照 order_transcript（Stop／UserPromptSubmit 記的 transcript 路徑）補掃一次新寫進來的部分。只 commit 沒 push、
@@ -140,7 +152,8 @@ def track_turn_prompts(state: Dict[str, Any], clean_prompt: str, v6: Optional[bo
     （否則「上GIT」之後補一句別的話就會把口令蓋掉）。Stop 被 block 後續送進來的
     使用者訊息算新回合：清單重開，口令要重下（使用者新打的字＝口令失效的時點）。
 
-    清單只存 user_typed_text（剔掉通知、其他 session 的訊息等非使用者區塊後，先清理再截 500 字）。
+    清單每則存整則 user_typed_text（剔掉通知、其他 session 的訊息等非使用者區塊；不截長——口令常寫在長訊息最後），
+    貼上的內容只留標籤（drop_pasted_bodies：材料可能很長，又不是本人打的字）；這則算不算使用者打的字照清理後的整則判。
     整則都不是使用者的話（背景通知、其他 session 的訊息）也走 UserPromptSubmit：內文永不進清單；
     它在回合關閉後進來＝使用者上一回合的延續，原話沿用（「完工後直接上GIT」跨得過背景等待、收尾閘逼出的補修 commit），
     除非那之後這批已經 push 完（order_spent：口令用掉了）→ 清空，再 commit 要新口令。
@@ -150,7 +163,8 @@ def track_turn_prompts(state: Dict[str, Any], clean_prompt: str, v6: Optional[bo
     v6＝寫碼守門總開關（沒給就照環境變數 WG_CODING_GUARD／舊名 WG_V6 判）。關時照 9e476fd0：口令 commit 過就用掉（last_commit_turn_seq），
     續跑回合裡使用者打的字照舊追加、口令沿用。"""
     has_list = isinstance(state.get("turn_prompts"), list)
-    typed = user_typed_text(clean_prompt)[:500]
+    typed = user_typed_text(clean_prompt)
+    said = drop_pasted_bodies(typed)        # 存進清單的樣子；typed 只拿來判這則是不是使用者打的字
 
     def _new_turn() -> None:
         state["turn_prompts_seq"] = int(state.get("turn_seq", 0)) + 1   # 本則 UPS 收尾後的 turn_seq
@@ -169,11 +183,11 @@ def track_turn_prompts(state: Dict[str, Any], clean_prompt: str, v6: Optional[bo
             state["turn_prompts"] = []
     elif state.get("turn_open") and has_list:
         continuation = state.get("turn_typed") is False                  # 續跑回合裡使用者的第一則字：使用者開的新回合
-        state["turn_prompts"] = [typed] if v6 and continuation else (state["turn_prompts"] + [typed])[-5:]
+        state["turn_prompts"] = [said] if v6 and continuation else (state["turn_prompts"] + [said])[-5:]
         if continuation:
             _new_turn()
     else:
-        state["turn_prompts"] = [typed]
+        state["turn_prompts"] = [said]
         _new_turn()
     seq = state.get("turn_prompts_seq")
     if v6 and not (isinstance(seq, int) and not isinstance(seq, bool) and seq > 0):
@@ -194,32 +208,35 @@ def run_pre_gates(
     lines: List[str],
 ) -> None:
     """執行 detect 段全部前置閘。mutate state / append lines。"""
-    # 下面的「使用者說了算」判斷（口令、豁免、使用者決策、否決記憶、停用後端）只吃使用者本人打的字：
-    # 剔掉通知、其他 session 的訊息等區塊後的文字（先清理、再截長）；整則都不是使用者的話 → 空字串。
+    # 下面的「使用者說了算」判斷（口令、豁免、使用者決策、否決記憶、停用後端、記住）只吃使用者自己打的字（own）：
+    # 剔掉通知、其他 session 的訊息等區塊，再剔貼上的內容（user_own_text）；整則都不是使用者的話 → 空字串。
+    # typed（含貼上的內容）只判這則是不是使用者送的（整則貼上也是他送的），和存兩份原話清單。
     typed = user_typed_text(clean_prompt)
-    typed_lower = typed.lower()
+    own = user_own_text(typed)
+    own_lower = own.lower()
 
-    # ── Evasion Guard: 追蹤近 5 則 user prompt（存清理後的文字；不是使用者的話存空字串，保留「收過一則」的紀錄）─────
+    # ── Evasion Guard: 追蹤近 5 則 user prompt（存清理後的整則、不截長，貼上的內容只留標籤；不是使用者的話存空字串，
+    # 保留「收過一則」的紀錄）─────
     rup = state.setdefault("recent_user_prompts", [])
-    rup.append(typed[:500])
+    rup.append(drop_pasted_bodies(typed))
     if len(rup) > 5:
         state["recent_user_prompts"] = rup[-5:]
     v6 = v6_enabled(config)
     track_turn_prompts(state, clean_prompt, v6)
-    if state.get("failing_tests") and is_dismiss_prompt(typed):
-        state["failing_tests"] = []   # 使用者本人說「先這樣／跳過」就清掉紅測清單（同伴訊息、通知不算；寫碼守門開或關同一套）
+    if state.get("failing_tests") and is_dismiss_prompt(own):
+        state["failing_tests"] = []   # 使用者自己說「先這樣／跳過」就清掉紅測清單（同伴訊息、通知、貼上的內容不算；寫碼守門開或關同一套）
 
     # ─── User Decision Detector gate ────────────────────────────
     ue_config = config.get("userExtraction", {})
-    if typed and ue_config.get("enabled", False):
+    if own and ue_config.get("enabled", False):
         try:
-            det = detect_signal(typed)
+            det = detect_signal(own)
             if det.get("signal"):
                 turn_n = state.get("topic_tracker", {}).get("prompt_count", 0)
                 pending = state.setdefault("pending_user_extract", [])
                 pending.append({
                     "turn_id": f"{session_id}-{turn_n}",
-                    "prompt": user_typed_text(clean_prompt, keep_lines=True),   # 保留換行，worker 才能逐句看
+                    "prompt": user_own_text(clean_prompt, keep_lines=True),   # 保留換行，worker 才能逐句看
                     "score": det["score"],
                     "matched": det["matched"],
                     "ts": _now_iso(),
@@ -263,7 +280,7 @@ def run_pre_gates(
                 lines.append(
                     i18n.t("hook.ups_gates.decision_statement_detected_sent", stmt=stmt)
                 )
-        hints = extract_veto_hints(typed)
+        hints = extract_veto_hints(own)
         written = [e for e in confirmed if e.get("write_result") in ("wrote", "deduped")]
         if v6 and hints and written:
             q = extract_veto_question(hints, written)
@@ -287,10 +304,10 @@ def run_pre_gates(
 
     # ─── Dual-Backend: long_die user response ─────
     try:
-        long_die = check_long_die_status() if typed else None   # 「停用／保持」是使用者的回覆
+        long_die = check_long_die_status() if own else None   # 「停用／保持」是使用者的回覆
         if long_die:
             backend_name = long_die.get("backend", "")
-            if any(kw in typed_lower for kw in ("停用", "disable")):
+            if any(kw in own_lower for kw in ("停用", "disable")):
                 if disable_backend(backend_name):
                     _clear_long_die_marker()
                     lines.append(
@@ -298,7 +315,7 @@ def run_pre_gates(
                     )
                 else:
                     lines.append(i18n.t("hook.ups_gates.dual_backend_failed_disable", backend_name=backend_name))
-            elif any(kw in typed_lower for kw in ("保持", "keep", "忽略")):
+            elif any(kw in own_lower for kw in ("保持", "keep", "忽略")):
                 _clear_long_die_marker()
                 lines.append(i18n.t("hook.ups_gates.dual_backend_keeping_long", backend_name=backend_name))
     except Exception as e:
@@ -310,5 +327,5 @@ def run_pre_gates(
         "寫成 atom", "寫 atom", "存成 atom", "存atom", "存成[固]", "存成 [固]",
         "存成[觀]", "存成 [觀]", "記為[固]", "記為 [固]",
     )
-    if any(kw in typed for kw in atom_write_triggers):                     # 只看使用者打的字：通知、同伴訊息不觸發
+    if any(kw in own for kw in atom_write_triggers):                       # 只看使用者自己打的字：通知、同伴訊息、貼上的內容不觸發
         lines.append(i18n.t("hook.ups_gates.atom_write_guard", t_tmp="[臨]", t_fixed="[固]", t_obs="[觀]"))   # [臨]/[固]/[觀] 是卡片信心標記，不翻

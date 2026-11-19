@@ -146,9 +146,9 @@ def _maybe_spawn_failure_extraction(
     clean_prompt: str, lines: list,
 ) -> None:
     """偵測失敗關鍵字 → spawn extract-worker failure mode。"""
-    from wg_core import user_typed_text
-    # 只看使用者打的字：sub-agent 完成通知、其他 session 的訊息內文的失敗詞不觸發萃取
-    typed = user_typed_text(clean_prompt)
+    from wg_core import user_own_text
+    # 只看使用者自己打的字：sub-agent 完成通知、其他 session 的訊息內文、貼上的日誌裡的失敗詞不觸發萃取
+    typed = user_own_text(clean_prompt)
     if not typed or not _detect_failure_keywords(typed, config):
         return
 

@@ -7,7 +7,7 @@
 規則：
 - 檔內已有 `- Quote:` → 不動（呼叫者自填或已補過）。
 - 呼叫者已給非空 Source（例：會議轉錄的逐字稿路徑）→ 只補 Quote。
-- Quote 取 state["turn_prompts"][-1]（本回合最後一則使用者原話，≤500 字）消毒後 ≤200 字；
+- Quote 取 state["turn_prompts"][-1]（本回合最後一則使用者原話，貼上的內容只剩標籤）消毒後 ≤200 字；
   空字串不寫。uuid 從 transcript 尾端最後一則真人訊息取，取不到只寫 session＋日期。
 - 規則 QUOTE_FROM_USER_OPENED_TURN：Quote 只取「寫卡那一回合是使用者本人打字開的」那回合的原話（回填工具同一條，not_user_turn）。
   - 主 session：state["turn_typed"] 是 False（同伴訊息、背景通知開的續跑回合）→ 不填。turn_prompts 在續跑回合沿用前一個

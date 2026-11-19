@@ -8,7 +8,7 @@ writes confirmed atoms via MCP atom_write.
 
 Flow:
   state-{sid}.json/pending_user_extract[]
-  → 來源重驗（user_typed_text 為空＝不是使用者打的字 → skip）
+  → 來源重驗（user_own_text 為空＝沒有使用者自己打的字，例如通知、同伴訊息、整則貼上的材料 → skip）
   → session-directive filter（一次性 session 指示不送 LLM；兩種 skip 都在 _merge_history.log 記原因）
   → mixed-sentence filter
   → emotional-commitment filter
@@ -37,7 +37,7 @@ if _HOOKS_DIR not in sys.path:
 from wg_core import (
     CLAUDE_DIR, WORKFLOW_DIR,
     cwd_to_project_slug, get_transcript_path, find_project_root,
-    _is_under_claude_dir, user_typed_text, append_guard_log,
+    _is_under_claude_dir, user_own_text, append_guard_log,
 )
 from wg_roles import get_current_user
 import i18n  # lib/：給人看的提示走語言表
@@ -609,8 +609,8 @@ def run_user_extraction(ctx: Dict[str, Any]) -> Dict[str, Any]:
         stats["processed"] += 1
 
         # ── 來源重驗（空候選也算）＋一次性 session 指示：不送 LLM，萃取紀錄留一行 skip 原因 ──────
-        # 來源權威不交 LLM 判：舊版排進佇列的通知、其他 session 的訊息在這裡擋下。
-        typed = user_typed_text(prompt_text, keep_lines=True)
+        # 來源權威不交 LLM 判：舊版排進佇列的通知、其他 session 的訊息、貼上的材料在這裡擋下。
+        typed = user_own_text(prompt_text, keep_lines=True)
         directive = _session_directive_reason(typed) if typed else None
         if not typed or directive:
             reason = f"session-directive({directive})" if typed else "not-user-typed"

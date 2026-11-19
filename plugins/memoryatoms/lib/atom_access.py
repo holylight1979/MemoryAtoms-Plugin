@@ -32,7 +32,7 @@ Schema v3（<atom>.access.json）:
 舊 schema 偵測：confirmations 是陣列 → migrate (陣列→confirmation_events)；
   v2→v3 冪等 migration：缺 useful_hits/used_fail → 補 1（可重入，不壞既有計數）。
 
-CLI 入口（給 tools/workflow-guardian-mcp/server.js 透過子程序呼叫）：
+CLI 入口（給 MCP 透過子程序呼叫：tools/workflow-guardian-mcp/lib/atom-access.js spawnAtomAccess）：
   python -m lib.atom_access read <path>
   python -m lib.atom_access init <path> --first-seen YYYY-MM-DD --source mcp
   python -m lib.atom_access increment-read-hits <path> --source hook:atom-inject
@@ -90,15 +90,17 @@ TIMESTAMPS_MAX = 50
 
 # Beta-Bernoulli Laplace prior：useful_hits=α、used_fail=β 預設皆 1（succ=α−1, fail=β−1）。
 USEFULNESS_PRIOR = 1
-# Wilson 下界預設參數（py↔js 鏡像，SYNC: tools/workflow-guardian-mcp/server.js usefulnessStats）。
-# z=1.28（80% 單尾信賴）：小樣本場景 z=1.96 過度保守——3 連勝 lb 僅 0.44 遠不及升門 0.6，
+# Wilson 下界預設參數（設定檔 usefulness 段缺鍵時用；py↔js 鏡像，SYNC: tools/workflow-guardian-mcp/lib/atom-tools.js
+# toolAtomPromote 的 fallback）。z=1.28（80% 單尾信賴）：小樣本場景 z=1.96 過度保守——3 連勝 lb 僅 0.44 遠不及升門 0.6，
 # 6 連勝才達標，晉升軌實質凍結；1.28 下 3 連勝 lb≈0.647 即過 [臨]→[觀]（[觀]→[固] 另要 n≥fix_min_n）。
 WILSON_Z_DEFAULT = 1.28
 PROMOTE_LB_DEFAULT = 0.6
 DEMOTE_LB_DEFAULT = 0.35
 USEFULNESS_MIN_N_DEFAULT = 3
+# [觀]→[固] 的樣本門檻（下界同 promote_lb）：只有手動 atom_promote 走這一級，SessionEnd 掃描不自動升 [固]。
+FIX_MIN_N_DEFAULT = 10
 # 降級候選樣本門檻獨立且更嚴（n≥5）：誤降的成本（知識降信心/淘汰）高於誤不升，
-# 少量壞樣本不足以構成降級證據。SYNC: server.js usefulnessDemoteCandidate。
+# 少量壞樣本不足以構成降級證據。降級只在 py 端判（SessionEnd 掃描、注入的 skip_demoted），沒有 js 鏡像。
 DEMOTE_MIN_N_DEFAULT = 5
 DECAY_LAMBDA_DEFAULT = 0.97
 
@@ -424,7 +426,7 @@ def increment_confirmation(
 def record_promotion(atom_path: Path, *, target_confidence: str, source: str) -> str:
     """寫 last_promoted_at = today、刷 last_used。
 
-    對拍 tools/workflow-guardian-mcp/server.js:1501 atom_promote 行為。
+    atom_promote 升級落檔後經 CLI record-promotion 呼叫（tools/workflow-guardian-mcp/lib/atom-tools.js toolAtomPromote）。
     """
     _validate_source(source)
     access_path = _access_path(atom_path)
@@ -595,7 +597,7 @@ def merge_access_records(older: Dict[str, Any], newer: Dict[str, Any]) -> Dict[s
 def wilson_lower_bound(successes: float, n: float, z: float = WILSON_Z_DEFAULT) -> float:
     """二項比例 p̂=successes/n 的 Wilson score 下界（單一壞 turn 幾乎不動分數）。
 
-    SYNC: tools/workflow-guardian-mcp/server.js wilsonLowerBound（py↔js 鏡像）。
+    SYNC: tools/workflow-guardian-mcp/lib/atom-access.js wilsonLowerBound（py↔js 鏡像）。
     n≤0 → 回 0.0（無證據時保守）。
     """
     if n <= 0:
@@ -614,7 +616,7 @@ def usefulness_stats(
     """從 access dict 算 (α,β)→succ/fail/n/mean/lower_bound。
 
     succ=α−1, fail=β−1（減去 Laplace prior）、n=succ+fail（有效樣本）。
-    SYNC: server.js usefulnessStats。
+    SYNC: tools/workflow-guardian-mcp/lib/atom-access.js usefulnessStats。
     """
     alpha = float(access.get("useful_hits") or USEFULNESS_PRIOR)
     beta = float(access.get("used_fail") or USEFULNESS_PRIOR)
@@ -639,6 +641,54 @@ def usefulness_promote_eligible(
     """效用晉升資格：Wilson 下界 ≥ promote_lb 且 n ≥ min_n（遲滯帶上緣）。"""
     st = usefulness_stats(access, z=z)
     return st["n"] >= min_n and st["lower_bound"] >= promote_lb
+
+
+# atom_promote 每一級升到哪一級（[固] 已到頂）。SYNC: atom-tools.js toolAtomPromote 的 NEXT_LEVEL。
+PROMOTE_NEXT_LEVEL = {"[臨]": "[觀]", "[觀]": "[固]"}
+
+
+def _usefulness_num(usefulness: Dict[str, Any], key: str, default: float) -> float:
+    """設定 usefulness 段的一個數字；缺鍵或 null 用預設（同 js 的 `uconf.x != null ? uconf.x : 預設`）。"""
+    value = usefulness.get(key)
+    return float(default if value is None else value)
+
+
+def promote_usefulness_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
+    """晉升門檻讀的設定段 usefulness：插件版出廠墊底 → 資料根 workflow/config.json → 本機覆寫 config.local.json（同名段淺合併）。
+    和 SessionEnd 自動晉升（hooks/wg_core.load_config）、atom_promote（tools/workflow-guardian-mcp/lib/paths.js layeredConfig）
+    同一套分層。config_path：config.json 那層換成這個檔（呼叫端自己的資料根；本機覆寫取它旁邊的 config.local.json）。"""
+    from .edition import layered_config
+    section = layered_config(config_path).get("usefulness")
+    return section if isinstance(section, dict) else {}
+
+
+def promote_check(
+    access: Dict[str, Any], confidence: str, usefulness: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """atom_promote 會不會放行這張卡（py 鏡像，SYNC: tools/workflow-guardian-mcp/lib/atom-tools.js toolAtomPromote）。
+
+    confidence＝卡目前的層級；[固] 或認不得 → None（沒有下一級）。只看效用 Wilson 下界：下界 ≥ promote_lb 且
+    n ≥ min_n，[觀]→[固] 的 n 改看 fix_min_n；Confirmations、ReadHits 不參與。usefulness＝promote_usefulness_config()
+    讀到的設定段（含本機覆寫），缺鍵用本模組預設。回 {next, eligible, lower_bound, n, successes, failures, promote_lb, min_n}。
+    """
+    nxt = PROMOTE_NEXT_LEVEL.get(confidence)
+    if nxt is None:
+        return None
+    u = usefulness if isinstance(usefulness, dict) else {}
+    promote_lb = _usefulness_num(u, "promote_lb", PROMOTE_LB_DEFAULT)
+    if nxt == "[固]":
+        min_n = _usefulness_num(u, "fix_min_n", FIX_MIN_N_DEFAULT)
+    else:
+        min_n = _usefulness_num(u, "min_n", USEFULNESS_MIN_N_DEFAULT)
+    z = _usefulness_num(u, "wilson_z", WILSON_Z_DEFAULT)
+    st = usefulness_stats(access, z=z)
+    return {
+        "next": nxt,
+        "eligible": usefulness_promote_eligible(access, promote_lb=promote_lb, min_n=min_n, z=z),
+        "lower_bound": st["lower_bound"], "n": st["n"],
+        "successes": st["successes"], "failures": st["failures"],
+        "promote_lb": promote_lb, "min_n": min_n,
+    }
 
 
 def usefulness_demote_candidate(
@@ -675,7 +725,7 @@ def usefulness_hint_tier(
       - None      ：lb 離升門尚遠 **或** n < min_n（無樣本不提示，防純曝光雜訊）
 
     ReadHits 為純曝光、不參與晉升，UPS 注入提示改由本函式驅動。
-    SYNC: usefulness_promote_eligible（'eligible' 與其同義）、server.js usefulnessStats。
+    SYNC: usefulness_promote_eligible（'eligible' 與其同義）、tools/workflow-guardian-mcp/lib/atom-access.js usefulnessStats。
     """
     st = usefulness_stats(access, z=z)
     if st["n"] < min_n:
@@ -707,7 +757,7 @@ def bulk_read(memory_root: Optional[Path] = None) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-# ─── CLI 入口（給 server.js 子程序呼叫） ──────────────────────────────────────
+# ─── CLI 入口（給 MCP 子程序呼叫，見檔頭） ──────────────────────────────────────
 
 
 def _cli() -> int:
