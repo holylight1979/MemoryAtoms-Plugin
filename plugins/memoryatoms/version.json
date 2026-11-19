@@ -1,7 +1,7 @@
 {
   "_doc": "版本標識檔。guardian＝Workflow Guardian（hooks + MCP server）版本，Dashboard 標題與 MCP serverInfo 顯示；atom_memory＝原子記憶系統版本；release_date＝此版本正式發布日；release_theme＝此版本主題一句話。程式讀者：tools/workflow-guardian-mcp/lib/paths.js（只取 guardian / atom_memory）與 tools/install.py --verify（確認本檔可讀）；文件讀者 TECH.md。",
-  "guardian": "6.7.1",
+  "guardian": "6.7.2",
   "atom_memory": "6.1",
-  "release_date": "2026-11-18",
-  "release_theme": "The weekly usage screenshot (usage-watch) retries in the hour before the weekly reset (60/45/30/15 minutes before; tries after the first success skip) and takes the reset time from the usage API, and a session-start hint appears when a scheduled screenshot was missed, has not run for 8 days, or needs the web fallback signed in again; core rules gain \"fine-grained memory with solid indexes\"; TECH §11.1 cost tables re-measured"
+  "release_date": "2026-11-19",
+  "release_theme": "atom_promote replies with success after promoting instead of a false error; usage-watch checks the Claude Code login the evening before the weekly reset (20:00 the day before, through the usage API), opens the web fallback's Chrome for signing in when it is set up, and raises a toast and a session-start hint when the check fails"
 }

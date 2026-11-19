@@ -32,11 +32,22 @@
   拿到重置時間就把排程的觸發換成重置前那幾個時刻（跨午夜各算各的星期），動作參數沒有 --scheduled 就補上；
   兩邊都沒有就不動排程（schedule 註明）。
 
+登入檢查（週重置前一天晚上）：
+  截圖排程旁另有一個登入檢查排程 LOGIN_TASK_NAME，在週重置前一天的 LOGIN_CHECK_AT（20:00）跑 --login --scheduled，
+  趁人還在電腦前先確認兩條路都登入著，不要等到半夜截圖時才發現：
+  ① Claude Code：問一次用量 API（fetch_account）；② 網頁退路：browser-data/ 不存在（這台沒設定過網頁退路）就略過、
+  不開視窗；存在就照 --login 開有頭 Chrome，已登入幾秒內看到用量頁就自己關，沒登入就留著視窗等人
+  LOGIN_CHECK_WAIT_MIN 分鐘。結果寫 workflow/usage-snapshots/usage-login-check.json
+  （at、scheduled、cc_ok、cc_error、web＝ok／timeout／skipped；開場提示讀它），有一條沒登入就跳 Windows 通知講怎麼補。
+  排程設「錯過補跑」不喚醒電腦：晚上關機、隔天開機仍在截圖前補跑。截圖排程對齊時登入檢查也跟著對齊
+  （不存在就照截圖排程的程式與腳本路徑建立）。手動 --login（不帶 --scheduled）照舊只開視窗登入，不寫檔。
+
 怎麼跑：
   python tools/usage-snapshot/usage_snapshot.py --login     網頁退路首次：開有頭視窗，手動登入 claude.ai，登入成功自動關閉
   python tools/usage-snapshot/usage_snapshot.py             截一張（會彈 VS Code 視窗約 20 秒；失敗再彈 Chrome 約 30 秒）
   python tools/usage-snapshot/usage_snapshot.py --headless  網頁退路不彈視窗（實測會被 Cloudflare 擋，留作再試）
-  python tools/usage-snapshot/usage_snapshot.py --register  註冊排程：每週二 03:30 起每 15 分鐘一次共 4 次，讀到重置時間後自動對齊（喚醒電腦、錯過補跑）
+  python tools/usage-snapshot/usage_snapshot.py --register  註冊排程：每週二 03:30 起每 15 分鐘一次共 4 次，讀到重置時間後自動對齊（喚醒電腦、錯過補跑）；
+                                                            另註冊前一天 20:00 的登入檢查
   完整參數：--help
 """
 from __future__ import annotations
@@ -79,6 +90,10 @@ LAST_RUN = OUT_DIR / "usage-last-run.json"
 LOG = OUT_DIR / "usage-log.jsonl"
 USAGE_URL = "https://claude.ai/settings/usage"
 TASK_NAME = "Claude-Usage-WeeklySnapshot"
+LOGIN_TASK_NAME = "Claude-Usage-WeeklySnapshot-LoginCheck"   # 週重置前一天晚上檢查登入的排程
+LOGIN_CHECK_AT = "20:00"   # 週重置前一天的這個時刻檢查登入：人多半還在電腦前，沒登入能當場補
+LOGIN_CHECK_WAIT_MIN = 60   # 網頁退路沒登入時，Chrome 視窗留著等人登入的分鐘數
+LOGIN_CHECK = OUT_DIR / "usage-login-check.json"   # 登入檢查結果（開場提示讀這個檔名與欄位）
 USAGE_TEXT = re.compile(r"\d+%\s*(used|已使用)|(used|已使用)\s*\d+%", re.I)  # 英文「68% used」、中文「已使用 68%」兩種字序
 WEEKLY_TOGGLE = re.compile(r"本週|this week|weekly", re.I)  # 用量彈窗「本週」收合鈕的文字
 SCHEDULE_OFFSETS_MIN = (60, 45, 30, 15)  # 排程在週重置前這幾分鐘各跑一次（前面失敗，後面補）
@@ -195,6 +210,49 @@ def do_login(timeout_min: int) -> int:
             p.stop()
     log(t("ext.usage-watch.snapshot.login_done") if ok else t("ext.usage-watch.snapshot.login_not_detected"))
     return 0 if ok else 1
+
+
+def _one_line(e: BaseException) -> str:
+    return " ".join(f"{type(e).__name__}: {e}".split())[:200]
+
+
+def do_login_check() -> int:
+    """排程的登入檢查（--login --scheduled）：Claude Code 問一次用量 API、網頁退路照 --login 開視窗
+    （已登入自己關、沒登入等 LOGIN_CHECK_WAIT_MIN 分鐘；這台沒設定網頁退路就略過），結果寫 LOGIN_CHECK；
+    有一條沒登入就跳 Windows 通知講怎麼補。都好（或略過）回 0，否則 1。"""
+    now = datetime.now()
+    result = {"at": now.isoformat(timespec="seconds"), "scheduled": True,
+              "cc_ok": False, "cc_error": None, "web": "skipped"}
+    try:
+        _usage_watch().fetch_account(now)
+        result["cc_ok"] = True
+    except Exception as e:  # 憑證讀不到、token 刷新失敗、斷網都算沒登入成功
+        result["cc_error"] = _one_line(e)
+    if PROFILE_DIR.exists():
+        try:
+            result["web"] = "ok" if do_login(LOGIN_CHECK_WAIT_MIN) == 0 else "timeout"
+        except (Exception, SystemExit) as e:  # 沒裝 playwright（SystemExit）、Chrome 起不來：當沒登入成功，原因另記
+            result["web"] = "timeout"
+            result["web_error"] = _one_line(e)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    LOGIN_CHECK.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
+    problems = []
+    if not result["cc_ok"]:
+        problems.append(t("ext.usage-watch.snapshot.login_check_cc_failed", error=result["cc_error"]))
+    if result["web"] == "timeout":
+        problems.append(t("ext.usage-watch.snapshot.login_check_web_failed", tool=Path(__file__).resolve()))
+    log(t("ext.usage-watch.snapshot.login_check_done", path=LOGIN_CHECK))
+    if not problems:
+        return 0
+    for p in problems:
+        log(f"WARN: {p}")
+    try:
+        err = _usage_watch().toast(t("ext.usage-watch.snapshot.login_check_toast_title"), "\n".join(problems))
+    except Exception as e:  # usage-watch.py 載不進來也要留訊號
+        err = _one_line(e)
+    if err:
+        log(t("ext.usage-watch.snapshot.login_check_toast_failed", error=err))
+    return 1
 
 
 def recent_success(now: datetime) -> datetime | None:
@@ -483,10 +541,25 @@ def _powershell(script: str) -> subprocess.CompletedProcess:
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
+def login_check_time(reset: datetime) -> datetime:
+    """登入檢查的時刻：週重置日期的前一天、LOGIN_CHECK_AT（週二 05:00 → 週一 20:00）。"""
+    hm = datetime.strptime(LOGIN_CHECK_AT, "%H:%M")
+    return (reset - timedelta(days=1)).replace(hour=hm.hour, minute=hm.minute, second=0, microsecond=0)
+
+
+def _login_settings_ps() -> str:
+    """登入檢查排程的設定：錯過補跑（20:00 關機、晚點開機仍在截圖前補）、不喚醒電腦、時限＝等人登入的時間再加 10 分。"""
+    return (f"New-ScheduledTaskSettingsSet -StartWhenAvailable "
+            f"-ExecutionTimeLimit (New-TimeSpan -Minutes {LOGIN_CHECK_WAIT_MIN + 10})")
+
+
 def align_schedule(reset: datetime) -> str:
     """把排程的觸發換成「週重置前 SCHEDULE_OFFSETS_MIN 分鐘各一條」、動作參數補上 --scheduled，回一句結果；
-    觸發與參數都已對上就不動，排程沒註冊也不動。動作保留原本的程式與參數（腳本路徑可能是舊的轉接路徑）。"""
+    觸發與參數都已對上就不動，排程沒註冊也不動。動作保留原本的程式與參數（腳本路徑可能是舊的轉接路徑）。
+    截圖排程在時，登入檢查排程也對齊到 login_check_time(reset)：不存在就用截圖排程的程式與腳本路徑建立
+    （參數換成 --login --scheduled）、觸發不同就改、一樣就不動；建立或修改失敗回 align_failed。"""
     times = _slot_times(reset)
+    login_at = login_check_time(reset)
     r = _powershell(f"""
 $task = Get-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue
 if (-not $task) {{ 'none'; exit }}
@@ -497,20 +570,49 @@ $wantKeys = (@($want | ForEach-Object {{ & $key $_ }}) | Sort-Object) -join ','
 $act = $task.Actions[0]
 $arg = [string]$act.Arguments
 $hasFlag = $arg -match '(^|\\s)--scheduled(\\s|$)'
-if ($curKeys -eq $wantKeys -and $hasFlag) {{ 'same'; exit }}
-if (-not $hasFlag) {{ $act.Arguments = ($arg.TrimEnd() + ' --scheduled').Trim() }}
-Set-ScheduledTask -TaskName '{TASK_NAME}' -Trigger $want -Action $task.Actions -ErrorAction Stop | Out-Null
-'moved'
+if ($curKeys -eq $wantKeys -and $hasFlag) {{ 'same' }} else {{
+  if (-not $hasFlag) {{ $act.Arguments = ($arg.TrimEnd() + ' --scheduled').Trim() }}
+  Set-ScheduledTask -TaskName '{TASK_NAME}' -Trigger $want -Action $task.Actions -ErrorAction Stop | Out-Null
+  'moved'
+}}
+$lwant = {_triggers_ps([login_at])}
+$login = Get-ScheduledTask -TaskName '{LOGIN_TASK_NAME}' -ErrorAction SilentlyContinue
+if (-not $login) {{
+  $largs = (($arg -replace '(^|\\s)--scheduled(?=\\s|$)', '').TrimEnd() + ' --login --scheduled').Trim()
+  if ($act.WorkingDirectory) {{
+    $la = New-ScheduledTaskAction -Execute $act.Execute -Argument $largs -WorkingDirectory $act.WorkingDirectory
+  }} else {{
+    $la = New-ScheduledTaskAction -Execute $act.Execute -Argument $largs
+  }}
+  $ls = {_login_settings_ps()}
+  Register-ScheduledTask -TaskName '{LOGIN_TASK_NAME}' -Action $la -Trigger $lwant -Settings $ls -ErrorAction Stop | Out-Null
+  'login-created'
+}} else {{
+  $lcur = (@($login.Triggers | ForEach-Object {{ & $key $_ }}) | Sort-Object) -join ','
+  $lkeys = (@($lwant | ForEach-Object {{ & $key $_ }}) | Sort-Object) -join ','
+  if ($lcur -eq $lkeys) {{ 'login-same' }} else {{
+    Set-ScheduledTask -TaskName '{LOGIN_TASK_NAME}' -Trigger $lwant -ErrorAction Stop | Out-Null
+    'login-moved'
+  }}
+}}
 """)
-    state = r.stdout.strip()
-    if r.returncode != 0 or state not in ("none", "same", "moved"):
-        return t("ext.usage-watch.snapshot.align_failed", error=r.stderr.strip() or state)
-    if state == "none":
+    states = r.stdout.split()
+    if r.returncode == 0 and states == ["none"]:
         return t("ext.usage-watch.snapshot.schedule_not_registered")
+    if (r.returncode != 0 or len(states) != 2 or states[0] not in ("same", "moved")
+            or states[1] not in ("login-created", "login-moved", "login-same")):
+        return t("ext.usage-watch.snapshot.align_failed", error=r.stderr.strip() or r.stdout.strip())
     values = {"reset": f"{reset:%m-%d %H:%M}", "slots": _slots_text(times)}
-    if state == "same":
-        return t("ext.usage-watch.snapshot.schedule_kept", **values)
-    return t("ext.usage-watch.snapshot.schedule_moved", **values)
+    if states[0] == "same":
+        main = t("ext.usage-watch.snapshot.schedule_kept", **values)
+    else:
+        main = t("ext.usage-watch.snapshot.schedule_moved", **values)
+    slot = _slots_text([login_at])
+    if states[1] == "login-created":
+        return main + t("ext.usage-watch.snapshot.login_schedule_created", slot=slot)
+    if states[1] == "login-moved":
+        return main + t("ext.usage-watch.snapshot.login_schedule_moved", slot=slot)
+    return main + t("ext.usage-watch.snapshot.login_schedule_kept", slot=slot)
 
 
 def push_to_org_enabled() -> bool:
@@ -584,21 +686,32 @@ def register_times(at: str, day: str) -> list[datetime]:
 
 
 def do_register(at: str, day: str) -> int:
+    """註冊截圖排程（day 的 at 起 4 條），另註冊登入檢查排程（day 的前一天 LOGIN_CHECK_AT）。"""
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     script = str(Path(__file__).resolve())
     times = register_times(at, day)
+    login_at = login_check_time(times[0])   # 第一條所在那天的前一天（--day 那天的前一天）
     ps = f"""
+$ErrorActionPreference = 'Stop'
 $a = New-ScheduledTaskAction -Execute '{pythonw}' -Argument '"{script}" --scheduled'
 $t = {_triggers_ps(times)}
 $s = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
 Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $a -Trigger $t -Settings $s -Force | Out-Null
-(Get-ScheduledTaskInfo -TaskName '{TASK_NAME}').NextRunTime
+$la = New-ScheduledTaskAction -Execute '{pythonw}' -Argument '"{script}" --login --scheduled'
+$lt = {_triggers_ps([login_at])}
+$ls = {_login_settings_ps()}
+Register-ScheduledTask -TaskName '{LOGIN_TASK_NAME}' -Action $la -Trigger $lt -Settings $ls -Force | Out-Null
+[string](Get-ScheduledTaskInfo -TaskName '{TASK_NAME}').NextRunTime
+[string](Get-ScheduledTaskInfo -TaskName '{LOGIN_TASK_NAME}').NextRunTime
 """
     r = _powershell(ps)
     if r.returncode != 0:
         log(t("ext.usage-watch.snapshot.register_failed", error=r.stderr.strip()))
         return 1
-    log(t("ext.usage-watch.snapshot.registered", task=TASK_NAME, slots=_slots_text(times), next_run=r.stdout.strip()))
+    runs = r.stdout.strip().splitlines() + ["?", "?"]
+    log(t("ext.usage-watch.snapshot.registered", task=TASK_NAME, slots=_slots_text(times), next_run=runs[0].strip()))
+    log(t("ext.usage-watch.snapshot.login_registered", task=LOGIN_TASK_NAME, slot=_slots_text([login_at]),
+          next_run=runs[1].strip()))
     return 0
 
 
@@ -618,7 +731,7 @@ def main() -> int:
     if a.register:
         return do_register(a.at, a.day)
     if a.login:
-        return do_login(a.login_timeout)
+        return do_login_check() if a.scheduled else do_login(a.login_timeout)
     return do_snapshot(headed=not a.headless, scheduled=a.scheduled)
 
 

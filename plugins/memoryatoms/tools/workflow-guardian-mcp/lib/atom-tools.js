@@ -976,9 +976,10 @@ async function toolAtomPromote(id, args) {
     ? "\n\n" + t("mcp.atom_tools.merge_hint", { name: atom_name })
     : "";
 
+  // 依據照 dry-run 報效用下界：Confirmations 不參與晉升，本函式不讀它
   return sendToolResult(id,
-    `Promoted ${atom_name}: ${meta.confidence} → ${next}\n` +
-    `Confirmations: ${confirmations} | ReadHits: ${readhits} (via ${method})\n` +
+    `Promoted ${atom_name}: ${meta.confidence} → ${next} (via ${method})\n` +
+    utilLine +
     `Knowledge lines updated to ${next}.` +
     mergeReport +
     mergeHint

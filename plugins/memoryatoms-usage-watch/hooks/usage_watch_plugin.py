@@ -15,6 +15,7 @@ USAGE_WATCH_STALE_HOURS = 72  # 每小時排程；留週末關機的寬限
 _TOOL = Path(__file__).resolve().parents[1] / "tools" / "usage-watch.py"  # 提示裡給人複製的指令用實際路徑
 SNAPSHOT_STALE_DAYS = 8  # 截圖排程每週跑一次，多一天寬限
 SNAPSHOT_PROBLEM_DAYS = 3  # 失敗提示只留這幾天，之後等下週排程重試
+LOGIN_CHECK_HINT_HOURS = 24  # 週一晚上的登入檢查結果只提示一天；過了週二的截圖，截圖本身的提示會接手
 _SNAPSHOT_TASK = "Claude-Usage-WeeklySnapshot"  # 與截圖工具的 TASK_NAME 同名
 _SNAPSHOT_TOOL = Path(__file__).resolve().parents[1] / "tools" / "usage-snapshot" / "usage_snapshot.py"
 
@@ -78,11 +79,46 @@ def _snapshot_advisory(last_run_path) -> list:
         return [t("ext.usage-watch.snapshot_last_run_unreadable", tool=_SNAPSHOT_TOOL)]
 
 
+def _login_check_advisory(path) -> list:
+    """重置前一晚的登入檢查 → advisory 行（無需提醒回 []）。
+
+    只看排程跑法（scheduled=True）；缺檔＝這台沒排登入檢查，不提示。
+    只在 LOGIN_CHECK_HINT_HOURS 內提示：過了週二的截圖，截圖本身的提示會接手。
+    cc＝Claude Code 本身的登入；web＝網頁退路（工具專屬 Chrome 登入 claude.ai），skipped＝沒設定。
+    """
+    try:
+        if not path.exists():
+            return []
+        d = json.loads(path.read_text(encoding="utf-8"))
+        if d.get("scheduled") is not True:
+            return []
+        at = datetime.fromisoformat(d.get("at", "")).replace(tzinfo=None)
+        if datetime.now() - at > timedelta(hours=LOGIN_CHECK_HINT_HOURS):
+            return []
+        cc_bad = d.get("cc_ok") is not True
+        web_bad = d.get("web") == "timeout"
+        if not (cc_bad or web_bad):
+            return []
+        err = " ".join(str(d.get("cc_error") or "").split())[:120] or "?"
+        web_fix = t("ext.usage-watch.login_check_web_fix", tool=_SNAPSHOT_TOOL)
+        cc_fix = t("ext.usage-watch.login_check_cc_fix", error=err)
+        when = f"{at:%m-%d %H:%M}"
+        if cc_bad and web_bad:
+            return [t("ext.usage-watch.login_check_both", at=when, web_fix=web_fix, cc_fix=cc_fix)]
+        if web_bad:
+            return [t("ext.usage-watch.login_check_web", at=when, web_fix=web_fix)]
+        return [t("ext.usage-watch.login_check_cc", at=when, cc_fix=cc_fix)]
+    except Exception as e:  # noqa: BLE001
+        _atom_debug_error("session_start:login_check_advisory", e)
+        return [t("ext.usage-watch.login_check_unreadable", tool=_SNAPSHOT_TOOL)]
+
+
 def on_new_session(ctx: Dict[str, Any]) -> List[str]:
     out: List[str] = []
-    # 兩邊各自 try：一邊壞不影響另一邊
+    # 各自 try：一邊壞不影響其他
     for fn, path in ((_usage_watch_advisory, WORKFLOW_DIR / "usage-watch" / "last-run.json"),
-                     (_snapshot_advisory, WORKFLOW_DIR / "usage-snapshots" / "usage-last-run.json")):
+                     (_snapshot_advisory, WORKFLOW_DIR / "usage-snapshots" / "usage-last-run.json"),
+                     (_login_check_advisory, WORKFLOW_DIR / "usage-snapshots" / "usage-login-check.json")):
         try:
             out.extend(fn(path))
         except Exception as e:  # noqa: BLE001
