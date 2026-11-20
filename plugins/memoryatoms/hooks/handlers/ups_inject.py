@@ -453,8 +453,9 @@ def assemble_injection(
                             {"trigger_kind": title_map[name]["kind"], "trigger_term": title_map[name]["term"]})
             continue
         # CODING_TURN_FULL_ONLY_ON_TRIGGER：寫碼回合只有 trigger 命中算 hot，其餘一律走一行
+        # 平常 hot＝字打中（trigger／bm25）；vector 要靠下面的 VECTOR_CONFIDENT_FULL 才給全文
         classification = ("cold" if lean and source != "trigger"
-                          else classify_hot_cold(atom_path, source, access_cache=access_cache))
+                          else classify_hot_cold(source))
         # VECTOR_CONFIDENT_FULL：向量很有把握的冷卡也給全文；寫碼回合照舊一行
         if classification == "cold" and not lean and source == "vector" and _vector_confident(section_hints.get(name), config):
             classification = "hot"
@@ -578,7 +579,7 @@ def assemble_injection(
             _atom_debug_log("BUDGET", f"atom={rname}(related) decision=cold_dropped (technical card, not a development turn)",
                             config)
             continue
-        related_classification = "cold" if lean else classify_hot_cold(rpath, "related", access_cache=access_cache)
+        related_classification = "cold" if lean else classify_hot_cold("related")
         if related_classification == "cold":
             if not cold_lines_on:
                 _record(rname, rpath, rel_path, "related", "cold_dropped")

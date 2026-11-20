@@ -60,12 +60,6 @@ def decide_atom_injection(
     return ("skip", "", 0)
 
 
-_HOT_RECENT_DAYS = 7
-
-
-_HOT_RECENT_WINDOW_SEC = _HOT_RECENT_DAYS * 86400
-
-
 _COLD_LINE_CAP = 80
 
 
@@ -91,45 +85,14 @@ def atom_status_suffix(raw_content: str) -> str:
     return f" [Status: {val}]"
 
 
-def _recent_count(timestamps: Any) -> int:
-    """timestamps 清單中落在 7d 窗內的筆數（_recent_reads_7d / cache 路徑共用）。"""
-    if not isinstance(timestamps, list):
-        return 0
-    now = time.time()
-    count = 0
-    for ts in timestamps:
-        try:
-            if now - float(ts) <= _HOT_RECENT_WINDOW_SEC:
-                count += 1
-        except (TypeError, ValueError):
-            continue
-    return count
+_KEYWORD_SOURCES = frozenset({"trigger", "bm25"})
 
 
-def _recent_reads_7d(access_file: Path) -> int:
-    if not access_file.exists():
-        return 0
-    try:
-        data = json.loads(access_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return 0
-    timestamps = data.get("timestamps", []) if isinstance(data, dict) else []
-    return _recent_count(timestamps)
-
-
-def classify_hot_cold(
-    atom_path: Path, source: str, hot_recent_threshold: int = 3,
-    access_cache: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> str:
-    if source == "trigger":
-        return "hot"
-    if access_cache is not None:
-        data = load_access_cached(atom_path, access_cache)
-        recent = _recent_count(data.get("timestamps"))
-    else:
-        access_file = atom_path.parent / f"{atom_path.stem}.access.json"
-        recent = _recent_reads_7d(access_file)
-    return "hot" if recent >= hot_recent_threshold else "cold"
+def classify_hot_cold(source: str) -> str:
+    """hot＝這句話的字打中了卡（trigger 命中、或 BM25 詞彙命中）。只看這一句，不看卡最近被讀過幾次：
+    注入本身就會記一次讀取，「最近常被送」只代表常被送，不代表對題，拿它升 hot 會讓送錯的卡越送越多。
+    vector 與 related 一律 cold；向量很有把握的由呼叫端另升（VECTOR_CONFIDENT_FULL）。"""
+    return "hot" if source in _KEYWORD_SOURCES else "cold"
 
 
 def pointer_path(
