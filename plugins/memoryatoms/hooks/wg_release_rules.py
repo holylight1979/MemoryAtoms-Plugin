@@ -2026,10 +2026,15 @@ RULE_MODE.setdefault("SUBAGENT_START_NON_AGENT_INJECT", REMIND)   # 登在 RULE_
 
 # ─── 這則拿什麼字檢索：非人類訊息不注入、/continue 接交接單（判法在 handlers/ups_search.py、handlers/user_prompt_submit.py，這裡只登錄） ───
 RULES.update({
-    "NON_HUMAN_PROMPT_NO_INJECT": "UserPromptSubmit 整則是背景任務通知、或沒有正文的其他 session 閒置／送達通知（harness_text.non_human_kind）→ 不檢索、不注入；"
-                                  "前置閘與收尾記帳照跑，Logs/guard-ups_inject.jsonl 記 event=skip_inject（handlers/user_prompt_submit）。"
-                                  "通知夾著使用者打的字照常注入，查詢只用使用者本人打的字（harness_text.user_typed_text），"
+    "NON_HUMAN_PROMPT_NO_INJECT": "UserPromptSubmit 整則是背景任務通知、沒有正文的其他 session 閒置／送達通知、或只貼了圖片"
+                                  "（貼圖時 prompt 是一行 [Image: source: <絕對路徑>]；harness_text.non_human_kind 回 image）→ 不檢索、不注入；"
+                                  "前置閘與收尾記帳照跑，Logs/guard-ups_inject.jsonl 記 event=skip_inject、reason 寫是哪一種（handlers/user_prompt_submit）。"
+                                  "通知或圖片夾著使用者打的字照常注入，查詢只用使用者本人打的字（harness_text.user_typed_text），"
                                   "注入預算照原文與查詢取大（handlers/ups_search.retrieval_query）。",
+    "RETRIEVAL_QUERY_STRIPS_PATHS": "拿去配對記憶卡的查詢字（使用者打的字、同伴訊息正文、排程正文、/continue 接的交接單）先過 harness_text.retrieval_text："
+                                    "圖片標記整個拿掉；絕對路徑（磁碟代號、UNC、~/、至少兩段的 POSIX，引號包住含空白的也算）只留有副檔名的檔名、"
+                                    "資料夾路徑整段拿掉；相對路徑、單一檔名、網址、斜線指令不動。路徑裡的資料夾名（暫存夾、家目錄、使用者名）會打中卡片觸發詞"
+                                    "但使用者不是在講那些事，留檔名是讓點名程式檔的卡照樣命中。只改查詢，使用者原話（口令、意圖、Quote）不動（handlers/user_prompt_submit）。",
     "PEER_MESSAGE_INJECT_FROM_BODY": "UserPromptSubmit 整則是其他 session 的訊息 → 用訊息正文檢索注入（harness_text.peer_message_text），Logs/guard-ups_inject.jsonl 記 event=peer_query；同 session 已送過的卡不重送，注入預算只照正文算；正文只當查詢，使用者原話、意圖、口令都不吃它（handlers/user_prompt_submit）。",
     "SCHEDULED_PROMPT_NOT_USER": "排程工具（CronCreate、ScheduleWakeup）建立時，PostToolBatch 把提示原文記進 state scheduled_prompts"
                                  "（handlers/post_tool_batch.note_scheduled_prompts，最多 20 則）；UserPromptSubmit 收到空白折疊後一模一樣的字 → "
@@ -2043,6 +2048,7 @@ RULES.update({
                                    "（handlers/ups_search.retrieval_query）。",
 })
 RULE_MODE.setdefault("NON_HUMAN_PROMPT_NO_INJECT", REMIND)    # 登在 RULE_MODE 建表之後：說明型規則，不是擋點
+RULE_MODE.setdefault("RETRIEVAL_QUERY_STRIPS_PATHS", REMIND)
 RULE_MODE.setdefault("PEER_MESSAGE_INJECT_FROM_BODY", REMIND)
 RULE_MODE.setdefault("SCHEDULED_PROMPT_NOT_USER", REMIND)
 RULE_MODE.setdefault("UPS_CANCEL_WARN_NEXT_HOOK", REMIND)

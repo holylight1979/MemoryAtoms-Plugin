@@ -11,8 +11,9 @@ handlers/user_prompt_submit.py — UserPromptSubmit hook handler（orchestrator�
 - ups_inject.assemble_injection — injection assemble 段（hot/cold / budget /
   related spread / 效用晉升提示）
 
-檢索與注入只看使用者打的字（ups_search.retrieval_query；/continue 接交接單前段）；整則是背景通知就不檢索、不注入
+檢索與注入只看使用者打的字（ups_search.retrieval_query；/continue 接交接單前段）；整則是背景通知或只貼了圖片就不檢索、不注入
 （harness_text.non_human_kind），前置閘與收尾記帳照跑；整則是其他 session 的訊息就用訊息正文檢索（harness_text.peer_message_text）。
+查詢字先過 harness_text.retrieval_text：圖片標記拿掉、絕對路徑只留檔名，路徑裡的資料夾名不拿去打觸發詞。
 
 本檔保留收尾職責：blind-spot reporter、fix escalation、evasion 舉證、
 handoff 提醒、failure-triggered extraction、topic tracking、sync reminders、
@@ -34,7 +35,7 @@ from wg_core import (
 )
 import i18n  # lib/（wg_core 已放進 sys.path）：給人看的提示走語言表
 from harness_text import (IDE_TAG_NAMES, mark_scheduled, non_human_kind, normalize_prompt, peer_message_text,  # lib/
-                          strip_harness_blocks, user_typed_text)  # lib/（wg_core 已把它放進 sys.path）
+                          retrieval_text, strip_harness_blocks, user_typed_text)  # lib/（wg_core 已把它放進 sys.path）
 from wg_atoms import (
     classify_intent,
     compute_token_budget,
@@ -186,8 +187,9 @@ def handle_user_prompt_submit(
     )
     _hook_lap("前置閘")
 
-    # 規則 NON_HUMAN_PROMPT_NO_INJECT：整則是背景任務通知、或沒有正文的同伴閒置／送達通知（剔掉這些區塊後沒有使用者打的字）→
-    # 脈絡段、記憶檢索、注入組裝這次不跑（前置閘、退避舉證、修復升級、收尾記帳照做），留帳 event=skip_inject。
+    # 規則 NON_HUMAN_PROMPT_NO_INJECT：整則是背景任務通知、沒有正文的同伴閒置／送達通知、或只貼了圖片（剔掉這些區塊與圖片標記後
+    # 沒有使用者打的字）→ 脈絡段、記憶檢索、注入組裝這次不跑（前置閘、退避舉證、修復升級、收尾記帳照做），留帳 event=skip_inject，
+    # reason 寫是哪一種（task-notification／peer／image）。
     # 夾著使用者打的字就照常注入，查詢只用使用者打的字（retrieval_query）。
     # 規則 PEER_MESSAGE_INJECT_FROM_BODY：其他 session 的訊息是這個 session 的工作來源 → 用訊息正文檢索，留帳 event=peer_query；
     # 正文只當查詢：使用者原話（typed）、意圖、口令都不吃它。
@@ -211,6 +213,9 @@ def handle_user_prompt_submit(
     else:
         query = retrieval_query(session_id, typed, clean_prompt,
                                 str((state.get("session") or {}).get("cwd") or input_data.get("cwd") or ""))
+    # 規則 RETRIEVAL_QUERY_STRIPS_PATHS：三種來源的查詢都先拿掉圖片標記、把絕對路徑換成檔名（harness_text.retrieval_text），
+    # 路徑裡的資料夾名不拿去打觸發詞；原話（typed）不動，口令與意圖照舊
+    query = retrieval_text(query)
     query_lower = query.lower()
 
     # 意圖前移（A0.1）：注入前就知道這回合要做什麼；十鍵見 wg_atoms.INTENT_PATTERNS。

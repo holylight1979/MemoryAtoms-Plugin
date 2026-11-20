@@ -130,6 +130,7 @@ def user_typed_text(prompt: str, keep_lines: bool = False) -> str:
     text = strip_harness_blocks(prompt)
     m = _SYSTEM_NOTIFICATION_RE.search(text)
     text = HOOK_RESIDUE_LINE_RE.sub(" ", _PEER_PREFIX_LINE_RE.sub(" ", text[:m.start()] if m else text))
+    text = IMAGE_MARKER_RE.sub(" ", text)
     if _RESIDUE_TAG_RE.search(text):
         return ""
     if not keep_lines:
@@ -141,7 +142,7 @@ def user_typed_text(prompt: str, keep_lines: bool = False) -> str:
 def non_human_kind(prompt: str) -> Optional[str]:
     """整則沒有使用者本人打的字（user_typed_text 是空字串）時，這則是誰送來的：
     "task-notification"（背景任務、子代理完成通知）、"peer"（其他 Claude session 的訊息，含閒置／送達通知）、
-    "scheduled"（排程送來的提示，見 mark_scheduled）。
+    "scheduled"（排程送來的提示，見 mark_scheduled）、"image"（只貼了圖片，沒有字）。
     有使用者打的字、或看不出來源（例：殘留標籤字樣整則不認、只有 IDE 區塊）→ None。"""
     if not prompt or user_typed_text(prompt):
         return None
@@ -152,7 +153,45 @@ def non_human_kind(prompt: str) -> Optional[str]:
         return "scheduled"
     if _PEER_TAG in names or _PEER_NOTICE_RE.search(prompt):
         return "peer"
+    if IMAGE_MARKER_RE.search(prompt):
+        return "image"
     return None
+
+
+# ─── 圖片標記與檔案路徑 ─────────────────────────────────────────────────────────
+# 貼進來的圖片，Claude Code 寫成一行 `[Image: source: <絕對路徑>]`：不是使用者打的字（user_typed_text 剔掉；整則只剩它時
+# non_human_kind 回 "image"）。
+# 絕對路徑裡的資料夾名（暫存夾、家目錄、使用者名、.claude）會打中卡片的觸發詞，但使用者不是在講那些事；
+# 拿去配對記憶卡的字（retrieval_text）把絕對路徑換成檔名：有副檔名才留（點名程式檔的卡照樣命中），資料夾路徑整段拿掉。
+# 相對路徑、單一檔名、網址不動。只改檢索查詢：口令、意圖、Quote 仍吃 user_typed_text。
+IMAGE_MARKER_RE = re.compile(r"\[Image:[^\]\n]*\]", re.IGNORECASE)
+# 起點：Windows 磁碟 `C:\`、UNC `\\host\`、`~/`、POSIX 根 `/`（至少兩段，`/usage` 這類斜線指令不算）；
+# 前一個字不是字母、數字、`.`、`~`、`-`、`:`、`/`（網址的 `//host/path`、`a/b` 相對路徑都不算起點）；
+# 路徑到空白、引號、角括號、括號、常見中英文標點為止。
+_ABS_PATH_RE = re.compile(
+    r"(?<![\w.~\-:/])"
+    r"(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/]|~[\\/]|/(?=[^\s/]+/))"
+    r"[^\s\"'`<>|()\[\]{},;，。、；：！？「」（）]*"
+)
+# 引號或反引號包住的絕對路徑可以含空白（`"C:\Program Files\App\run.exe"`）：先處理，引號留著
+_QUOTED_ABS_PATH_RE = re.compile(r"([\"'`])((?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/]|~[\\/]|/(?=[^/]+/))[^\"'`\n]*)\1")
+_FILE_NAME_RE = re.compile(r"^[^\\/]+\.\w{1,8}$")
+
+
+def _file_name_of(path: str) -> str:
+    last = path.rstrip("\\/").replace("\\", "/").rsplit("/", 1)[-1]
+    return last if _FILE_NAME_RE.match(last) else " "
+
+
+def retrieval_text(text: str) -> str:
+    """拿去配對記憶卡（觸發詞、BM25、向量）的字：圖片標記整個拿掉，絕對路徑只留有副檔名的檔名；
+    拿掉後多出來的空格折成一格，換行留著（/continue 接交接單的查詢靠換行分段）。"""
+    if not text:
+        return ""
+    text = IMAGE_MARKER_RE.sub(" ", text)
+    text = _QUOTED_ABS_PATH_RE.sub(lambda m: m.group(1) + _file_name_of(m.group(2)).strip() + m.group(1), text)
+    text = _ABS_PATH_RE.sub(lambda m: _file_name_of(m.group(0)), text)
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
 def peer_message_text(prompt: str) -> str:

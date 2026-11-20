@@ -65,8 +65,8 @@ def ruler_text() -> str:
     style = CODE_DIR / "rules" / "coding-style.md"
     thinking = CODE_DIR / "rules" / "code-thinking.md"
     style_text = strip_frontmatter(style.read_text(encoding="utf-8"))
-    priority_mark = "> 優先序"   # 使用者規則檔裡那一行的開頭（比對用，不翻）
-    priority = next((ln for ln in style_text.splitlines() if ln.startswith(priority_mark)), "")
+    priority_mark = "優先序"   # 規則檔開頭那行引言（> 開頭）裡的字；只比對、不翻
+    priority = next((ln for ln in style_text.splitlines() if ln.startswith(">") and priority_mark in ln), "")
     if not priority:
         raise SystemExit(t("ext.codex.run.priority_line_missing", style=style, marker=priority_mark))
     parts = []
