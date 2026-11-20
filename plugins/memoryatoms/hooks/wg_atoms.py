@@ -118,6 +118,7 @@ from wg_atoms_match import (  # noqa: E402,F401
     compute_activation,
     compute_injection_rank,
     count_trigger_hits,
+    hit_terms,
     match_triggers,
     rrf_fuse,
 )

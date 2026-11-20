@@ -6,6 +6,7 @@ handlers/ups_inject.py — UserPromptSubmit injection assemble 段
 - hot/cold 分類（cold → 1-line 摘要，injection.cold_lines 開才給、出廠關；向量找到的冷卡，最像這句的那一段語意分數 ≥ vector_search.full_text_min_score 就升成 hot 給全文，規則 VECTOR_CONFIDENT_FULL，寫碼回合不升）
 - per-turn budget 硬上限（decide_atom_injection：ok/fallback/skip；塞不下時的印象節錄 injection.budget_fallback 開才給、出廠關）
 - 技術卡（injection.tech_card_dirs 的卡）不是開發這則只給一行（wg_core.tech_cards_full）
+- trigger 命中但被觸發詞處理表歸成「常見詞」的卡只給一行標題（form trigger_title，規則 TRIGGER_HANDLING_BY_KIND）
 - section hints 局部抽取（SECTION_INJECT_THRESHOLD）
 - Related-Edge Spreading（max_depth=1）
 - ReadHits++ via lib.atom_access + 效用導向晉升提示（Wilson 下界）
@@ -23,6 +24,7 @@ from datetime import datetime
 
 from wg_core import CLAUDE_DIR, coding_turn, log_promotion_audit, _atom_debug_log, _estimate_tokens, v6_enabled
 import i18n  # lib/（wg_core 已放進 sys.path）：給人看的提示走語言表
+import wg_trigger_handling
 from wg_atoms import (
     AtomEntry,
     _strip_atom_for_injection,
@@ -67,7 +69,8 @@ def _append_injection_turn_log(
         return  # verify 套件以假 session 跑真 ups_inject，不得污染正式統計
     try:
         counts = {"ok": 0, "fallback": 0, "skip": 0, "cold": 0, "redundant": 0, "seen": 0,
-                  "dropped": 0, "pointer_trim": 0, "dropped_trim": 0, "cold_dropped": 0, "tech_line": 0}
+                  "dropped": 0, "pointer_trim": 0, "dropped_trim": 0, "cold_dropped": 0, "tech_line": 0,
+                  "trigger_title": 0}
         cards: List[Dict[str, str]] = []
         for r in records:
             f = r.get("form_final") or r.get("form")
@@ -192,9 +195,11 @@ def delivered_forms(state: Dict[str, Any]) -> Dict[str, str]:
 def _line_upgrades(
     matched: List[Tuple[AtomEntry, Path]], all_atoms: List[Tuple[AtomEntry, Path]], already_injected: List[str],
     delivered: Dict[str, str], prompt: str, atom_source: Dict[str, str],
+    handling: Optional[Dict[str, Any]] = None, layer_of: Optional[Dict[str, str]] = None,
 ) -> List[Tuple[AtomEntry, Path]]:
     """CODING_TURN_FULL_ONLY_ON_TRIGGER 的補送：前面只送過一行（還在 injected_atoms，搜尋段不再給它當候選）、這則 trigger 命中的卡
-    補回候選、來源記 trigger，排在第一個非 trigger 候選之前（同名取首見，同搜尋段）。改 atom_source（呼叫端傳本地副本）。"""
+    補回候選、來源記 trigger，排在第一個非 trigger 候選之前（同名取首見，同搜尋段）。改 atom_source（呼叫端傳本地副本）。
+    handling（編譯過的觸發詞處理表）有值時，命中詞被歸成常見詞、判不到全文的卡不補（同搜尋段的判定）。"""
     have = {e[0][0] for e in matched}
     already = set(already_injected)
     pl = (prompt or "").lower()
@@ -205,6 +210,9 @@ def _line_upgrades(
             continue
         have.add(name)
         if any_trigger_hit(triggers, pl):
+            if handling and wg_trigger_handling.card_outcome(
+                    handling, (layer_of or {}).get(name, "global"), triggers, pl)[0] != wg_trigger_handling.FULL:
+                continue
             extra.append(entry)
             atom_source[name] = "trigger"
     if not extra:
@@ -305,7 +313,16 @@ def assemble_injection(
     sent_full = {n for n, k in delivered.items() if k == "full"}
     if lean:
         atom_source = dict(atom_source)
-        matched_with_dir = _line_upgrades(matched_with_dir, all_atoms, already_injected, delivered, prompt, atom_source)
+        handling = ((state.get("atom_index") or {}).get("trigger_handling")
+                    if wg_trigger_handling.enabled(config or {}) else None)
+        layer_of: Dict[str, str] = {}   # 卡名 → 所在層，順序同搜尋段（global、project、org；同名取首見）
+        if handling:
+            ai = state.get("atom_index") or {}
+            for layer_ in ("global", "project", "org"):
+                for e_ in ai.get(layer_) or []:
+                    layer_of.setdefault(e_[0], layer_)
+        matched_with_dir = _line_upgrades(matched_with_dir, all_atoms, already_injected, delivered, prompt, atom_source,
+                                          handling=handling, layer_of=layer_of)
     if not matched_with_dir:
         return newly_injected, atom_source_dirs
 
@@ -329,7 +346,8 @@ def assemble_injection(
     rescue_pairs: List[Tuple[str, str]] = []  # (atom, 實注入內容) → 救援日誌 watch
     # 本 turn 注入記錄（name/path/source/form），尾段落 state["injection_log"]。
     # form: ok=全文 / fallback=印象（budget_fallback 開才有） / skip=budget 一行 / cold=cold 一行（cold_lines 開才有）
-    #       / dropped=塞不下硬頂；cold_dropped=補位注入關閉時被略過的 cold 卡；tech_line=不是開發這則的技術卡一行
+    #       / dropped=塞不下硬頂；cold_dropped=補位注入關閉時被略過的 cold 卡；tech_line=不是開發這則的技術卡一行；
+    #       trigger_title=被觸發詞處理表歸成常見詞的 trigger 命中卡只給一行標題
     inject_records: List[Dict[str, Any]] = []
 
     _atom_scopes: Dict[str, str] = (state.get("atom_index") or {}).get("scopes") or {}
@@ -369,18 +387,22 @@ def assemble_injection(
     # 技術卡（injection.tech_card_dirs）這則只給一行：UPS 判這則不是在開發（wg_core.tech_cards_full 為假）；直接呼叫沒判過＝照舊
     tech_dirs = tech_card_dirs(config) if state.get("tech_cards_full", True) is False else ()
 
-    def _push_tech_line(name_: str, path_: Path, rel_: str, source_: str, raw_: str) -> None:
-        """技術卡一行（form tech_line）：不進 injected_atoms（之後開發它的那則照常整段送）、不當 related 擴散起點、AtomAudit 不追問。"""
+    def _push_line_only(name_: str, path_: Path, rel_: str, source_: str, raw_: str, tag_: str, form_: str,
+                        extra_: Optional[Dict[str, Any]] = None) -> None:
+        """只送一行標題（form 由呼叫端給：tech_line／trigger_title）：不進 injected_atoms（之後有更強證據的那則照常整段送）、
+        不當 related 擴散起點、AtomAudit 不追問。塞不下硬頂記 dropped；extra_ 併進剛記的那筆紀錄。"""
         title_ = _strip_atom_for_injection(raw_).split("\n", 1)[0].strip("# ").strip()[:_POINTER_TITLE_CAP]
-        line_ = _pointer(name_, raw_, title_, path_, i18n.t("hook.ups_inject.tech_card_tag"))
+        line_ = _pointer(name_, raw_, title_, path_, tag_)
         tok_ = _estimate_tokens(line_)
         if acct["used"] + tok_ > _TURN_BUDGET_LIMIT:
             _record(name_, path_, rel_, source_, "dropped")
             return
         atom_lines.append(line_)
         acct["used"] += tok_
-        _record(name_, path_, rel_, source_, "tech_line")
-        _atom_debug_log("BUDGET", f"atom={name_} source={source_} decision=tech_line used={acct['used']}/{_TURN_BUDGET_LIMIT}",
+        _record(name_, path_, rel_, source_, form_)
+        if extra_:
+            inject_records[-1].update(extra_)
+        _atom_debug_log("BUDGET", f"atom={name_} source={source_} decision={form_} used={acct['used']}/{_TURN_BUDGET_LIMIT}",
                         config)
 
     def _push(block: str, name_: str, path_: Path, rel_: str, source_: str, form_: str,
@@ -406,6 +428,8 @@ def assemble_injection(
             rescue_pairs.append((name_, rescue_content))
         return True
 
+    title_map = (caches or {}).get("trigger_title") or {}   # 搜尋段判成「只送標題」的 trigger 命中卡
+
     for (name, rel_path, triggers), base_dir in matched_with_dir:
         atom_path = (base_dir / rel_path) if rel_path else (base_dir / "memory" / f"{name}.md")
         if not atom_path.exists():
@@ -420,7 +444,13 @@ def assemble_injection(
             _push_seen(name, atom_path, rel_path, source)
             continue
         if tech_dirs and is_tech_card(atom_path, tech_dirs):
-            _push_tech_line(name, atom_path, rel_path, source, raw_content)
+            _push_line_only(name, atom_path, rel_path, source, raw_content,
+                            i18n.t("hook.ups_inject.tech_card_tag"), "tech_line")
+            continue
+        if source == "trigger" and name in title_map:
+            _push_line_only(name, atom_path, rel_path, source, raw_content,
+                            i18n.t("hook.ups_inject.trigger_title_tag", term=title_map[name]["term"]), "trigger_title",
+                            {"trigger_kind": title_map[name]["kind"], "trigger_term": title_map[name]["term"]})
             continue
         # CODING_TURN_FULL_ONLY_ON_TRIGGER：寫碼回合只有 trigger 命中算 hot，其餘一律走一行
         classification = ("cold" if lean and source != "trigger"

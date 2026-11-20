@@ -21,6 +21,7 @@ from wg_platform import no_window_flags, background_spawn_kwargs, paste_command 
 _MERGE_CMD = paste_command(CODE_DIR / "tools" / "merge-atom-index.py")   # 提示裡給人貼的合併指令（實際直譯器＋腳本絕對路徑）
 from atom_spec import ALL_INDEX_FILES, INDEX_FILES   # lib/：共用名字
 import i18n   # lib/：給人看的提示走語言表
+from degraded import alert_line   # lib/：開場警告的單一出口（給 state 就記成結構化警告，不給照舊回字串）
 
 try:
     from vcs_ignore import (  # lib/：衍生檔退出版控（wg_core 已把 CODE_DIR/lib 放上 sys.path）
@@ -40,6 +41,17 @@ except ImportError as _e:  # lib 不在（hooks 升了、lib 沒升）：缺檔�
     _vcs_ignore_lines = None
     _derived_exit_hint = None
     _under_claude_dir = lambda _p: True  # noqa: E731  分不出是不是根層記憶 → 不做過期檢查，只保留缺檔重建
+
+
+def _scope(state, path) -> str:
+    """路徑屬本專案／根層／別的專案（別的專案不在本 session 提）；沒給 state 不分。"""
+    if state is None:
+        return "project"
+    try:
+        from wg_phase_alerts import scope_of_path
+    except ImportError:
+        return "project"
+    return scope_of_path(state, path, CLAUDE_DIR)
 
 
 def _spawn_pull_sync(session_id: str, cwd: str, config: Dict[str, Any]) -> int:
@@ -101,7 +113,7 @@ def _own_sync_requests(_vs, root, session_id: str) -> int:
     return n
 
 
-def _unpushed_advisory(session_id: str = "", spawn=None) -> list:
+def _unpushed_advisory(session_id: str = "", spawn=None, state=None) -> list:
     """本地有已 commit 未 push／worker 留下 `.unpushed` 標記的 root → advisory 行（無則回 []）。
     拉側（roots.json 的 last_pull／pulled_commits／pull_error 與 `.behind` 標記）也在這裡報：拉入 N 筆 → 一行提醒
     候選池以本次載入快照為準；`.behind` → 一行理由。pull 欄位與 push 的 last_error 分欄，解除 `.unpushed` 的邏輯不碰它們。
@@ -117,7 +129,7 @@ def _unpushed_advisory(session_id: str = "", spawn=None) -> list:
     last_error（skip／索引失敗／spawn 失敗）、`.req/` 內無人消費的請求（含 inflight 殘留：worker 沒起或中途死）。
     給了 session_id：本 session 自己落的請求不算孤兒（開場拉取 worker 逐 root 取鎖，後面的 root 還沒輪到）；本場 worker
     也在跑的 root 只報「會接手」；其餘孤兒 root 當場用 spawn_vcs_sync（spawn 可注入）補跑一支背景 worker，行裡報 pid 或起不來。
-    除了清已解決的標記／last_error 外只讀不寫；單一 root 失敗不影響其他 root——沒有 upstream / 不是 repo /
+    除了清已解決的標記／last_error、移除資料夾已不存在的 root 登記（wg_vcs_sync.forget_root）外只讀不寫；單一 root 失敗不影響其他 root——沒有 upstream / 不是 repo /
     git 不在都算正常（查不到 ahead 就不報 ahead）。
     """
     try:
@@ -142,12 +154,19 @@ def _unpushed_advisory(session_id: str = "", spawn=None) -> list:
             return r.returncode == 0, (r.stdout or "").strip()
 
         lines = []
-        recover: List[Tuple[int, str, int, Any]] = []   # (lines 位置, label, 筆數, SyncTarget)
+        recover: List[Tuple[int, str, int, Any, str]] = []   # (lines 位置, label, 筆數, SyncTarget)
         for root, info in entries:
             vcs = info.get("vcs", "git")
             last_error = info.get("last_error")
             label = "~/.claude" if root.resolve() == CLAUDE_DIR.resolve() else root.as_posix()
+            scope = _scope(state, root)
+
+            def _a(target, level, text, fix=""):   # fix：翻好的解法句
+                return alert_line(state, "Sync", f"{label}{target}", level, scope, text, fix)
             try:
+                if _vs and _vs.root_is_gone(root):
+                    _vs.forget_root(root)        # 資料夾已不在（工作樹收掉、專案搬走）：登記與殘留請求、標記拿掉，不報紅燈
+                    continue
                 rec = _vs.read_unpushed_record(root) if _vs else None
                 is_git = vcs == "git" and (root / ".git").exists()
                 ahead, ahead_known = 0, False
@@ -173,25 +192,25 @@ def _unpushed_advisory(session_id: str = "", spawn=None) -> list:
                 own = _own_sync_requests(_vs, root, session_id) if orphan and session_id else 0
             except Exception as e:
                 _atom_debug_error("session_start:unpushed_advisory:root", e)
-                lines.append(i18n.t("hook.session_start_vcs.unpushed_check_failed_label", label=label, etype=type(e).__name__))
+                lines.append(_a(":check", "report", i18n.t("hook.session_start_vcs.unpushed_check_failed_label", label=label, etype=type(e).__name__)))
                 continue
             reason = (rec or {}).get("reason")
             if ahead > 0:
-                lines.append(i18n.t("hook.session_start.unpushed_commits", label=label, ahead=ahead))
+                lines.append(_a("", "done", i18n.t("hook.session_start.unpushed_commits", label=label, ahead=ahead), i18n.t("hook.phase_alerts.fix.v01", label=label)))
             elif reason:
-                lines.append(i18n.t("hook.session_start.memory_not_versioned", label=label, reason=reason[:80]))
+                lines.append(_a("", "done", i18n.t("hook.session_start.memory_not_versioned", label=label, reason=reason[:80]), i18n.t("hook.phase_alerts.fix.v02", label=label)))
             elif last_error:
-                lines.append(i18n.t("hook.session_start_vcs.last_sync_incomplete", label=label, err=str(last_error)[:80]))
+                lines.append(_a("", "done", i18n.t("hook.session_start_vcs.last_sync_incomplete", label=label, err=str(last_error)[:80]), i18n.t("hook.phase_alerts.fix.v03", label=label)))
             foreign = pending - own
             if orphan and own and foreign > 0:
-                lines.append(i18n.t("hook.session_start_vcs.sync_orphan_handover", label=label, foreign=foreign))
+                lines.append(_a(":orphan", "report", i18n.t("hook.session_start_vcs.sync_orphan_handover", label=label, foreign=foreign)))
             elif orphan and not own and session_id:
                 recover.append((len(lines), label, pending,
-                                _vs.SyncTarget(vcs, root, list(info.get("pathspecs") or []))))
+                                _vs.SyncTarget(vcs, root, list(info.get("pathspecs") or [])), scope))
                 lines.append("")   # 補跑結果出來再填
             elif orphan and not own:
-                lines.append(i18n.t("hook.session_start_vcs.sync_orphan", label=label, pending=pending))
-            lines.extend(_pull_advisory_lines(_vs, root, label, info))
+                lines.append(_a(":orphan", "report", i18n.t("hook.session_start_vcs.sync_orphan", label=label, pending=pending), i18n.t("hook.phase_alerts.fix.v04", label=label)))
+            lines.extend(_pull_advisory_lines(_vs, root, label, info, state=state))
         if recover:
             pid = 0
             try:
@@ -199,26 +218,30 @@ def _unpushed_advisory(session_id: str = "", spawn=None) -> list:
                                                           targets=[r[3] for r in recover]) or 0)
             except Exception as e:
                 _atom_debug_error("session_start:unpushed_advisory:recover", e)
-            for pos, label, n, _t in recover:
-                lines[pos] = (i18n.t("hook.session_start_vcs.sync_orphan_recovered", label=label, pending=n, pid=pid) if pid
-                              else i18n.t("hook.session_start_vcs.sync_orphan_recover_failed", label=label, pending=n))
-        return lines
+            for pos, label, n, _t, scope in recover:
+                orphan_key = f"{label}:orphan"
+                lines[pos] = (alert_line(state, "Sync", orphan_key, "report", scope,
+                                         i18n.t("hook.session_start_vcs.sync_orphan_recovered", label=label, pending=n, pid=pid)) if pid
+                              else alert_line(state, "Sync", orphan_key, "done", scope, i18n.t("hook.session_start_vcs.sync_orphan_recover_failed", label=label, pending=n), i18n.t("hook.phase_alerts.fix.v07", label=label)))
+        return [ln for ln in lines if ln]   # done／report 的警告回空字串，補跑佔位也在這裡濾掉
     except Exception as e:
         _atom_debug_error("session_start:unpushed_advisory", e)
         # fail-open 但要告知：這個檢查曾靜默 crash 三週沒人知道
-        return [i18n.t("hook.session_start_vcs.unpushed_check_failed", etype=type(e).__name__)]
+        return [ln for ln in [alert_line(state, "Sync", "all:check", "done", "root", i18n.t("hook.session_start_vcs.unpushed_check_failed", etype=type(e).__name__), i18n.t("hook.phase_alerts.fix.v12"))] if ln]
 
 
-def _pull_advisory_lines(_vs, root, label: str, info: Dict[str, Any]) -> list:
+def _pull_advisory_lines(_vs, root, label: str, info: Dict[str, Any], state=None) -> list:
     """拉側兩行（各自可缺）：上次拉入 N>0 筆 → 提醒候選池是本次載入快照；`.behind` 標記（或只剩 pull_error）→ 理由。
     「拉入 N 筆」一次性：報過就把 last_pull 記進 roots.json pull_reported_at，同一次 last_pull 不再報（cooldown 內
     的 reason=pull 請求不會覆寫 last_pull，沒有這個欄位會每個 session 重複報）。"""
+    scope = _scope(state, root)
     try:
         lines = []
         pulled = info.get("pulled_commits") or 0
         last_pull = info.get("last_pull")
         if last_pull and pulled > 0 and info.get("pull_reported_at") != last_pull:
-            lines.append(i18n.t("hook.session_start_vcs.pulled", label=label, pulled=pulled, when=str(last_pull)[:19]))
+            lines.append(alert_line(state, "Sync", f"{label}:pulled", "report", scope,
+                                    i18n.t("hook.session_start_vcs.pulled", label=label, pulled=pulled, when=str(last_pull)[:19])))
             # 「只報一次」盡力而為：寫 pull_reported_at 失敗（roots.lock 逾時，回 False、已進 atom-debug log）就不算
             # 已報，下個 session 會再報同一次拉入；兩個 session 同時讀到同一份快照也會各報一次。重報一行提醒無害，
             # 不為此在讀→判→寫之間加鎖。
@@ -228,14 +251,15 @@ def _pull_advisory_lines(_vs, root, label: str, info: Dict[str, Any]) -> list:
         rec = _vs.read_behind_record(root) if _vs else None
         reason = (rec or {}).get("reason") or info.get("pull_error")
         if reason:
-            lines.append(i18n.t("hook.session_start.memory_behind", label=label, reason=str(reason)[:100]))
-        return lines
+            lines.append(alert_line(state, "Sync", f"{label}:behind", "done", scope, i18n.t("hook.session_start.memory_behind", label=label, reason=str(reason)[:100]), i18n.t("hook.phase_alerts.fix.v09", label=label)))
+        return [ln for ln in lines if ln]
     except Exception as e:
         _atom_debug_error("session_start:pull_advisory", e)
-        return [i18n.t("hook.session_start_vcs.pull_check_failed", label=label, etype=type(e).__name__)]
+        return [ln for ln in [alert_line(state, "Sync", f"{label}:check", "report", scope,
+                                         i18n.t("hook.session_start_vcs.pull_check_failed", label=label, etype=type(e).__name__))] if ln]
 
 
-def _index_conflict_advisory(cwd: str) -> list:
+def _index_conflict_advisory(cwd: str, state=None) -> list:
     """開場 advisory：上個 session 的 pull/rebase 卡在索引三檔衝突、還沒解就關掉 → 這裡浮出一行。
 
     exists()-first 省錢：先一次 `git rev-parse --git-dir`（worktree 相容），只有 MERGE_HEAD／
@@ -250,7 +274,7 @@ def _index_conflict_advisory(cwd: str) -> list:
         # svn 側獨立找：git 疊在 svn 上（同層兩個都有）時 find_vcs_root 回 git，svn 衝突會被略過
         svn_root = find_svn_root(Path(cwd))
         if svn_root is not None:
-            lines += _svn_index_conflict_advisory(cwd, svn_root)
+            lines += _svn_index_conflict_advisory(cwd, svn_root, state=state)
         vcs = find_vcs_root(Path(cwd))  # 零子行程：非工作區直接零行
         if vcs is None or vcs[0] != "git":
             return lines
@@ -278,8 +302,8 @@ def _index_conflict_advisory(cwd: str) -> list:
             for entry in (r.stdout or "").split("\0") if "\t" in entry
         } & index_names)
         if names:
-            lines.append(i18n.t("hook.session_start_vcs.index_unmerged", names=', '.join(names), cmd=_MERGE_CMD))
-        return lines
+            lines.append(alert_line(state, "IndexConflict", f"git:{gitdir.as_posix()}", "open", "project", i18n.t("hook.session_start_vcs.index_unmerged", names=', '.join(names), cmd=_MERGE_CMD), i18n.t("hook.phase_alerts.fix.v13", cmd=_MERGE_CMD)))
+        return [ln for ln in lines if ln]
     except Exception as e:
         _atom_debug_error("session_start:index_conflict_advisory", e)
         return lines
@@ -288,7 +312,7 @@ def _index_conflict_advisory(cwd: str) -> list:
 _SVN_INDEX_NAMES = INDEX_FILES
 
 
-def _svn_index_conflict_advisory(cwd: str, root: Path) -> list:
+def _svn_index_conflict_advisory(cwd: str, root: Path, state=None) -> list:
     """SVN 工作副本：update 衝突會在原檔旁留下 <檔>.mine。memory dir 候選裡有就提示（零子行程）。
 
     索引三檔與 atom 分開講。索引裡的 _atom_index.json／_ATOM_INDEX.md 是衍生檔，衝突的正解是退出版控
@@ -310,17 +334,19 @@ def _svn_index_conflict_advisory(cwd: str, root: Path) -> list:
     out = []
     if index_names:
         if derived_paths and _derived_exit_hint is not None:
-            msg = i18n.t("hook.session_start_vcs.svn_index_derived", names=', '.join(sorted(index_names)), hint=_derived_exit_hint('svn', derived_paths), cmd=_MERGE_CMD)
+            hint = _derived_exit_hint('svn', derived_paths)
+            msg = i18n.t("hook.session_start_vcs.svn_index_derived", names=', '.join(sorted(index_names)), hint=hint, cmd=_MERGE_CMD)
         else:
+            hint = ""
             msg = i18n.t("hook.session_start_vcs.svn_index_plain", names=', '.join(sorted(index_names)), cmd=_MERGE_CMD)
-        out.append(msg)
+        out.append(alert_line(state, "IndexConflict", "svn_index", "done", "project", msg, i18n.t("hook.phase_alerts.fix.v15", hint=hint, cmd=_MERGE_CMD)))
     if atoms:
         shown = i18n.t("hook.session_start_vcs.list_sep").join(sorted(atoms)[:3]) + ("…" if len(atoms) > 3 else "")
-        out.append(i18n.t("hook.session_start_vcs.svn_atom_conflict", n=len(atoms), shown=shown))
-    return out
+        out.append(alert_line(state, "IndexConflict", "svn_atom", "open", "project", i18n.t("hook.session_start_vcs.svn_atom_conflict", n=len(atoms), shown=shown), i18n.t("hook.phase_alerts.fix.v14", shown=shown)))
+    return [ln for ln in out if ln]
 
 
-def _vcs_ignore_advisory(project_mem_dir) -> list:
+def _vcs_ignore_advisory(project_mem_dir, state=None) -> list:
     """專案記憶庫的衍生檔退出版控：設 svn:ignore／.gitignore＋「已被版控」告警一次（lib/vcs_ignore）。
 
     每個記憶庫每種 VCS 只處理一次（marker：workflow/vcs-ignore.json），之後零子行程；
@@ -329,13 +355,17 @@ def _vcs_ignore_advisory(project_mem_dir) -> list:
     try:
         if not project_mem_dir or _vcs_ignore_lines is None:
             return []
-        return _vcs_ignore_lines(Path(project_mem_dir), WORKFLOW_DIR / "vcs-ignore.json", timeout=4.0)
+        found = _vcs_ignore_lines(Path(project_mem_dir), WORKFLOW_DIR / "vcs-ignore.json", timeout=4.0)
+        # 這幾行的文字由 lib/vcs_ignore 組好，這裡分不出是失敗、已替你設好還是已被版控：一律完工時提（解法句三種都適用）
+        mem_key = Path(project_mem_dir).as_posix()
+        return [ln for ln in (alert_line(state, "VcsIgnore", mem_key, "done", "project", line, i18n.t("hook.phase_alerts.fix.v18")) for line in found) if ln]
     except Exception as e:  # noqa: BLE001
         _atom_debug_error("session_start:vcs_ignore_advisory", e)
-        return [i18n.t("hook.session_start_vcs.vcs_ignore_failed")]
+        return [ln for ln in [alert_line(state, "VcsIgnore", f"{project_mem_dir}:check", "report", "project",
+                                         i18n.t("hook.session_start_vcs.vcs_ignore_failed"))] if ln]
 
 
-def _personal_sync_advisory(project_mem_dir, user: str) -> list:
+def _personal_sync_advisory(project_mem_dir, user: str, state=None) -> list:
     """本人 personal atom 的版控同步狀態 → 開場最多三行（無事零 context）。
 
     存在理由：personal 層的設計是「可上版控、僅本人可搜」（可見性由索引 scope=personal:<user>
@@ -402,7 +432,7 @@ def _personal_sync_advisory(project_mem_dir, user: str) -> list:
         # --no-index：不受目錄內已追蹤檔干擾；探測目錄內虛擬檔名（對目錄本身判定不穩）
         ign = _git("check-ignore", "-q", "--no-index", "--", str(personal_dir / "_probe.md"))
         if ign.returncode == 0:
-            out.append(i18n.t("hook.session_start_vcs.personal_ignored", rel=rel))
+            out.append(alert_line(state, "PersonalSync", f"{mem.as_posix()}:ignored", "done", "project", i18n.t("hook.session_start_vcs.personal_ignored", rel=rel), i18n.t("hook.phase_alerts.fix.v22")))
 
         # ── 2. 未 commit ──
         if personal_dir.is_dir() and ign.returncode != 0:
@@ -419,12 +449,13 @@ def _personal_sync_advisory(project_mem_dir, user: str) -> list:
                 pending.append(Path(path).stem)
             if pending:
                 shown = ", ".join(pending[:3]) + ("…" if len(pending) > 3 else "")
-                out.append(i18n.t("hook.session_start_vcs.personal_pending", n=len(pending), shown=shown, rel=rel))
+                out.append(alert_line(state, "PersonalSync", f"{mem.as_posix()}:pending", "done", "project", i18n.t("hook.session_start_vcs.personal_pending", n=len(pending), shown=shown, rel=rel), i18n.t("hook.phase_alerts.fix.v23", rel=rel, shown=shown)))
 
         if dangling:
             shown = ", ".join(dangling[:3]) + ("…" if len(dangling) > 3 else "")
-            out.append(i18n.t("hook.session_start_vcs.personal_dangling", n=len(dangling), shown=shown, rel=rel))
-        return out
+            out.append(alert_line(state, "PersonalSync", f"{mem.as_posix()}:dangling", "done", "project", i18n.t("hook.session_start_vcs.personal_dangling", n=len(dangling), shown=shown, rel=rel), i18n.t("hook.phase_alerts.fix.v24", shown=shown)))
+        return [ln for ln in out if ln]
     except Exception as e:  # noqa: BLE001
         _atom_debug_error("session_start:personal_sync_advisory", e)
-        return [i18n.t("hook.session_start_vcs.personal_check_failed", etype=type(e).__name__)]
+        return [ln for ln in [alert_line(state, "PersonalSync", f"{project_mem_dir}:check", "report", "project",
+                                         i18n.t("hook.session_start_vcs.personal_check_failed", etype=type(e).__name__))] if ln]

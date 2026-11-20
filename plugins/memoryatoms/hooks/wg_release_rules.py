@@ -2049,6 +2049,17 @@ RULE_MODE.setdefault("UPS_CANCEL_WARN_NEXT_HOOK", REMIND)
 RULE_MODE.setdefault("CONTINUE_QUERY_FROM_HANDOFF", REMIND)
 
 
+# ─── 觸發詞處理表、完工時提的開場警告、同步登記自我清理（判法在各自模組，這裡只登錄） ───
+RULES.update({
+    "TRIGGER_HANDLING_BY_KIND": "trigger 命中後照觸發詞處理表（出廠表 atoms-custom/trigger-handling.default.json、根層／組織層／專案層各一份 atoms-custom/trigger-handling.json，近層同名種類整條取代）判全文／只送標題／不送；只有被表歸類的常見詞命中時才改送標題，BM25 或向量也命中同一張卡就照送全文；表壞了跳過那份並出降級紅字，卡照舊注入（hooks/wg_trigger_handling.py，掛點 handlers/ups_search.collect_matched_atoms 與 ups_inject.assemble_injection）。子代理注入不套用。",
+    "PHASE_ALERTS_AT_DONE": "開場警告記成 source＋target 去重的結構化警告（hooks/wg_phase_alerts.py）：open 級照舊開場報；done 級在知識收割閘判欠時附在擋訊息後一條一行附解法，判為提醒模式時改排進 remind_queue 下一個工具結果送出；同鍵本 session 一次，跨 session 帳 workflow/phase-alerts-ledger.json 連續第 3 次起加「第 N 次」；別的專案的不提。",
+    "VCS_GONE_ROOT_FORGOTTEN": "登記的同步 root 資料夾已不存在（磁碟本身在）→ 開場 advisory 與背景 worker 呼叫 wg_vcs_sync.forget_root，移除 roots.json 登記、殘留請求與標記並寫一行 log，不報紅燈；roots.lock 取不到就不動。收工作樹走 tools/remove-worktree.py。",
+})
+RULE_MODE.setdefault("TRIGGER_HANDLING_BY_KIND", REMIND)   # 說明型規則，不是擋點
+RULE_MODE.setdefault("PHASE_ALERTS_AT_DONE", REMIND)
+RULE_MODE.setdefault("VCS_GONE_ROOT_FORGOTTEN", REMIND)
+
+
 # ─── 規則載入與 API 錯誤中斷只留帳（handlers/instructions_loaded.py、handlers/stop_failure.py；settings.json 直接掛 handler 檔，這裡只登錄） ───
 RULES.update({
     "INSTRUCTIONS_LOADED_LEDGER": "InstructionsLoaded（CLAUDE.md、rules、@include 載入）只記帳、不輸出：哪個檔、為什麼載、哪個 session 追加一行到 "

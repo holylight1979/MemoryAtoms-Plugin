@@ -60,7 +60,9 @@ from handlers._shared import (
 )
 import wg_hook_timing as _hook_timing
 import wg_plugins
+from wg_phase_alerts import alert_line as _alert_line, sync_ledger as _sync_phase_ledger   # 開場警告的結構化收口與跨 session 帳
 import i18n   # lib/：給人看的提示走語言表
+import wg_trigger_handling
 from wg_hook_timing import lap as _hook_lap
 from handlers.session_start_sentinels import (   # noqa: F401
     check_identity_integrity, check_always_load_contracts, check_identity_template, _check_se_sentinel_residual,
@@ -274,17 +276,24 @@ def handle_session_start(input_data: Dict[str, Any], config: Dict[str, Any]) -> 
     _lap_or_degrade("開場主段", session_id, state, lines)
 
     # ── 匯合後的提示與檢查
-    _marker_file_notices(lines, cwd)
+    _marker_file_notices(lines, cwd, state)
     _lap_or_degrade("標記檔提示", session_id, state, lines)
     _review_notices(lines, input_data, config, session_id, source, state)
     _lap_or_degrade("回顧提示", session_id, state, lines)
-    _service_notices(lines)
+    _service_notices(lines, state)
     _lap_or_degrade("服務檢查", session_id, state, lines)
     _contract_sentinels(lines, v6, state)
     _lap_or_degrade("必載檔哨兵", session_id, state, lines)
     if v6 and guard:
         _take_git_snapshot(state, cwd)
     _lap_or_degrade("git 快照", session_id, state, lines)
+
+    # ── 警告帳：新開場（不是沿用舊 state 的 compact／resume）才對帳——沿用的那條只重跑了一部分檢查，會把沒重跑的誤判成已消失
+    if not (existing and source in ("compact", "resume") and not root_rebuilt):
+        try:
+            _sync_phase_ledger(state, str(find_project_root(cwd) or cwd or ""))
+        except Exception as e:  # noqa: BLE001
+            print(i18n.t("hook.phase_alerts.ledger_sync_failed", error=f"{type(e).__name__}: {e}"), file=sys.stderr)
 
     # ── 寫 state、清舊 state 與向量旗標、輸出、背景起向量服務
     write_state(session_id, state)
@@ -420,10 +429,10 @@ def _open_new_session(input_data: Dict[str, Any], config: Dict[str, Any], sessio
     _spawn_pull_sync(session_id, cwd, config)
 
     _index_rebuild_notes: List[str] = []   # 索引自癒：缺檔／過期就地重建，各回一行（沒事回空字串）
-    _index_rebuild_notes.append(_rebuild_index_if_missing(MEMORY_DIR))
+    _index_rebuild_notes.append(_rebuild_index_if_missing(MEMORY_DIR, state=state))
     global_atoms = parse_memory_index(MEMORY_DIR)
     project_mem_dir = get_project_memory_dir(cwd)
-    _index_rebuild_notes.append(_rebuild_index_if_missing(project_mem_dir))
+    _index_rebuild_notes.append(_rebuild_index_if_missing(project_mem_dir, state=state))
     project_root = find_project_root(cwd)
 
     register_project(cwd)
@@ -435,6 +444,7 @@ def _open_new_session(input_data: Dict[str, Any], config: Dict[str, Any], sessio
     # ── 候選池：記進 state；開場行換成以摘要開頭的新 list（提示行併進新 list）
     org_root, pool, global_atoms, aidocs_entries = _candidate_pool(
         state, cwd, root_res, root_rebuilt, project_mem_dir, project_root, v4_user, v4_roles, v4_mgmt, global_atoms)
+    _compile_trigger_handling(state, config)
     g_names = [n for n, _, _ in global_atoms]
     p_names = [n for n, _, _ in pool["project"]]
     lines = [
@@ -448,9 +458,9 @@ def _open_new_session(input_data: Dict[str, Any], config: Dict[str, Any], sessio
     _lap_or_degrade("候選池", session_id, state, lines)
 
     # ── 索引校驗
-    _global_index_zero_check(lines, g_names)
-    _index_disk_check(lines, global_atoms)
-    _skill_index_check(lines, config)
+    _global_index_zero_check(lines, g_names, state)
+    _index_disk_check(lines, global_atoms, state)
+    _skill_index_check(lines, config, state)
     _lap_or_degrade("索引校驗", session_id, state, lines)
 
     # 選配提示：每段跑完打一點，累計過上限 80% 就送出收掉，後面的這次不跑。
@@ -459,38 +469,34 @@ def _open_new_session(input_data: Dict[str, Any], config: Dict[str, Any], sessio
     # tools/health-weekly.py（Task Scheduler 每週跑）落 health-last-run.json。
     # 缺檔/逾期 = 排程器本身死了；red>0 = 上次健檢有待處理項。兩者都必須
     # 在 session 內浮出（fail-open 必告知）——「靜默死 27 天」的最後防線。
-    lines.extend(_health_advisory(WORKFLOW_DIR / "health-last-run.json"))
+    lines.extend(_health_advisory(WORKFLOW_DIR / "health-last-run.json", state))
     lines.extend(wg_plugins.emit("SessionStart.new_session", state=state, config=config, session_id=session_id,
                                  input_data=input_data, source=source))
-    vector_flag = _vector_flag_lines(lines, config)
-    lines.extend(degraded_session_lines())
+    vector_flag = _vector_flag_lines(lines, config, state)
+    lines.extend(degraded_session_lines(state))
     _lap_or_degrade("健檢", session_id, state, lines)
 
     # ── 版控同步
     # 未推送 commit：SessionEnd 晉升自動提交的 push 走背景、失敗當下無人知 → 這裡補可見性。
-    lines.extend(_unpushed_advisory(session_id))
-    lines.extend(_index_conflict_advisory(cwd))
+    lines.extend(_unpushed_advisory(session_id, state=state))
+    lines.extend(_index_conflict_advisory(cwd, state=state))
     _lap_or_degrade("未推送與索引衝突", session_id, state, lines)
     lines.extend(_followup_advisory())
     _lap_or_degrade("回訪", session_id, state, lines)
-    lines.extend(_scope_layout_advisory(project_mem_dir))
-    lines.extend(_vcs_ignore_advisory(project_mem_dir))
-    lines.extend(_personal_sync_advisory(project_mem_dir, v4_user))
+    lines.extend(_scope_layout_advisory(project_mem_dir, state=state))
+    lines.extend(_vcs_ignore_advisory(project_mem_dir, state=state))
+    lines.extend(_personal_sync_advisory(project_mem_dir, v4_user, state=state))
     _lap_or_degrade("分層與同步", session_id, state, lines)
-    try:
-        _fold_repeated_advisories(lines, session_id, str(project_mem_dir or cwd or ""))
-    except Exception as e:  # noqa: BLE001
-        print(i18n.t("hook.session_start.repeat_fold_failed", error=f"{type(e).__name__}: {e}"), file=sys.stderr)
 
     # ── 組織層
-    lines.extend(_org_advisory(org_root, pool))
+    lines.extend(_org_advisory(org_root, pool, state=state))
     _maybe_spawn_provenance_backfill(config)
     _lap_or_degrade("組織層", session_id, state, lines)
 
     # ── 身分與專案提示（沒有自己的計時點，算進開場主段）
-    _role_lines(lines, v4_user, v4_roles, v4_mgmt, project_mem_dir, cwd, config)
+    _role_lines(lines, v4_user, v4_roles, v4_mgmt, project_mem_dir, cwd, config, state)
     lines.extend(_aidocs_opening_lines(aidocs_entries, project_root))
-    lines.extend(_project_rules_advisory(project_root, state, config))
+    lines.extend(_project_rules_advisory(project_root, state, config, record=True))
     _project_hook_lines(lines, project_root, cwd, session_id)
     return state, lines, vector_flag
 
@@ -500,7 +506,7 @@ def _nudge_project_memory_layer(lines: List[str], state: Dict[str, Any], cwd: st
     """專案還沒有記憶層 → 一行指向 init-project-memory.py；一個 session 只判一次（state project_memory_nudged）。"""
     try:
         if not state.get("project_memory_nudged"):
-            nudge = _project_memory_nudge(cwd, project_root, project_mem_dir)
+            nudge = _project_memory_nudge(cwd, project_root, project_mem_dir, state=state)
             state["project_memory_nudged"] = True
             lines.extend(nudge)
     except Exception as e:
@@ -580,7 +586,20 @@ def _candidate_pool(state: Dict[str, Any], cwd: str, root_res: Any, root_rebuilt
     return org_root, pool, global_atoms, aidocs_entries
 
 
-def _global_index_zero_check(lines: List[str], g_names: List[str]) -> None:
+def _compile_trigger_handling(state: Dict[str, Any], config: Dict[str, Any]) -> None:
+    """機制開著：編譯四層觸發詞處理表＋同層共用數，存 state["atom_index"]["trigger_handling"]；有錯走 degraded.notify（開場紅字）。
+    關著：不存。fail-open：編譯炸了不擋開場。"""
+    try:
+        if not wg_trigger_handling.enabled(config):
+            return
+        compiled = wg_trigger_handling.compile_handling(state["atom_index"])
+        state["atom_index"]["trigger_handling"] = compiled
+        wg_trigger_handling.report(compiled.get("errors") or [])
+    except Exception as e:
+        _atom_debug_error("session_start:trigger_handling", e)
+
+
+def _global_index_zero_check(lines: List[str], g_names: List[str], state: Optional[Dict[str, Any]] = None) -> None:
     """全域 index 解析 fail-loud：全域 index 檔存在、磁碟上也有卡，卻解析出 0 atom＝解析失敗（_ATOM_INDEX.md 表內空行／檔截斷等）。
     不再 silent——log＋顯著提示。磁碟上一張卡都還沒有（新安裝）是合法的空層，不報。專案層可合法為空，故只查全域。"""
     try:
@@ -593,12 +612,12 @@ def _global_index_zero_check(lines: List[str], g_names: List[str]) -> None:
                 "session_start:global_index_zero",
                 RuntimeError(i18n.t("hook.session_start.index_zero_error")),
             )
-            lines.append(i18n.t("hook.session_start.index_zero"))
+            _alert_line(state, lines, "Index", "global_index_parse", "open", "root", i18n.t("hook.session_start.index_zero"), i18n.t("hook.phase_alerts.fix.rebuild_index", script=(CODE_DIR / "tools" / "sync-atom-index.py").as_posix()))
     except Exception as e:
         _atom_debug_error("session_start:global_index_zero", e)
 
 
-def _index_disk_check(lines: List[str], global_atoms: List[Any]) -> None:
+def _index_disk_check(lines: List[str], global_atoms: List[Any], state: Optional[Dict[str, Any]] = None) -> None:
     """索引載入後校驗：防 _atom_index.json 被 funnel 外改壞 → 注入鏈靜默降效。廉價雙向：index→disk 存在性＋
     memory/ 頂層→index 漏登。失配＝log（always-on）＋可見提示，不自動重建（避免與 funnel 互搶）。"""
     try:
@@ -632,12 +651,12 @@ def _index_disk_check(lines: List[str], global_atoms: List[Any]) -> None:
                            missing=_idx_missing[:5], unindexed=_disk_orphans[:5])
                 ),
             )
-            lines.append(i18n.t("hook.session_start.index_validate", missing=len(_idx_missing), orphans=len(_disk_orphans)))
+            _alert_line(state, lines, "IndexValidate", "global_index_drift", "done", "root", i18n.t("hook.session_start.index_validate", missing=len(_idx_missing), orphans=len(_disk_orphans)), i18n.t("hook.phase_alerts.fix.rebuild_index", script=(CODE_DIR / "tools" / "sync-atom-index.py").as_posix()))
     except Exception as e:
         _atom_debug_error("session_start:index_validate", e)
 
 
-def _skill_index_check(lines: List[str], config: Dict[str, Any]) -> None:
+def _skill_index_check(lines: List[str], config: Dict[str, Any], state: Optional[Dict[str, Any]] = None) -> None:
     """skill 計數 SoT 防呆：補 PostToolUse 自動同步漏接者（如 Bash 刪 skill 目錄）。實檔 skills/*/SKILL.md 數 ≠
     _skill_index.json count → 提示跑 tools/skill-index.py --write。不自動改檔（與 PostToolUse 自動同步分工）。"""
     try:
@@ -655,12 +674,12 @@ def _skill_index_check(lines: List[str], config: Dict[str, Any]) -> None:
             except (ValueError, OSError):
                 _idx_n = None
         if _idx_n != _true_sk:
-            lines.append(i18n.t("hook.session_start.skill_index_mismatch", actual=_true_sk, indexed=_idx_n))
+            _alert_line(state, lines, "SkillIndex", "skill_index", "done", "root", i18n.t("hook.session_start.skill_index_mismatch", actual=_true_sk, indexed=_idx_n), i18n.t("hook.phase_alerts.fix.skill_index", script=(CODE_DIR / "tools" / "skill-index.py").as_posix()))
     except Exception as e:
         _atom_debug_error("session_start:skill_index_validate", e)
 
 
-def _vector_flag_lines(lines: List[str], config: Dict[str, Any]) -> Optional[str]:
+def _vector_flag_lines(lines: List[str], config: Dict[str, Any], state: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """向量服務旗標：ping 一次更新旗標。服務還在才問索引狀態（服務沒回應就不問：Windows 連關著的埠要等滿逾時，
     多問一次就多等一秒）；服務沒回應看要不要出紅字。回旗標結果（出錯回 "error"），收尾段看它決定要不要再 ping。"""
     try:
@@ -669,81 +688,15 @@ def _vector_flag_lines(lines: List[str], config: Dict[str, Any]) -> Optional[str
         vector_flag = "error"
         _atom_debug_error("SessionStart:vector_flag_refresh", e)
     if vector_flag == "kept":
-        lines.extend(_vector_index_advisory(config))
+        lines.extend(_vector_index_advisory(config, state=state))
     elif vector_flag == "cleared":
         _notify_vector_down(config)
     return vector_flag
 
 
-ADVISORY_REPEAT_NAME = "advisory-repeat.json"   # workflow/ 底下：等人處理的警告在各專案出現過幾場
-REPEAT_FOLD_FROM = 3          # 同一句第幾場起收成一行
-REPEAT_KEEP_DAYS = 30         # 別的專案的計數多久沒再出現就丟
-REPEAT_FOLD_PREFIXES = ("[Guardian:HealthCheck]", "[Guardian:ScopeLayout]")   # 「等人處理」型；資訊行不收
-
-
-def _fold_repeated_advisories(lines: List[str], session_id: str, scope: str, path: Optional[Path] = None) -> None:
-    """等人處理的警告（REPEAT_FOLD_PREFIXES）每場原樣重播會變警報疲勞：同一句在同一專案出現過幾場記在
-    workflow/advisory-repeat.json（鍵＝專案\t句子，值 {count, sid, at}；同 session 的 resume/compact 不重複計），
-    第 REPEAT_FOLD_FROM 場起這些句子收成一行「N 則舊警告未處理」，放在第一則原本的位置——收成一行仍浮出、不消失。
-    本專案這場沒出現的句子拿掉（處理掉後再冒出來從 1 算）；別的專案的 REPEAT_KEEP_DAYS 天沒更新才丟。
-    計數檔讀寫失敗 → 照舊全文、stderr 留訊號（就地改 lines）。path 沒給＝本模組 WORKFLOW_DIR 底下那份（測試換得掉）。"""
-    path = path or (WORKFLOW_DIR / ADVISORY_REPEAT_NAME)
-    idx = [i for i, ln in enumerate(lines) if isinstance(ln, str) and ln.startswith(REPEAT_FOLD_PREFIXES)]
-    old: Dict[str, Any] = {}
-    try:
-        if path.exists():
-            old = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(old, dict):
-                old = {}
-    except (OSError, ValueError) as e:
-        print(i18n.t("hook.session_start.repeat_read_failed", error=f"{type(e).__name__}: {e}"), file=sys.stderr)
-        old = {}
-    now = datetime.now()
-    prefix = f"{scope}\t"
-    new: Dict[str, Any] = {}
-    for k, rec in old.items():   # 別的專案：保留到過期
-        if k.startswith(prefix) or not isinstance(rec, dict):
-            continue
-        try:
-            if now - datetime.fromisoformat(str(rec.get("at"))) <= timedelta(days=REPEAT_KEEP_DAYS):
-                new[k] = rec
-        except ValueError:
-            pass
-    counts: Dict[str, int] = {}
-    for i in idx:
-        key = prefix + lines[i]
-        if key in new:
-            counts[lines[i]] = new[key]["count"]
-            continue
-        rec = old.get(key) if isinstance(old.get(key), dict) else {}
-        n = int(rec.get("count") or 0)
-        if rec.get("sid") != session_id or n == 0:
-            n += 1
-        new[key] = {"count": n, "sid": session_id, "at": now.isoformat(timespec="seconds")}
-        counts[lines[i]] = n
-    if new != old:
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(new, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
-            os.replace(tmp, path)
-        except OSError as e:
-            print(i18n.t("hook.session_start.repeat_write_failed", path=path, error=f"{type(e).__name__}: {e}"), file=sys.stderr)
-    stale = [i for i in idx if counts.get(lines[i], 0) >= REPEAT_FOLD_FROM]
-    if not stale:
-        return
-    tags: List[str] = []
-    for i in stale:
-        tag = lines[i][len("[Guardian:"):].split("]", 1)[0]
-        if tag not in tags:
-            tags.append(tag)
-    lines[stale[0]] = i18n.t("hook.session_start.repeat_folded", n=len(stale), tags=i18n.t("hook.session_start.list_sep").join(tags))
-    for i in reversed(stale[1:]):
-        del lines[i]
-
-
 def _role_lines(lines: List[str], v4_user: str, v4_roles: List[str], v4_mgmt: bool,
-                project_mem_dir: Optional[Path], cwd: str, config: Dict[str, Any]) -> None:
+                project_mem_dir: Optional[Path], cwd: str, config: Dict[str, Any],
+                state: Optional[Dict[str, Any]] = None) -> None:
     """查得到使用者才有：[Role] 一行、待審草稿數；userExtraction 開著時再加最近 24 小時自動萃取了幾張卡。"""
     if not v4_user:
         return
@@ -753,7 +706,7 @@ def _role_lines(lines: List[str], v4_user: str, v4_roles: List[str], v4_mgmt: bo
     # 待審草稿對所有人顯示（裁決資格另由 config review.deciders 決定）
     pending = _count_pending_review(project_mem_dir)
     if pending > 0:
-        lines.append(i18n.t("hook.session_start.pending_review", n=pending))
+        _alert_line(state, lines, "PendingReview", str(project_mem_dir or cwd or ""), "done", "project", i18n.t("hook.session_start.pending_review", n=pending), i18n.t("hook.phase_alerts.fix.pending_review"))
 
     if config.get("userExtraction", {}).get("enabled", False):
         try:
@@ -798,11 +751,11 @@ def _reinject_compact_cards(lines: List[str], state: Dict[str, Any], compact_blo
         state["pending_reinjection_unresolved"] = compact_unresolved
 
 
-def _marker_file_notices(lines: List[str], cwd: str) -> None:
+def _marker_file_notices(lines: List[str], cwd: str, state: Optional[Dict[str, Any]] = None) -> None:
     """標記檔提示（標記檔讀後清）：本地範疇指標、上個 session 自動歸類搬移的卡、SessionEnd 沒跑完的殘留、效用歸因 unknown 偏高。"""
     # V5+ realm：本地範疇 catalog 一行指標（只在資料根底下或記憶系統原始碼樹裡）
     lines.extend(_local_catalog_lines(cwd))
-    _realm_automove_notice(lines)
+    _realm_automove_notice(lines, state)
 
     # SessionEnd 哨兵殘留檢查：殘留＝上個 session 的收尾流程未跑完即中斷
     # （harness timeout / 例外）→ 浮一行告警後清（收尾擁擠不得靜默失敗）。
@@ -811,10 +764,10 @@ def _marker_file_notices(lines: List[str], cwd: str) -> None:
     except Exception as e:
         print(f"SE-sentinel check error: {e}", file=sys.stderr)
 
-    _outcome_unknown_notice(lines)
+    _outcome_unknown_notice(lines, state)
 
 
-def _realm_automove_notice(lines: List[str]) -> None:
+def _realm_automove_notice(lines: List[str], state: Optional[Dict[str, Any]] = None) -> None:
     """V5+ Realm 維度：上個 session 自動歸類搬移的卡不靜默提示（列卡名，附要同步的說明文件），讀後清標記檔；出錯寫 stderr。"""
     try:
         if not REALM_AUTOMOVE_MARKER.exists():
@@ -830,14 +783,14 @@ def _realm_automove_notice(lines: List[str]) -> None:
                 for m in _rm[:6]
             )
             _more = i18n.t("hook.session_start.realm_more_many", n=len(_rm)) if len(_rm) > 6 else i18n.t("hook.session_start.realm_more_few", n=len(_rm))
-            lines.append(i18n.t("hook.session_start.realm_moved_local", names=_names, more=_more))
+            _alert_line(state, lines, "Realm", "automove", "report", "root", i18n.t("hook.session_start.realm_moved_local", names=_names, more=_more))
             # 移檔後 doc-sync（user 補充）：舊 path/檔名引用提示需同步的說明文件
             _drefs = _realm_doc_refs(_rm)
             if _drefs:
                 _parts = i18n.t("hook.session_start.part_sep").join(
                     f"{_k}→{', '.join(sorted(set(_v)))}" for _k, _v in list(_drefs.items())[:4]
                 )
-                lines.append(i18n.t("hook.session_start.realm_doc_refs", parts=_parts))
+                _alert_line(state, lines, "Realm", "doc_refs", "done", "root", i18n.t("hook.session_start.realm_doc_refs", parts=_parts), i18n.t("hook.phase_alerts.fix.realm_doc_refs"))
         try:
             REALM_AUTOMOVE_MARKER.unlink()
         except OSError:
@@ -855,7 +808,7 @@ def _realm_doc_refs(moved: List[Any]) -> Dict[str, List[str]]:
     return _drefs
 
 
-def _outcome_unknown_notice(lines: List[str]) -> None:
+def _outcome_unknown_notice(lines: List[str], state: Optional[Dict[str, Any]] = None) -> None:
     """效用歸因遙測：上個 session 判定 unknown 的比率連續偏高 → 送標記檔裡那一行，讀後清標記檔；出錯寫 stderr。"""
     try:
         _ow_marker = WORKFLOW_DIR / "outcome-unknown-advisory.json"
@@ -864,7 +817,7 @@ def _outcome_unknown_notice(lines: List[str]) -> None:
         try:
             _ow = json.loads(_ow_marker.read_text(encoding="utf-8"))
             if _ow.get("msg"):
-                lines.append(_ow["msg"])
+                _alert_line(state, lines, "OutcomeWatch", "outcome_watch", "done", "root", _ow["msg"], i18n.t("hook.phase_alerts.fix.outcome_watch"))
         except (OSError, json.JSONDecodeError):
             pass
         try:
@@ -881,7 +834,7 @@ def _review_notices(lines: List[str], input_data: Dict[str, Any], config: Dict[s
     try:
         review_reminder = _check_periodic_review_due(config)
         if review_reminder:
-            lines.append(review_reminder)
+            _alert_line(state, lines, "SelfIteration", "periodic_review", "done", "root", review_reminder, i18n.t("hook.phase_alerts.fix.periodic_review"))
             state["review_due"] = True
     except Exception as e:
         print(f"Review check error: {e}", file=sys.stderr)
@@ -889,7 +842,7 @@ def _review_notices(lines: List[str], input_data: Dict[str, Any], config: Dict[s
     try:
         osc_warning = _load_oscillation_warnings(state, config)
         if osc_warning:
-            lines.append(osc_warning)
+            _alert_line(state, lines, "Oscillation", "atoms", "open", "project", osc_warning, i18n.t("hook.phase_alerts.fix.oscillation"))
     except Exception as e:
         print(f"Oscillation load error: {e}", file=sys.stderr)
 
@@ -897,21 +850,21 @@ def _review_notices(lines: List[str], input_data: Dict[str, Any], config: Dict[s
                                  input_data=input_data, source=source))
 
 
-def _service_notices(lines: List[str]) -> None:
+def _service_notices(lines: List[str], state: Optional[Dict[str, Any]] = None) -> None:
     """服務檢查：遠端萃取後端長期掛掉（Long DIE）、MCP server 狀態。"""
     try:
         long_die = check_long_die_status()
         if long_die:
             backend_name = long_die.get("backend", "remote")
             until = long_die.get("until", "?")
-            lines.append(i18n.t("hook.session_start.long_die", backend=backend_name, until=until))
+            _alert_line(state, lines, "LongDie", f"ollama_backend:{backend_name}", "done", "root", i18n.t("hook.session_start.long_die", backend=backend_name, until=until), i18n.t("hook.phase_alerts.fix.long_die", backend=backend_name))
     except Exception as e:
         print(f"[dual-backend] Long DIE check error: {e}", file=sys.stderr)
 
     try:
         mcp_issues = _check_mcp_servers()
         if mcp_issues:
-            lines.append("[MCP] " + "; ".join(mcp_issues))
+            _alert_line(state, lines, "MCP", "mcp_json", "open", "root", "[MCP] " + "; ".join(mcp_issues), i18n.t("hook.phase_alerts.fix.mcp_json"))
     except Exception as e:
         print(f"[mcp-health] Check error: {e}", file=sys.stderr)
 

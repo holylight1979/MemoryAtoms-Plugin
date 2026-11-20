@@ -165,7 +165,9 @@
     "_doc_truncated_pointer_max": "Final budget trimming (_truncate_context_by_activation) drops rather than truncates: among the atoms sacrificed for going over budget, only the top N by activation keep a one-line pointer; the rest are not injected at all (details go to the atom-debug log, and the trailing budget marker carries the trim statistics).",
     "truncated_pointer_max": 3,
     "_doc_short_prompt_inherits_budget": "When what the user typed is under 10 characters without spaces (a short follow-up such as \"go on\") and the session has an earlier turn typed by a person, the injection total is max(this turn, the previous turn), so a short follow-up does not drop from 2000 to 1000 tokens. true (default); false = tier by length only.",
-    "short_prompt_inherits_budget": true
+    "short_prompt_inherits_budget": true,
+    "_doc_trigger_handling": "Trigger-handling tables (the shipped atoms-custom/trigger-handling.default.json in the code root, then atoms-custom/trigger-handling.json in the data root, the org repo's .claude/ and the project's .claude/; nearer wins by kind name): a trigger term that a table classifies (listed terms, length, script, or shared by at least N cards of the same layer) is handled by that kind's handling — title_only (one title line unless BM25 or vector also hits the card), require_more (full text only when another trigger term of the card or another route also hits), drop (the term is not trigger evidence; only when a table says so). A broken table is skipped with a [Guardian:Degraded] line and its cards are injected as before. true (default); false = every trigger hit sends the card as before and no table is read.",
+    "trigger_handling": { "enabled": true }
   },
   "response_capture": {
     "enabled": true,

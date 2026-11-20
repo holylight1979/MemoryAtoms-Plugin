@@ -49,6 +49,7 @@ import json
 import locale
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -527,6 +528,35 @@ def load_roots() -> Dict[str, Any]:
         return json.loads((SYNC_DIR / "roots.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+
+
+def root_is_gone(root: Path) -> bool:
+    """登記的 root 資料夾已經不在（工作樹收掉、專案搬走或刪掉）。磁碟本身不在（網路磁碟沒接、外接碟沒插）不算：接回來還要用。"""
+    root = Path(root)
+    return not root.exists() and bool(root.anchor) and Path(root.anchor).exists()
+
+
+def forget_root(root: Path) -> bool:
+    """取消一個 root 的同步登記：從 roots.json 拿掉，它的請求、`.unpushed`／`.behind` 標記、鎖檔一起刪（資料夾已不在時留著只會
+    每次開場報一樣的紅燈，沒有人能處理）。roots.lock 等不到 → 不動、回 False，下次再清。回 True 時寫一行 log。"""
+    lk = FileLock(SYNC_DIR / "roots.lock")
+    if not lk.acquire(wait_s=3.0):
+        _default_log(i18n.t("hook.wg_vcs_sync.forget_root_lock_timeout", root=Path(root).as_posix()))
+        return False
+    try:
+        roots = load_roots()
+        if roots.pop(Path(root).as_posix(), None) is not None:
+            _atomic_write(SYNC_DIR / "roots.json", json.dumps(roots, ensure_ascii=False, indent=2))
+    finally:
+        lk.release()
+    shutil.rmtree(request_dir(root), ignore_errors=True)
+    for kind in ("unpushed", "behind", "lock"):
+        try:
+            marker_path(root, kind).unlink()
+        except OSError:
+            pass
+    _default_log(i18n.t("hook.wg_vcs_sync.root_forgotten", root=Path(root).as_posix()))
+    return True
 
 
 _UNSET: Any = object()   # update_root_record：「沒傳」≠「設成 None」，push 側與 pull 側欄位互不清除
@@ -1861,6 +1891,10 @@ def sync_targets_inline(targets: Sequence[SyncTarget], config: Dict[str, Any],
     env = worker_env()
     results: List[Dict[str, Any]] = []
     for t in targets:
+        if root_is_gone(t.root):   # 資料夾已不在：不落請求（會留殘留），登記清掉
+            forget_root(t.root)
+            results.append({"vcs": t.vcs, "root": t.root.as_posix(), "status": "gone"})
+            continue
         if enqueue:
             write_request(t.root, t.pathspecs, retired_paths, reason, session_id, t.mem_dirs)
         if not acquire_lock(t.root):

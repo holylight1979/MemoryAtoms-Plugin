@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 try:
     from .project_root import claude_data_dir
@@ -47,6 +47,7 @@ def _plugin_edition() -> bool:
 
 
 _found: Dict[str, str] = {}      # 功能 → 那一行；這個行程發現的
+_values: Dict[str, Dict[str, object]] = {}   # 功能 → notify 帶的值（解法句要用 path、seed、port 等）
 _delivered: Set[str] = set()     # 已經交給 session_lines 呼叫端的功能
 
 
@@ -66,6 +67,7 @@ _LINES = {
     "org_roles": lambda v: t("hook.degraded.org_roles", **v),
     "realm_lexicon": lambda v: t("hook.degraded.realm_lexicon", **v),
     "taxonomy": lambda v: t("hook.degraded.taxonomy", **v),
+    "trigger_handling": lambda v: t("hook.degraded.trigger_handling", **v),
     "forbidden_phrases": lambda v: t("hook.degraded.forbidden_phrases", **v),
     "vector_package": lambda v: t("hook.degraded.vector_package", **v),
     "vector_invite": lambda v: t("hook.degraded.vector_invite", **v),
@@ -89,6 +91,7 @@ def notify(feature: str, **values: object) -> None:
     if TAG not in line:   # 這個語言沒有語言表：t 回鍵名，紅字不能跟著不見
         line = f"{TAG} {line} " + " ".join(f"{k}={v}" for k, v in values.items())
     _found[feature] = line
+    _values[feature] = dict(values)
     try:
         if sys.stderr:
             sys.stderr.write(line + "\n")
@@ -96,8 +99,52 @@ def notify(feature: str, **values: object) -> None:
         pass
 
 
-def session_lines() -> List[str]:
-    """這個行程到目前為止發現、還沒交出去的紅字，每個功能一行。"""
+def alert_line(state: Optional[Dict[str, Any]], source: str, target: str, level: str, scope: str, text: str,
+               fix: str = "") -> str:
+    """開場警告的單一出口：state=None 照舊回 text；有 state 就記進 state["phase_alerts"]（wg_phase_alerts.alert），
+    open 回 text、done／report 回空字串。fix 是翻好的解法句（呼叫端寫 t("hook.phase_alerts.fix.<id>", ...)，語言表對帳工具才看得到鍵）。
+    收口模組載不到時不能吞掉警告：回 text。"""
+    if state is None:
+        return text
+    try:
+        from wg_phase_alerts import alert   # hooks/（hook 行程已放進 sys.path）
+    except ImportError:
+        return text
+    return alert(state, source, target, level, scope, text, fix)
+
+
+# 功能 → (對象, level, 解法句鍵)。範圍一律是根層（資料根自己的設定、詞表、向量服務）。
+# 降級紅字＝這一場的功能現在就降級（缺設定、詞表、組織層設定、向量服務），一律 open；只有邀請型是 report（使用者可用 invite=false 關）。
+_ALERT_SPEC = {
+    "config": ("config", "open", lambda v: t("hook.phase_alerts.fix.d01", **v)),
+    "org_memory": ("org_memory", "open", lambda v: t("hook.phase_alerts.fix.d02", **v)),
+    "org_memory_roots": ("org_memory_roots", "open", lambda v: t("hook.phase_alerts.fix.d03", **v)),
+    "org_roles": ("org_roles", "open", lambda v: t("hook.phase_alerts.fix.d04", **v)),
+    "realm_lexicon": ("realm_lexicon", "open", lambda v: t("hook.phase_alerts.fix.d05", **v)),
+    "taxonomy": ("taxonomy", "open", lambda v: t("hook.phase_alerts.fix.d06", **v)),
+    "forbidden_phrases": ("forbidden_phrases", "open", lambda v: t("hook.phase_alerts.fix.d07", **v)),
+    "vector_package": ("vector_package", "open", lambda v: t("hook.phase_alerts.fix.d08", **v)),
+    "vector_invite": ("vector_invite", "report", lambda v: t("hook.phase_alerts.fix.d09", **v)),
+    "vector_embedder_invite": ("vector_embedder_invite", "report", lambda v: t("hook.phase_alerts.fix.d10", **v)),
+    "vector_embedder": ("vector_embedder", "open", lambda v: t("hook.phase_alerts.fix.d11", **v)),
+    "vector_service": ("vector_service", "open", lambda v: t("hook.phase_alerts.fix.d12", **v)),
+    "vector_foreign": ("vector_foreign", "open", lambda v: t("hook.phase_alerts.fix.d13", **v)),
+    "core_rules": ("core_rules", "open", lambda v: t("hook.phase_alerts.fix.d14", **v)),
+    "mcp": ("mcp", "open", lambda v: t("hook.phase_alerts.fix.d15", **v)),
+}
+
+
+def session_lines(state: Optional[Dict[str, Any]] = None) -> List[str]:
+    """這個行程到目前為止發現、還沒交出去的紅字，每個功能一行。
+    給了 state：每個功能記成一筆結構化警告（來源 Degraded、對象＝功能名），只有 level=open 的回行文，其餘回空（不放進清單）。"""
     new = [feature for feature in _found if feature not in _delivered]
     _delivered.update(new)
-    return [_found[feature] for feature in new]
+    if state is None:
+        return [_found[feature] for feature in new]
+    out: List[str] = []
+    for feature in new:
+        target, level, fix_of = _ALERT_SPEC.get(feature, (feature, "open", lambda v: ""))
+        line = alert_line(state, "Degraded", target, level, "root", _found[feature], fix_of(_values.get(feature, {})))
+        if line:
+            out.append(line)
+    return out

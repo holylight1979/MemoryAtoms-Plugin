@@ -23,6 +23,8 @@ def _root_fingerprint_matches(existing: Dict[str, Any], res) -> bool:
 _CARRY_ON_REBUILD = (
     "modified_files", "accessed_files", "vcs_queries", "knowledge_queue", "sync_pending",
     "stop_blocked_count", "topic_tracker",
+    # 開場警告的帳（完工時要提的／本 session 提過的）：重建後丟了會把同一批再提一次或漏提
+    "phase_alerts",
     # A2.4：專案根指紋變了重建 atom_index 時，OverviewHub 的讀檔帳／意圖／Depends 已提示的卡照搬，不重送
     "overview_hub", "turn_intent", "depends_hints",
     # 一 session 一次的旗標也要照搬，否則重建後權威地圖會重送

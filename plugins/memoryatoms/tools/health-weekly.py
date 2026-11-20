@@ -58,6 +58,7 @@ from lib.project_root import claude_data_dir, vector_service_port  # noqa: E402
 from lib.i18n import t  # noqa: E402
 CLAUDE_DIR = claude_data_dir()   # 使用者資料根（WG_CLAUDE_DIR 或 ~/.claude）：workflow、memory、Logs
 TOOLS = CODE_DIR / "tools"
+ALERT_SOURCE = "HealthCheck"   # 警告來源名（開場與完工提醒的去重鍵前半），與開場的 [Guardian:HealthCheck] 同名
 WORKFLOW = CLAUDE_DIR / "workflow"
 MEMORY = CLAUDE_DIR / "memory"
 REPORT_DIR = WORKFLOW / "health-reports"
@@ -192,6 +193,19 @@ def _secret_misfiled() -> tuple[int, int]:
         elif rep["hit"] and rep["miss"]:
             mixed += 1
     return none, mixed
+
+
+def _registered_project_roots() -> list[Path]:
+    """已登記專案的專案根（與執行期同一套判定 wg_core.discover_all_project_memory_dirs；記憶目錄＝<專案根>/.claude/memory）。"""
+    hooks = CODE_DIR / "hooks"
+    if str(hooks) not in sys.path:
+        sys.path.insert(0, str(hooks))
+    try:
+        from wg_core import discover_all_project_memory_dirs
+        return [mem.parent.parent for _slug, mem in discover_all_project_memory_dirs()]
+    except Exception as e:  # noqa: BLE001 — 找不到專案就只掃根層，原因寫 stderr
+        print(f"[health-weekly] project list unavailable: {type(e).__name__}: {e}", file=sys.stderr)
+        return []
 
 
 def _run_check(args: list[str], timeout: int = 120) -> tuple[bool, str]:
@@ -422,7 +436,7 @@ def _pytest_regex_block(cfg: dict) -> list[str]:
 
 
 def _user_release_block(days: int) -> list[str]:
-    """閘擋滿後使用者放行（Logs/guard-*.jsonl 的 event=user_release）近 N 天有事件 → 紅（放行要可見，按閘分計）。"""
+    """閘擋滿後使用者放行（Logs/guard-*.jsonl 的 event=user_release）近 N 天有事件 → 一行統計（按閘分計；collect 放黃燈：事件已發生，沒有要補的動作）。"""
     cut = datetime.now().astimezone() - timedelta(days=days)
     per: dict[str, int] = {}
     for p in sorted((CLAUDE_DIR / "Logs").glob("guard-*.jsonl")):
@@ -610,11 +624,16 @@ def collect() -> dict:
     yellow: list[str] = []   # 需留意
     info: list[str] = []     # 純資訊
     selftests: list[dict] = []
+    red_items: list[dict] = []   # 紅燈逐項（開場讀它、完工時一項一行附解法）：{source, target, text, fix}；target 是穩定的項目 id
+
+    def add_red(target: str, text: str, fix: str) -> None:   # fix：翻好的解法句（呼叫端寫 t("hook.phase_alerts.fix.<id>", ...)）
+        red.append(text)
+        red_items.append({"source": ALERT_SOURCE, "target": target, "text": text, "fix": fix})
 
     # 1. memory-audit
     ma = _run_json([str(TOOLS / "memory-audit.py"), "--json", "--global-only"])
     if ma is None:
-        red.append(t("cli.health_weekly.tool_failed", tool="memory-audit.py"))
+        add_red("tool_failed:memory-audit", t("cli.health_weekly.tool_failed", tool="memory-audit.py"), t("hook.phase_alerts.fix.tool_failed", tool="memory-audit.py", cmd=f"python {(TOOLS / 'memory-audit.py').as_posix()} --json --global-only"))
     else:
         n_iss, n_dup = len(ma.get("issues") or []), len(ma.get("duplicates") or [])
         if n_iss or n_dup:
@@ -623,11 +642,11 @@ def collect() -> dict:
     # 2. atom-health-check
     hc = _run_json([str(TOOLS / "atom-health-check.py"), "--report", "--json"])
     if hc is None:
-        red.append(t("cli.health_weekly.tool_failed", tool="atom-health-check.py"))
+        add_red("tool_failed:atom-health-check", t("cli.health_weekly.tool_failed", tool="atom-health-check.py"), t("hook.phase_alerts.fix.tool_failed", tool="atom-health-check.py", cmd=f"python {(TOOLS / 'atom-health-check.py').as_posix()} --report --json"))
     else:
         br = len(hc.get("broken_refs") or [])
         if br:
-            red.append(t("cli.health_weekly.broken_refs", count=br))
+            add_red("broken_refs", t("cli.health_weekly.broken_refs", count=br), t("hook.phase_alerts.fix.broken_refs", count=br))
         for k in ("stale_atoms", "shadow_atoms", "missing_reverse_refs"):
             n = len(hc.get(k) or [])
             if n:
@@ -640,9 +659,12 @@ def collect() -> dict:
     # 2c. 工具自測（config tool_selftests[]）：壞依賴／壞接線／壞哨兵都要在一週內浮出
     sr, si, selftests = _selftests_block(_load_config().get("tool_selftests") or [], CODE_DIR)
     red.extend(sr)
+    for res, text in zip([r for r in selftests if r.get("status") != "skipped" and not r.get("ok")], sr):
+        red_items.append({"source": ALERT_SOURCE, "target": f"selftest:{res.get('name')}", "text": text,
+                          "fix": t(t("hook.phase_alerts.fix.selftest", name=res.get("name")))})
     info.extend(si)
-    # 2d. 擋滿後使用者放行
-    red.extend(_user_release_block(FRESH_DAYS))
+    # 2d. 擋滿後使用者放行：事件已發生、沒有要補的動作，只當統計放黃燈（只在報告）
+    yellow.extend(_user_release_block(FRESH_DAYS))
     info.extend(_instructions_loaded_block())
     # 2d'. config 內建 PYTEST／PYTEST_MEASURE regex 停在舊版（只更新 hooks、沒對 config 的機器）
     yellow.extend(_pytest_regex_block(_load_config()))
@@ -662,12 +684,15 @@ def collect() -> dict:
     ):
         ok, msg = _run_check(args)
         if not ok:
-            red.append(f"{name} drift：{msg}")
+            if name == "atom index":
+                add_red("index_drift:atom", f"{name} drift：{msg}", t("hook.phase_alerts.fix.index_drift_atom", script=(TOOLS / "sync-atom-index.py").as_posix()))
+            else:
+                add_red("index_drift:skill", f"{name} drift：{msg}", t("hook.phase_alerts.fix.index_drift_skill", script=(TOOLS / "skill-index.py").as_posix()))
     leaks = _secret_leaks()
     if leaks is None:
         yellow.append(t("cli.health_weekly.leak_check_failed"))
     elif leaks:
-        red.append(t("cli.health_weekly.leaks", count=len(leaks), files="、".join(leaks[:5])))
+        add_red("secret_leaks", t("cli.health_weekly.leaks", count=len(leaks), files="、".join(leaks[:5])), t("hook.phase_alerts.fix.secret_leaks", count=len(leaks)))
     n_legacy = _legacy_local_cards()   # 相容期提醒：舊位置還有本地卡就黃燈（搬完才熄）
     if n_legacy:
         yellow.append(t("cli.health_weekly.legacy_local_cards", count=n_legacy, legacy=LEGACY_LOCAL_ATOMS_REL, new=LOCAL_ATOMS_REL))
@@ -683,6 +708,11 @@ def collect() -> dict:
     ok, msg = _run_check([str(TOOLS / "sync-atom-index.py"), "--all-projects", "--check"], timeout=300)
     if not ok:
         yellow.append(t("cli.health_weekly.index_drift", msg=msg[:300]))
+    # 疑似過期清單：根層＋全部登記專案各寫一份到該層 .claude 底下（空了自動刪檔）；判斷交給人，跑不成才黃燈
+    ok, msg = _run_check([str(TOOLS / "stale-suspects.py"),
+                          *[a for root in _registered_project_roots() for a in ("--project", str(root))]], timeout=300)
+    if not ok:
+        yellow.append(t("cli.health_weekly.stale_suspects_failed", msg=msg[:300]))
 
     # 5. vector
     try:
@@ -693,12 +723,12 @@ def collect() -> dict:
     except Exception:
         info.append(t("cli.health_weekly.vector_offline"))
     if not (MEMORY / "_vectordb").exists():
-        red.append(t("cli.health_weekly.vectordb_missing"))
+        add_red("vectordb_missing", t("cli.health_weekly.vectordb_missing"), t("hook.phase_alerts.fix.vectordb_missing"))
 
     # 5b. 注入效果報表（token 稅 / 死重 / 使用證據——效果面，非結構面）
     er = _run_json([str(TOOLS / "memory-effect-report.py"), "--json"])
     if er is None:
-        red.append(t("cli.health_weekly.tool_failed", tool="memory-effect-report.py"))
+        add_red("tool_failed:memory-effect-report", t("cli.health_weekly.tool_failed", tool="memory-effect-report.py"), t("hook.phase_alerts.fix.tool_failed", tool="memory-effect-report.py", cmd=f"python {(TOOLS / 'memory-effect-report.py').as_posix()} --json"))
     else:
         n_tax = len(er.get("exposure_tax") or [])
         n_dead = len(er.get("dead_candidates") or [])
@@ -731,7 +761,7 @@ def collect() -> dict:
         if ts is None or ts < fresh_cut:
             age = t("cli.health_weekly.no_data") if ts is None else t("cli.health_weekly.last_at", date=f"{ts:%Y-%m-%d}")
             if sessions_active:
-                red.append(t("cli.health_weekly.stalled", label=label, age=age, days=FRESH_DAYS))
+                add_red("pipeline_stalled:promotion_audit", t("cli.health_weekly.stalled", label=label, age=age, days=FRESH_DAYS), t("hook.phase_alerts.fix.pipeline_stalled"))
             else:
                 info.append(t("cli.health_weekly.idle_expected", label=label, age=age, days=FRESH_DAYS))
 
@@ -751,7 +781,7 @@ def collect() -> dict:
     official, off_yellow = _official_block(find_claude())
     yellow.extend(off_yellow)
 
-    return {"at": now.isoformat(timespec="seconds"), "red": red,
+    return {"at": now.isoformat(timespec="seconds"), "red": red, "red_items": red_items,
             "yellow": yellow, "info": info, "official": official, "selftests": selftests,
             "last_session": last_session.isoformat(timespec="seconds") if last_session else None}
 
@@ -789,7 +819,7 @@ def main() -> int:
     result = collect()
     report = write_report(result)
     LAST_RUN.write_text(json.dumps({
-        "at": result["at"], "red": len(result["red"]),
+        "at": result["at"], "red": len(result["red"]), "red_items": result.get("red_items") or [],
         "yellow": len(result["yellow"]),
         "selftests_failed": sum(1 for s in result.get("selftests") or [] if s.get("status") != "skipped" and not s.get("ok")),
         "report": str(report),

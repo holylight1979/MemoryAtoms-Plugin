@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 from wg_core import CLAUDE_DIR, WORKFLOW_DIR, degraded_notify, vector_service_port
 import i18n   # lib/：給人看的提示走語言表
 import vector_venv   # lib/：向量套件裝在哪、裝了沒、插件版還是安裝版
+from degraded import alert_line   # lib/：開場警告的單一出口（給 state 就記成結構化警告，不給照舊回字串）
 
 RECALL_WITH_VECTOR = "71.4%"      # 換句話問的路標送達率（BRIEF 第 3 節 M 實測）：有向量
 RECALL_WITHOUT_VECTOR = "51.8%"   # 同一組題、只剩 trigger＋BM25
@@ -82,7 +83,7 @@ def _service_json(port: int, path: str) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
-def _vector_index_advisory(config: Dict[str, Any]) -> list:
+def _vector_index_advisory(config: Dict[str, Any], state: Optional[Dict[str, Any]] = None) -> list:
     """向量服務活著、但上次索引重建失敗 → 一行 advisory；其餘回 []。
 
     服務活著時 statusline 照亮 vec✓，重建失敗只寫在 /status 的 index_job.error，
@@ -113,7 +114,8 @@ def _vector_index_advisory(config: Dict[str, Any]) -> list:
     err = job.get("error")
     if not err:
         return []
-    return [i18n.t("hook.session_start_vector.rebuild_failed", err=str(err)[:120])]
+    line = alert_line(state, "Vector", "vector_index_job", "done", "root", i18n.t("hook.session_start_vector.rebuild_failed", err=str(err)[:120]), i18n.t("hook.phase_alerts.fix.z01"))
+    return [line] if line else []
 
 
 VECTOR_SPAWN_LOCK_TTL_S = 150.0   # 同 tools/memory-vector-service/starter.py SPAWN_LOCK_TTL_S：這段時間內有人正在起服務

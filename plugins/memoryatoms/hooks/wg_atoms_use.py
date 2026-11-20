@@ -356,7 +356,7 @@ def detect_atom_use_v2(
     read_atom = _attr_read_evidence(turn_text, atom_name)
     # 只送路標／cold 行且沒真的 Read 該檔：沒看到內容就不可能採用；rescue 也不算
     #（pointer 化後的 watch token 來自沒送出的全文，Codex #8 反例）。
-    if form in ("skip", "cold", "pointer_trim") and not read_atom:
+    if form in ("skip", "cold", "pointer_trim", "trigger_title") and not read_atom:
         return {"used": False, "method": "pointer_unread", "shared": 0, "containment": 0.0}
     specific = _rescue_specific(rescue_tokens)
     if specific:

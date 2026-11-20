@@ -379,6 +379,28 @@ class _StopRun:
             reason = reason + _accept_hint
         return reason
 
+    def _phase_alerts_note(self, remind: bool = False) -> str:
+        """階段完工那一刻（知識收割閘）把本範圍 level=done 的警告一條一行附解法提一次（wg_phase_alerts）。
+        remind=False：回要附在擋訊息後面的文字；remind=True（收割閘在提醒模式、擋訊息不進模型）：這次收尾的出口帶給使用者看
+        （systemMessage），守門家族在時另排進 remind_queue、下一個工具結果送給模型；回空字串。
+        標 shown 與記帳都在這裡；呼叫端要在 write_state 之前叫。出錯只 stderr，不影響收割閘。"""
+        try:
+            import wg_phase_alerts
+            items = wg_phase_alerts.consume(self.state)
+            if not items:
+                return ""
+            if remind:
+                _CHAIN_TAIL.append(wg_phase_alerts.render_block(items).strip())
+                try:
+                    wg_phase_alerts.queue_as_reminders(self.state, items)
+                except ImportError:
+                    pass   # 插件版沒有提醒帳（守門家族不出廠）：只給使用者看
+                return ""
+            return wg_phase_alerts.render_block(items)
+        except Exception as e:  # noqa: BLE001
+            print(i18n.t("hook.phase_alerts.append_failed", error=f"{type(e).__name__}: {e}"), file=sys.stderr)
+            return ""
+
     def _later_gates(self, reason: str, names: Optional[List[str]] = None) -> str:
         """規則 BLOCK_LISTS_LATER_GATES：這次擋下時，照目前狀態依閘序預覽後面還會擋的閘（知識收割、
         收尾檢核、同步），讓模型一回合
@@ -833,11 +855,13 @@ def _harvest_gate(run: _StopRun) -> bool:
     _log_waivers(state, session_id, turn_seq, _uturn, "harvest", _hv_waived)   # 使用者說先這樣／跳過 → 放行並留帳
     if hv_reason and _hv_mode == _REMIND:
         state.setdefault("harvest_gate_turn", {})[session_id] = _uturn
+        run._phase_alerts_note(remind=True)   # 提醒模式訊息不進模型：完工警告改走提醒帳，下一個工具結果送
         _remind_logged("knowledge_harvest", "KnowledgeHarvest", "HARVEST_AT_PHASE_DONE", hv_reason, session_id, turn_seq,
                        own_mod_files=len(own_mod_files), owed_count=note_owed(state, session_id))
         write_state(session_id, state)
     elif hv_reason and not _chain_hold("KnowledgeHarvest", hv_reason):
         state.setdefault("harvest_gate_turn", {})[session_id] = _uturn
+        _alerts_note = run._phase_alerts_note()   # 在 write_state 之前：標 shown 要一起落檔
         _owed = {"owed_count": note_owed(state, session_id)} if v6 else {}
         append_guard_log("knowledge_harvest", {
             "session_id": session_id, "turn_seq": turn_seq,
@@ -846,7 +870,7 @@ def _harvest_gate(run: _StopRun) -> bool:
             **_owed,
         })
         write_state(session_id, state)
-        output_block(_piggyback(hv_reason))
+        output_block(_piggyback(hv_reason) + _alerts_note)
         return True
     return False
 

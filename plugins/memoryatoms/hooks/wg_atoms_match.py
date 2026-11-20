@@ -154,6 +154,11 @@ def count_trigger_hits(keywords, prompt_lower: str) -> int:
     return sum(1 for kw in keywords if _kw_match(kw, prompt_lower))
 
 
+def hit_terms(keywords, prompt_lower: str) -> List[str]:
+    """命中的觸發詞（保序）；和 any_trigger_hit／count_trigger_hits 同一個 _kw_match。"""
+    return [kw for kw in keywords if _kw_match(kw, prompt_lower)]
+
+
 def match_triggers(prompt: str, atoms: List[AtomEntry]) -> List[AtomEntry]:
     prompt_lower = prompt.lower()
     matched = []

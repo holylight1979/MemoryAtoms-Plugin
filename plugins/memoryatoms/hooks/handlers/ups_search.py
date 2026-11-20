@@ -7,7 +7,7 @@ handlers/ups_search.py — UserPromptSubmit search pipeline 段
   已依 scope 可見性收窄（SPEC §8.1），他專案 atom 從不進池
 - 跨專案 alias 掃描（mtime 排序上限 20 專案）：prompt 命中他專案別名 → 只帶入該專案
   MEMORY.md 目錄（去 personal/roles 行），不撈 atom
-- trigger keyword match
+- trigger keyword match（命中後照觸發詞處理表判全文／標題／不送，規則 TRIGGER_HANDLING_BY_KIND）
 - BM25 over global layer（trigger 命中 ≤2 才跑；向量這次沒結果時連專案層）
 - vector fallback（_semantic_search，layers 白名單＝候選池同一套可見性）+ section hints
 - supersedes filtering
@@ -37,6 +37,7 @@ from wg_atoms import (
     read_atom_text, rrf_fuse, RRF_ACTIVATION_GAIN,
 )
 import re
+import wg_trigger_handling
 
 from handlers._shared import _SUPERSEDES_RE
 from wg_atoms import SUPERSEDES_MEMO, collect_superseded_names
@@ -273,9 +274,11 @@ def collect_matched_atoms(
     caches: Dict[str, Dict] = {"content": content_cache, "access": access_cache}
 
     all_atoms: List[Tuple[AtomEntry, Path]] = []
+    layer_of: Dict[str, str] = {}   # 卡名 → 所在層（global/project/org）；同名以先出現的為準，觸發詞處理表按層判
     for entry in atom_index.get("global", []):
         name, rel_path, triggers = entry
         all_atoms.append(((name, rel_path, triggers), MEMORY_DIR.parent))
+        layer_of.setdefault(name, "global")
     proj_dir_str = atom_index.get("project_memory_dir", "")
     proj_root_str = atom_index.get("project_root", "")
     if proj_dir_str:
@@ -288,6 +291,7 @@ def collect_matched_atoms(
             else:
                 base = proj_parent
             all_atoms.append(((name, rel_path, triggers), base))
+            layer_of.setdefault(name, "project")
     # 組織層（SessionStart 由 config org_memory 建池）：rel_path 相對 `<org_root>/.claude`
     org_base_str = atom_index.get("org_base") or ""
     if org_base_str:
@@ -295,6 +299,7 @@ def collect_matched_atoms(
         for entry in atom_index.get("org", []):
             name, rel_path, triggers = entry
             all_atoms.append(((name, rel_path, triggers), org_base))
+            layer_of.setdefault(name, "org")
 
     # Supersedes 全路徑有效性：候選池先去掉被取代的舊卡（trigger/BM25/vector/Related/裁切共用同一池）。
     # 集合每 session 算一次 stash 在 atom_index（SessionStart 建；舊 state 沒有就在這裡補算一次）。
@@ -343,10 +348,21 @@ def collect_matched_atoms(
             except (OSError, UnicodeDecodeError):
                 pass
     trigger_hits: Dict[str, int] = {}  # RRF trigger 路排序依據（命中數降冪）
+    compiled, red_line = wg_trigger_handling.ensure_compiled(atom_index, config)
+    if red_line:
+        lines.append(red_line)
+    title_pending: Dict[str, Dict[str, str]] = {}
     for (name, rel_path, triggers), base_dir in all_atoms:
         if name in atom_source:
             continue  # 同名去重：all_atoms 多層（global/project/cross）混入同名時只取首見
         if name not in already_injected and any_trigger_hit(triggers, prompt_lower):
+            if compiled:
+                outcome, info = wg_trigger_handling.card_outcome(compiled, layer_of.get(name, "global"), triggers, prompt_lower)
+                if outcome == wg_trigger_handling.NONE:
+                    _atom_debug_log("TRIGGER_HANDLING", f"atom={name} term={info['term']} kind={info['kind']} handling={info['handling']} outcome=none", config)
+                    continue
+                if outcome == wg_trigger_handling.TITLE:
+                    title_pending[name] = info
             matched_with_dir.append(((name, rel_path, triggers), base_dir))
             atom_source[name] = "trigger"
             trigger_hits[name] = count_trigger_hits(triggers, prompt_lower)
@@ -424,6 +440,7 @@ def collect_matched_atoms(
         )
     else:
         sem_atoms = []
+    vector_raw_names = {s[0] for s in sem_atoms}   # enrichment 過濾之前的原始結果：觸發詞處理表的「另一路佐證」
     # 向量這次沒結果（沒裝、服務沒起來、逾時、沒命中）：退回 BM25，連專案層一起（專案層平常只靠向量補）。
     # global_layer=vector：全域＋專案一起跑；global_layer=bm25：全域層上面已跑過，問過向量（專案層補位）沒結果才補跑專案層，排在全域命中前面。
     if not global_layer_uses_bm25 and not sem_atoms and len(matched_with_dir) <= bm25_gate:
@@ -451,6 +468,13 @@ def collect_matched_atoms(
             sem_name, all_atoms, "vector",
             matched_with_dir, atom_source, kw_matched_names, already_injected,
         )
+
+    corroborated = set(bm25_route) | vector_raw_names
+    title_only_names = {n: info for n, info in title_pending.items() if n not in corroborated}
+    if title_only_names:   # 沒有「只送標題」的卡就不放這個鍵：caches 的形狀跟沒有本機制時一樣
+        caches["trigger_title"] = title_only_names
+    for n in title_pending.keys() & corroborated:
+        _atom_debug_log("TRIGGER_HANDLING", f"atom={n} outcome=full (corroborated by another route)", config)
 
     # Supersedes filtering（讀過的內文入 content_cache，assemble 段免重讀）
     superseded_names: set = set()

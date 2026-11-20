@@ -10,6 +10,7 @@ from pathlib import Path
 
 from wg_core import WORKFLOW_DIR, _atom_debug_error
 from i18n import t  # lib/（wg_core 已放進 sys.path）
+from degraded import alert_line  # lib/：開場警告的單一出口（給 state 就記成結構化警告，不給照舊回字串）
 
 USAGE_WATCH_STALE_HOURS = 72  # 每小時排程；留週末關機的寬限
 _TOOL = Path(__file__).resolve().parents[1] / "tools" / "usage-watch.py"  # 提示裡給人複製的指令用實際路徑
@@ -20,7 +21,7 @@ _SNAPSHOT_TASK = "Claude-Usage-WeeklySnapshot"  # 與截圖工具的 TASK_NAME �
 _SNAPSHOT_TOOL = Path(__file__).resolve().parents[1] / "tools" / "usage-snapshot" / "usage_snapshot.py"
 
 
-def _usage_watch_advisory(last_run_path) -> list:
+def _usage_watch_advisory(last_run_path, state=None) -> list:
     """用量異常監控死人開關 → advisory 行（無異常回 []）。
 
     排程沒被叫起或被刪時腳本不會寫 last-run，只能從逾 USAGE_WATCH_STALE_HOURS 沒更新反推；
@@ -34,22 +35,19 @@ def _usage_watch_advisory(last_run_path) -> list:
         at = datetime.fromisoformat(d.get("at", "")).replace(tzinfo=None)
         if d.get("scheduled") and datetime.now() - at > timedelta(hours=USAGE_WATCH_STALE_HOURS):
             task = f"Claude-Usage-Watch-{getpass.getuser()}"
-            return [
-                t("ext.usage-watch.monitor_stale", days=(datetime.now() - at).days, last=f"{at:%Y-%m-%d %H:%M}", task=task, tool=_TOOL)
-            ]
+            return [ln for ln in [alert_line(state, "UsageWatch", "schedule", "done", "root", t("ext.usage-watch.monitor_stale", days=(datetime.now() - at).days, last=f"{at:%Y-%m-%d %H:%M}", task=task, tool=_TOOL), t("hook.phase_alerts.fix.u01", task=task, tool=_TOOL))] if ln]
         problems = ([d.get("error")] if not d.get("ok") else []) + [
             t("ext.usage-watch.notify_failed", channel=ch, error=err) for ch, err in (d.get("notify_errors") or {}).items()]
         if problems:
-            return [t("ext.usage-watch.last_run_problem", at=f"{at:%m-%d %H:%M}", problems=t("ext.usage-watch.problem_separator").join(problems))]
+            return [ln for ln in [alert_line(state, "UsageWatch", "last_run", "done", "root", t("ext.usage-watch.last_run_problem", at=f"{at:%m-%d %H:%M}", problems=t("ext.usage-watch.problem_separator").join(problems)), t("hook.phase_alerts.fix.u02", tool=_TOOL))] if ln]
         return []
     except Exception as e:  # noqa: BLE001
         _atom_debug_error("session_start:usage_watch_advisory", e)
-        return [
-            t("ext.usage-watch.last_run_unreadable", tool=_TOOL)
-        ]
+        return [ln for ln in [alert_line(state, "UsageWatch", "state", "report", "root",
+                                         t("ext.usage-watch.last_run_unreadable", tool=_TOOL))] if ln]
 
 
-def _snapshot_advisory(last_run_path) -> list:
+def _snapshot_advisory(last_run_path, state=None) -> list:
     """週用量截圖死人開關 → advisory 行（無需提醒回 []）。
 
     只看排程跑法（scheduled=True）：手動跑的人當場就看到結果。缺檔＝這台沒用截圖工具，不提示。
@@ -65,21 +63,21 @@ def _snapshot_advisory(last_run_path) -> list:
         at = datetime.fromisoformat(d.get("at", "")).replace(tzinfo=None)
         age = datetime.now() - at
         if age > timedelta(days=SNAPSHOT_STALE_DAYS):
-            return [t("ext.usage-watch.snapshot_stale", days=age.days, last=f"{at:%Y-%m-%d %H:%M}",
-                      task=_SNAPSHOT_TASK, tool=_SNAPSHOT_TOOL)]
+            return [ln for ln in [alert_line(state, "UsageSnapshot", "schedule", "done", "root", t("ext.usage-watch.snapshot_stale", days=age.days, last=f"{at:%Y-%m-%d %H:%M}", task=_SNAPSHOT_TASK, tool=_SNAPSHOT_TOOL), t("hook.phase_alerts.fix.u04", task=_SNAPSHOT_TASK, tool=_SNAPSHOT_TOOL))] if ln]
         if d.get("ok") is not True and age <= timedelta(days=SNAPSHOT_PROBLEM_DAYS):
             if d.get("login_needed") is True:
                 reason = t("ext.usage-watch.snapshot_login_needed", tool=_SNAPSHOT_TOOL)
             else:
                 reason = " ".join(str(d.get("error") or "").split())[:160] or "?"
-            return [t("ext.usage-watch.snapshot_missed", at=f"{at:%m-%d %H:%M}", reason=reason, tool=_SNAPSHOT_TOOL)]
+            return [ln for ln in [alert_line(state, "UsageSnapshot", "last_run", "done", "root", t("ext.usage-watch.snapshot_missed", at=f"{at:%m-%d %H:%M}", reason=reason, tool=_SNAPSHOT_TOOL), t("hook.phase_alerts.fix.u05", tool=_SNAPSHOT_TOOL))] if ln]
         return []
     except Exception as e:  # noqa: BLE001
         _atom_debug_error("session_start:snapshot_advisory", e)
-        return [t("ext.usage-watch.snapshot_last_run_unreadable", tool=_SNAPSHOT_TOOL)]
+        return [ln for ln in [alert_line(state, "UsageSnapshot", "state", "report", "root",
+                                         t("ext.usage-watch.snapshot_last_run_unreadable", tool=_SNAPSHOT_TOOL))] if ln]
 
 
-def _login_check_advisory(path) -> list:
+def _login_check_advisory(path, state=None) -> list:
     """重置前一晚的登入檢查 → advisory 行（無需提醒回 []）。
 
     只看排程跑法（scheduled=True）；缺檔＝這台沒排登入檢查，不提示。
@@ -103,14 +101,18 @@ def _login_check_advisory(path) -> list:
         web_fix = t("ext.usage-watch.login_check_web_fix", tool=_SNAPSHOT_TOOL)
         cc_fix = t("ext.usage-watch.login_check_cc_fix", error=err)
         when = f"{at:%m-%d %H:%M}"
+        # 有時限（只在重置前一天內提示），過了截圖本身的提示接手：維持開場
         if cc_bad and web_bad:
-            return [t("ext.usage-watch.login_check_both", at=when, web_fix=web_fix, cc_fix=cc_fix)]
-        if web_bad:
-            return [t("ext.usage-watch.login_check_web", at=when, web_fix=web_fix)]
-        return [t("ext.usage-watch.login_check_cc", at=when, cc_fix=cc_fix)]
+            text = t("ext.usage-watch.login_check_both", at=when, web_fix=web_fix, cc_fix=cc_fix)
+        elif web_bad:
+            text = t("ext.usage-watch.login_check_web", at=when, web_fix=web_fix)
+        else:
+            text = t("ext.usage-watch.login_check_cc", at=when, cc_fix=cc_fix)
+        return [ln for ln in [alert_line(state, "UsageLoginCheck", "login", "open", "root", text, t("hook.phase_alerts.fix.u07"))] if ln]
     except Exception as e:  # noqa: BLE001
         _atom_debug_error("session_start:login_check_advisory", e)
-        return [t("ext.usage-watch.login_check_unreadable", tool=_SNAPSHOT_TOOL)]
+        return [ln for ln in [alert_line(state, "UsageLoginCheck", "state", "report", "root",
+                                         t("ext.usage-watch.login_check_unreadable", tool=_SNAPSHOT_TOOL))] if ln]
 
 
 def on_new_session(ctx: Dict[str, Any]) -> List[str]:
@@ -120,7 +122,7 @@ def on_new_session(ctx: Dict[str, Any]) -> List[str]:
                      (_snapshot_advisory, WORKFLOW_DIR / "usage-snapshots" / "usage-last-run.json"),
                      (_login_check_advisory, WORKFLOW_DIR / "usage-snapshots" / "usage-login-check.json")):
         try:
-            out.extend(fn(path))
+            out.extend(fn(path, state=ctx.get("state")))
         except Exception as e:  # noqa: BLE001
             _atom_debug_error(f"session_start:{fn.__name__}", e)
     return out

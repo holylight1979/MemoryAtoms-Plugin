@@ -1,0 +1,18 @@
+{
+  "_doc": "Shipped trigger-handling table (code root; do not edit, it is replaced on upgrade). A trigger term matched by a kind below is handled by that kind instead of sending the whole card. Your own tables override kinds of the same name, nearer wins: <data root>/atoms-custom/trigger-handling.json, <org_root>/.claude/atoms-custom/trigger-handling.json, <project_root>/.claude/atoms-custom/trigger-handling.json; \"enabled\": false removes one. Format: TECH.md, Appendix A5.1 stage 3.",
+  "schema": 1,
+  "kinds": [
+    {
+      "name": "common-short-ascii",
+      "match": { "script": "ascii", "max_len": 4, "min_shared_cards": 5 },
+      "handling": "title_only",
+      "note": "A short English term that at least 5 cards in the same layer list as a trigger: on its own it sends only the card's title line."
+    },
+    {
+      "name": "common-short-cjk",
+      "match": { "script": "non_ascii", "max_len": 2, "min_shared_cards": 5 },
+      "handling": "title_only",
+      "note": "A one- or two-character non-English term that at least 5 cards in the same layer list as a trigger: on its own it sends only the card's title line."
+    }
+  ]
+}

@@ -20,9 +20,10 @@ from wg_core import (
 )
 from wg_platform import paste_command   # lib/：給人貼的指令（直譯器與腳本都是絕對路徑，不用 ~）
 import i18n   # lib/：給人看的提示走語言表
+from degraded import alert_line   # lib/：開場警告的單一出口（給 state 就記成結構化警告，不給照舊回字串）
 
 
-def _scope_layout_advisory(project_mem_dir) -> list:
+def _scope_layout_advisory(project_mem_dir, state=None) -> list:
     """專案記憶尚未依 scope 分層整理 → 開場一行說明改動＋整理入口。
 
     記憶系統升級後（personal 只本人、專案規則進 shared 記提出者、他專案不注入），其他機器上
@@ -35,7 +36,7 @@ def _scope_layout_advisory(project_mem_dir) -> list:
         from atom_locations import scope_layout_classified
         if scope_layout_classified(Path(project_mem_dir)):
             return []
-        return [i18n.t("hook.session_start_project.scope_layout")]
+        return [ln for ln in [alert_line(state, "ScopeLayout", Path(project_mem_dir).as_posix(), "done", "project", i18n.t("hook.session_start_project.scope_layout"), i18n.t("hook.phase_alerts.fix.p01"))] if ln]
     except Exception as e:  # noqa: BLE001
         _atom_debug_error("session_start:scope_layout_advisory", e)
         return []
@@ -67,7 +68,7 @@ def _local_catalog_lines(cwd: str) -> List[str]:
         return []
 
 
-def _org_advisory(org_root, pool: Dict[str, Any]) -> List[str]:
+def _org_advisory(org_root, pool: Dict[str, Any], state=None) -> List[str]:
     """組織層一行：`[Org] 組織層 N 顆（<root>）`。
     這台沒接上、使用者也還沒回答過（本機狀態檔沒有 enabled／declined）且共用 config 有 repo_url →
     要 AI 用 AskUserQuestion 問使用者放哪裡；**每個 session 都出，直到有答案**（接上或 --decline）。
@@ -83,18 +84,20 @@ def _org_advisory(org_root, pool: Dict[str, Any]) -> List[str]:
         if default_root.startswith("~"):
             default_root = str(Path(default_root).expanduser())  # config 寫家目錄相對路徑，問人時給展開後的真路徑
         opt_default = (i18n.t("hook.session_start_project.org_opt_default", root=default_root, cmd=cmd) if default_root else "")
-        return [i18n.t("hook.session_start_project.org_ask", url=shared.get('repo_url'), opt_default=opt_default, cmd=cmd)]
+        # 指令型：叫模型第一則回覆前問使用者，不是警告；一律開場，沒有解法句
+        return [alert_line(state, "Org", "org_connect", "open", "root",
+                           i18n.t("hook.session_start_project.org_ask", url=shared.get('repo_url'), opt_default=opt_default, cmd=cmd))]
     root = Path(org_root)
     if not (root / ".claude" / "memory").is_dir():
-        return [i18n.t("hook.session_start_project.org_not_connected", root=root)]
+        return [ln for ln in [alert_line(state, "Org", "org_connect", "done", "root", i18n.t("hook.session_start_project.org_not_connected", root=root), i18n.t("hook.phase_alerts.fix.p05"))] if ln]
     if not pool.get("org_base"):
         return []
     if not (Path(pool["org_base"]) / "memory" / "_atom_index.json").is_file():
-        return [i18n.t("hook.session_start_project.org_index_missing", root=root)]
+        return [ln for ln in [alert_line(state, "Org", "org_index", "done", "root", i18n.t("hook.session_start_project.org_index_missing", root=root), i18n.t("hook.phase_alerts.fix.p06", root=root))] if ln]
     return [i18n.t("hook.session_start_project.org_summary", n=len(pool.get('org') or []), root=root)]
 
 
-def _project_memory_nudge(cwd: str, project_root, project_mem_dir) -> List[str]:
+def _project_memory_nudge(cwd: str, project_root, project_mem_dir, state=None) -> List[str]:
     """有版控的專案根、根下還沒有 .claude/memory → 一行提示怎麼一鍵初始化。其餘情況（沒版控、repo 子目錄、家目錄、暫存根）零輸出。"""
     if project_root is None:
         return []
@@ -113,7 +116,7 @@ def _project_memory_nudge(cwd: str, project_root, project_mem_dir) -> List[str]:
     elif Path(vcs[1]) != root:
         return []
     command = paste_command(CODE_DIR / "tools" / "init-project-memory.py", "--cwd", f'"{root}"')
-    return [i18n.t("hook.session_start_project.project_memory_nudge", root=root, command=command)]
+    return [ln for ln in [alert_line(state, "ProjectMemory", root.as_posix(), "open", "project", i18n.t("hook.session_start_project.project_memory_nudge", root=root, command=command), i18n.t("hook.phase_alerts.fix.p02"))] if ln]
 
 
 def _has_paths_header(text: str) -> bool:
@@ -151,9 +154,10 @@ def _project_rules_chars(project_root) -> int:
     return total
 
 
-def _project_rules_advisory(project_root, state: Dict[str, Any], config: Dict[str, Any]) -> List[str]:
+def _project_rules_advisory(project_root, state: Dict[str, Any], config: Dict[str, Any], record: bool = False) -> List[str]:
     """One line when the project's always-loaded rules exceed project_rules.warn_chars (0 = off); once per session.
-    Skipped for the memory system's own tree. Size only, no content judgement, no file changes. Fail-open."""
+    Skipped for the memory system's own tree. Size only, no content judgement, no file changes. Fail-open.
+    record=True: log it as a phase-end alert on state (raised once when the phase wraps up, with a fix); default False keeps the old opening line."""
     try:
         if not project_root or state.get("project_rules_warned"):
             return []
@@ -166,13 +170,14 @@ def _project_rules_advisory(project_root, state: Dict[str, Any], config: Dict[st
         if chars <= limit:
             return []
         state["project_rules_warned"] = True
-        return [i18n.t("hook.session_start_project.project_rules_bloat", chars=chars, tok=chars // 2)]
+        text = i18n.t("hook.session_start_project.project_rules_bloat", chars=chars, tok=chars // 2)
+        return [ln for ln in [alert_line(state if record else None, "ProjectRules", root.as_posix(), "done", "project", text, i18n.t("hook.phase_alerts.fix.p03"))] if ln]
     except Exception as e:  # noqa: BLE001
         _atom_debug_error("session_start:project_rules_advisory", e)
         return []
 
 
-def _project_root_notice(res, cwd: str) -> List[str]:
+def _project_root_notice(res, cwd: str, state=None) -> List[str]:
     """專案根宣告行（📍 認領／info、⚠️ 警告、❓ 引導）。沒宣告也沒候選 → 空清單，外部專案零 token。"""
     if res is None:
         return []
@@ -183,19 +188,21 @@ def _project_root_notice(res, cwd: str) -> List[str]:
         if res.claimed_by != "self":
             lines.append(i18n.t("hook.session_start_project.subproject", cwd=cwd, path=res.path, label=label, via=res.via,
                                 memory=res.path / '.claude' / 'memory'))
-    for info in res.infos:
-        lines.append(f"📍 [Guardian:ProjectRoot] {info}")
-    for warn in res.warnings:
-        lines.append(f"⚠️ [Guardian:ProjectRoot] {warn}")
+    for i, info in enumerate(res.infos):
+        lines.append(alert_line(state, "ProjectRoot", f"info{i}", "report", "project", f"📍 [Guardian:ProjectRoot] {info}"))
+    for i, warn in enumerate(res.warnings):   # 宣告不成立＝記憶歸屬錯，維持開場；對象用序號（警告種類很多，文字裡有路徑）
+        lines.append(alert_line(state, "ProjectRoot", f"declaration{i}", "open", "project", f"⚠️ [Guardian:ProjectRoot] {warn}", i18n.t("hook.phase_alerts.fix.p08")))
     if res.claimed_by in ("nearest", "none") and res.candidates and not res.standalone:
         cands = i18n.t("hook.session_start_project.list_sep").join(str(c) for c in res.candidates)
         best = res.candidates[0]
-        lines.append(i18n.t("hook.session_start_project.root_ask", cands=cands, cwd=cwd, best=best,
-                            cmd=paste_command(CODE_DIR / "tools" / "project-tree.py")))
-    return lines
+        # 指令型：叫模型問使用者四選一，不是警告；「這次先不決定」下次會再問
+        lines.append(alert_line(state, "ProjectRoot", "root_ask", "open", "project",
+                                i18n.t("hook.session_start_project.root_ask", cands=cands, cwd=cwd, best=best,
+                                       cmd=paste_command(CODE_DIR / "tools" / "project-tree.py"))))
+    return [ln for ln in lines if ln]
 
 
-def _first_session_hint_lines(root_res, cwd: str) -> list:
+def _first_session_hint_lines(root_res, cwd: str, state=None) -> list:
     """first_session_hint 掛 SessionStart：無部位表的專案給 scaffold 指令；表有「骨架」列就列每張卡的空段；
     表齊或不在任何專案 → 空。根層 cwd 以 ~/.claude 當根（它的表在 ~/.claude/.claude/overview-map.md）。fail-open。"""
     try:
@@ -211,9 +218,16 @@ def _first_session_hint_lines(root_res, cwd: str) -> list:
         lib_dir = str(Path(__file__).resolve().parents[2] / "lib")   # 程式碼用本檔位置；CLAUDE_DIR 只拿來判根層與定位卡
         if lib_dir not in sys.path:
             sys.path.insert(0, lib_dir)
-        from overview_scaffold import first_session_hint
+        from overview_scaffold import first_session_hint, MAP_REL
         hint = first_session_hint(root, CLAUDE_DIR / "memory" if root == CLAUDE_DIR else None)
-        return [hint] if hint else []
+        if not hint:
+            return []
+        scope = "root" if root == CLAUDE_DIR else "project"
+        if not (root / MAP_REL).is_file():   # 還沒有部位表：引導新專案，完工時提一次
+            line = alert_line(state, "OverviewHub", "overview_map", "done", scope, hint, i18n.t("hook.phase_alerts.fix.p10"))
+        else:   # 部位表有骨架列：改那個部位前就要先補卡，維持開場
+            line = alert_line(state, "OverviewHub", "overview_skeleton", "open", scope, hint, i18n.t("hook.phase_alerts.fix.p11"))
+        return [line] if line else []
     except Exception as e:  # noqa: BLE001
         _atom_debug_error("session_start:first_session_hint", e)
         return []

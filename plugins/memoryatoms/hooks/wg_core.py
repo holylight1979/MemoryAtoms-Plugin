@@ -1787,6 +1787,7 @@ def new_state(session_id: str, cwd: str, source: str) -> Dict[str, Any]:
             "prompt_count": 0,
             "keyword_signals": [],
         },
+        "phase_alerts": {"pending": {}, "shown": {}},   # 開場警告的結構化帳（wg_phase_alerts）：待提的 ＋ 本 session 提過的
         "last_updated": _now_iso(),
     }
 

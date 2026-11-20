@@ -154,29 +154,47 @@ def wg_core_workflow_dir() -> Path:
 HEALTH_RUN_STALE_DAYS = 10  # 週排程 + 3 天寬限；超過 = 排程器本身死了
 
 
-def _health_advisory(last_run_path) -> list:
-    """週健檢死人開關 → advisory 行（無異常回 []，不佔 context）。
+def _raise_health_reds(state, out: list, d: dict, script: str) -> None:
+    """上次週健檢的紅燈：health-last-run.json 有 red_items 就每項一筆完工級警告（解法句是週健檢當時就寫進項目的）；
+    舊檔只有 red 數字 → 整體一筆。"""
+    from wg_phase_alerts import alert, alert_line
+    items = d.get("red_items")
+    if not (isinstance(items, list) and items):
+        if int(d.get("red", 0)) > 0:
+            alert_line(state, out, "HealthCheck", "red", "done", "root", i18n.t("hook.session_start_sentinels.health_red", red=d['red'], report=d.get('report', 'workflow/health-reports/')), i18n.t("hook.phase_alerts.fix.health_red", script=script))
+        return
+    st = state if isinstance(state, dict) else {}
+    for it in items:
+        if not (isinstance(it, dict) and it.get("target")):
+            continue
+        alert(st, str(it.get("source") or "HealthCheck"), str(it["target"]), "done", "root",
+              str(it.get("text") or it["target"]), str(it.get("fix") or ""))
 
-    三種浮出（last-run 缺檔＝還沒開始用，不提）：at 逾 HEALTH_RUN_STALE_DAYS 天
-    （排程停擺）、上次健檢 red>0（有待處理項未看）、last-run 不可解析。自身壞掉走
-    _atom_debug_error，不阻斷 SessionStart。
+
+def _health_advisory(last_run_path, state=None) -> list:
+    """週健檢死人開關 → 警告（一律完工時提，開場不佔 context，所以回 []；不傳 state 時只回開場級的行）。
+
+    三種浮出（last-run 缺檔＝還沒開始用，不提）：at 逾 HEALTH_RUN_STALE_DAYS 天（排程停擺）、上次健檢有紅燈項目
+    （health-last-run.json 的 red_items，每項一筆，鍵＝HealthCheck＋項目 id）、last-run 不可解析。
+    舊檔只有 red 數字沒有項目清單 → 退回「整體一筆」。自身壞掉走 _atom_debug_error，不阻斷 SessionStart。
     """
+    from wg_phase_alerts import alert_line
+    out: list = []
+    script = (CODE_DIR / "tools" / "health-weekly.py").as_posix()
     try:
         if not last_run_path.exists():
             return []   # 還沒開始用週健檢不算異常；真的逾期才提（見下）
         d = json.loads(last_run_path.read_text(encoding="utf-8"))
         at = datetime.fromisoformat(d.get("at", ""))
         age = (datetime.now() - at).days
-        out = []
         if age > HEALTH_RUN_STALE_DAYS:
-            out.append(i18n.t("hook.session_start.health_stale", age=age, last=f"{at:%Y-%m-%d}",
-                              script=(CODE_DIR / "tools" / "health-weekly.py").as_posix()))
-        if int(d.get("red", 0)) > 0:
-            out.append(i18n.t("hook.session_start_sentinels.health_red", red=d['red'], report=d.get('report', 'workflow/health-reports/')))
+            alert_line(state, out, "HealthCheck", "schedule", "done", "root", i18n.t("hook.session_start.health_stale", age=age, last=f"{at:%Y-%m-%d}", script=script), i18n.t("hook.phase_alerts.fix.health_stale", script=script))
+        _raise_health_reds(state, out, d, script)
         return out
     except Exception as e:
         _atom_debug_error("session_start:health_advisory", e)
-        return [i18n.t("hook.session_start.health_unparseable", script=(CODE_DIR / "tools" / "health-weekly.py").as_posix())]
+        alert_line(state, out, "HealthCheck", "state", "done", "root", i18n.t("hook.session_start.health_unparseable", script=script), i18n.t("hook.phase_alerts.fix.health_unparseable", script=script))
+        return out
 
 
 def _followup_advisory() -> list:

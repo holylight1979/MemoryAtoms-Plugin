@@ -17,7 +17,8 @@ from wg_platform import no_window_flags, paste_command
 from atom_index_json import has_indexable_cards   # lib/：磁碟上有沒有該登記的卡
 import i18n   # lib/：給人看的提示走語言表
 from handlers._shared import _MEMORY_MD_AUTO_HEADER
-from handlers.session_start_vcs import _DERIVED_DIR_NAMES, _rebuild_manual, _under_claude_dir   # 衍生檔名單與退出版控判斷的單一出處
+from handlers.session_start_vcs import _DERIVED_DIR_NAMES, _rebuild_manual, _under_claude_dir, _scope   # 衍生檔名單與退出版控判斷的單一出處
+from degraded import alert_line   # lib/：開場警告的單一出口（給 state 就記成結構化警告，不給照舊回字串）
 
 
 def _index_stale_reason(memory_dir: Path, json_path: Path) -> str:
@@ -48,7 +49,7 @@ def _index_stale_reason(memory_dir: Path, json_path: Path) -> str:
     return ""
 
 
-def _split_personal_if_pending(memory_dir: Path) -> str:
+def _split_personal_if_pending(memory_dir: Path, state=None) -> str:
     """根層個人卡登記還沒搬出共用索引，或 pull 來的個人卡還沒登記 → 跑一次分流，回要顯示的一行。
     結果看分流後的狀態，不看 exit code：工具遇到別的索引漂移也會回 1。"""
     try:
@@ -61,15 +62,16 @@ def _split_personal_if_pending(memory_dir: Path) -> str:
                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
                     creationflags=no_window_flags())
         if personal_split_pending(memory_dir):
-            return i18n.t("hook.session_start_index.split_not_moved", err=(r.stderr or '').strip()[:200],
-                          cmd=paste_command(CODE_DIR / "tools" / "sync-atom-index.py"))
+            cmd = paste_command(CODE_DIR / "tools" / "sync-atom-index.py")
+            return alert_line(state, "Index", "personal_split", "done", "root", i18n.t("hook.session_start_index.split_not_moved", err=(r.stderr or '').strip()[:200], cmd=cmd), i18n.t("hook.phase_alerts.fix.x09", cmd=cmd))
     except Exception as e:  # noqa: BLE001
         _atom_debug_error("session_start:split_personal", e)
-        return i18n.t("hook.session_start_index.split_failed", err=e, cmd=paste_command(CODE_DIR / "tools" / "sync-atom-index.py"))
-    return i18n.t("hook.session_start_index.split_done")
+        cmd = paste_command(CODE_DIR / "tools" / "sync-atom-index.py")
+        return alert_line(state, "Index", "personal_split", "done", "root", i18n.t("hook.session_start_index.split_failed", err=e, cmd=cmd), i18n.t("hook.phase_alerts.fix.x09", cmd=cmd))
+    return alert_line(state, "Index", "personal_split", "report", "root", i18n.t("hook.session_start_index.split_done"))
 
 
-def _sync_shipped_cards(memory_dir: Optional[Path]) -> Tuple[str, bool]:
+def _sync_shipped_cards(memory_dir: Optional[Path], state=None) -> Tuple[str, bool]:
     """插件版、資料根的記憶夾：展開／更新出廠卡（lib/shipped_cards.sync_shipped）。回 (要顯示的一行, 卡片檔有沒有增刪改)。
     安裝版（程式碼根＝資料根，卡片就在 repo 裡）與專案記憶夾不做。出廠包壞了要大聲：出廠知識這場整批送不到。"""
     if memory_dir is None or memory_dir != MEMORY_DIR:
@@ -82,27 +84,29 @@ def _sync_shipped_cards(memory_dir: Optional[Path]) -> Tuple[str, bool]:
         st = sync_shipped(CODE_DIR, memory_dir.parent)
     except Exception as e:  # noqa: BLE001
         _atom_debug_error("session_start:shipped_cards", e)
-        return i18n.t("hook.session_start_index.shipped_failed", err=str(e)[:200]), False
+        return alert_line(state, "Index", "shipped_cards", "open", "root", i18n.t("hook.session_start_index.shipped_failed", err=str(e)[:200]), i18n.t("hook.phase_alerts.fix.x11")), False
     if st["skipped"]:
         return "", False
     lines = []
     if st["fresh"] or st["updated"] or st["removed"] or st["docs"]:
-        lines.append(i18n.t("hook.session_start_index.shipped_synced", version=st["version"], fresh=st["fresh"],
-                            updated=st["updated"], removed=st["removed"], secs=st["secs"]))
+        lines.append(alert_line(state, "Index", "shipped_cards", "report", "root",
+                                i18n.t("hook.session_start_index.shipped_synced", version=st["version"], fresh=st["fresh"],
+                                       updated=st["updated"], removed=st["removed"], secs=st["secs"])))
     if st["kept_user"]:
-        lines.append(i18n.t("hook.session_start_index.shipped_kept_user", n=st["kept_user"],
-                            names=", ".join(st["kept_names"][:5])))
-    return " ".join(lines), bool(st["changed"])
+        lines.append(alert_line(state, "Index", "shipped_kept_user", "report", "root",
+                                i18n.t("hook.session_start_index.shipped_kept_user", n=st["kept_user"],
+                                       names=", ".join(st["kept_names"][:5]))))
+    return " ".join(x for x in lines if x), bool(st["changed"])
 
 
-def _rebuild_index_if_missing(memory_dir: Optional[Path]) -> str:
+def _rebuild_index_if_missing(memory_dir: Optional[Path], state=None) -> str:
     """插件版先展開／更新出廠卡；卡片有變就強制重建索引與目錄，否則照下面的缺檔／過期判斷。"""
-    shipped_line, shipped_changed = _sync_shipped_cards(memory_dir)
-    note = _rebuild_index(memory_dir, force=i18n.t("hook.session_start_index.what_shipped") if shipped_changed else "")
+    shipped_line, shipped_changed = _sync_shipped_cards(memory_dir, state=state)
+    note = _rebuild_index(memory_dir, force=i18n.t("hook.session_start_index.what_shipped") if shipped_changed else "", state=state)
     return " ".join(x for x in (shipped_line, note) if x)
 
 
-def _rebuild_index(memory_dir: Optional[Path], force: str = "") -> str:
+def _rebuild_index(memory_dir: Optional[Path], force: str = "", state=None) -> str:
     """索引檔不在（沒入版控／被清掉／新 clone）、或專案記憶卡比索引新 → 就地從磁碟重建。
 
     索引是衍生檔，本來就該能從 atom 重生；能重生才敢不入版控，
@@ -118,12 +122,16 @@ def _rebuild_index(memory_dir: Optional[Path], force: str = "") -> str:
     json_path = memory_dir / "_atom_index.json"
     md_path = memory_dir / "_ATOM_INDEX.md"
     manual = _rebuild_manual(memory_dir)
+    scope = _scope(state, memory_dir)   # 根層記憶庫＝根層、專案記憶庫＝專案
+
+    def _a(level, text, fix=""):   # fix：翻好的解法句
+        return alert_line(state, "Index", f"{memory_dir.as_posix()}", level, scope, text, fix)
     stale = force   # 出廠卡剛增刪改（force 是原因）：跳過下面的判斷直接重建，再重生 MEMORY.md 與各層 _INDEX.md
     if force:
         pass
     elif json_path.exists() and md_path.exists():
         if _under_claude_dir(memory_dir):
-            return _split_personal_if_pending(memory_dir)
+            return _split_personal_if_pending(memory_dir, state=state)
         stale = _index_stale_reason(memory_dir, json_path)
         if not stale:
             return ""
@@ -133,10 +141,10 @@ def _rebuild_index(memory_dir: Optional[Path], force: str = "") -> str:
             regenerate_atom_index_md(memory_dir)
         except Exception as e:  # noqa: BLE001
             _atom_debug_error("session_start:regenerate_mirror", e)
-            return i18n.t("hook.session_start_index.regen_failed", err=e, manual=manual)
+            return _a("open", i18n.t("hook.session_start_index.regen_failed", err=e, manual=manual), i18n.t("hook.phase_alerts.fix.x03", manual=manual))
         if not md_path.exists():
-            return i18n.t("hook.session_start_index.regen_no_output", manual=manual)
-        return i18n.t("hook.session_start_index.regen_done", dir=memory_dir)
+            return _a("open", i18n.t("hook.session_start_index.regen_no_output", manual=manual), i18n.t("hook.phase_alerts.fix.x03", manual=manual))
+        return _a("report", i18n.t("hook.session_start_index.regen_done", dir=memory_dir))
     elif not md_path.exists() and not has_indexable_cards(memory_dir):
         return ""   # 一張卡都還沒有（新安裝只有範本 MEMORY.md）：沒東西可重建，不生空索引（生了會被背景同步當成變更提交）
     what = i18n.t("hook.session_start_index.what_stale", stale=stale) if stale else i18n.t("hook.session_start_index.what_missing")
@@ -148,12 +156,12 @@ def _rebuild_index(memory_dir: Optional[Path], force: str = "") -> str:
         r = _sp.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
                     creationflags=no_window_flags())
     except (OSError, _sp.SubprocessError) as e:
-        return i18n.t("hook.session_start_index.rebuild_exc", what=what, err=e, harm=harm, manual=manual)
+        return _a("open", i18n.t("hook.session_start_index.rebuild_exc", what=what, err=e, harm=harm, manual=manual), i18n.t("hook.phase_alerts.fix.x05", manual=manual))
     if not json_path.exists():
-        return i18n.t("hook.session_start_index.rebuild_no_output", err=(r.stderr or '').strip()[:200], manual=manual)
+        return _a("open", i18n.t("hook.session_start_index.rebuild_no_output", err=(r.stderr or '').strip()[:200], manual=manual), i18n.t("hook.phase_alerts.fix.x05", manual=manual))
     if stale:
         if r.returncode != 0:
-            return i18n.t("hook.session_start_index.rebuild_failed", what=what, err=(r.stderr or '').strip()[:200], harm=harm, manual=manual)
+            return _a("open", i18n.t("hook.session_start_index.rebuild_failed", what=what, err=(r.stderr or '').strip()[:200], harm=harm, manual=manual), i18n.t("hook.phase_alerts.fix.x05", manual=manual))
         # 內容沒變時重建工具可能不改寫檔案：碰一下時間，否則同一張卡每次開 session 都判過期
         try:
             os.utime(json_path)
@@ -178,7 +186,7 @@ def _rebuild_index(memory_dir: Optional[Path], force: str = "") -> str:
                 mirror += i18n.t("hook.session_start_index.catalog_failed", err=(r.stderr or '').strip()[:200])
         except (OSError, _sp.SubprocessError) as e:
             mirror += i18n.t("hook.session_start_index.catalog_failed", err=e)
-    return i18n.t("hook.session_start_index.rebuilt", what=what, dir=memory_dir, count=count, mirror=mirror)
+    return _a("report", i18n.t("hook.session_start_index.rebuilt", what=what, dir=memory_dir, count=count, mirror=mirror))
 
 
 def _regenerate_role_filtered_memory_index(
